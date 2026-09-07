@@ -52,3 +52,16 @@ def test_rollout_buffer_preserves_vector_environment_axes() -> None:
     assert batch["actions"].shape == (1, 3)
     torch.testing.assert_close(batch["states"][0], states)
     assert buffer.transition_count == 3
+
+
+def test_rollout_buffer_can_store_policy_output_before_environment_result() -> None:
+    buffer = RolloutBuffer(capacity=1, num_envs=2)
+    states = torch.arange(4).reshape(2, 2)
+
+    buffer.start_step(states, torch.tensor([0, 1]), torch.tensor([-0.1, -0.2]), torch.ones(2))
+    states.fill_(99)
+    buffer.finish_step(torch.tensor([1.0, 2.0]), torch.tensor([False, True]))
+
+    batch = buffer.get_batch()
+    torch.testing.assert_close(batch["states"][0], torch.arange(4).reshape(2, 2))
+    torch.testing.assert_close(batch["rewards"][0], torch.tensor([1.0, 2.0]))

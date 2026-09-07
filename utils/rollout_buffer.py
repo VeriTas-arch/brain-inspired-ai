@@ -28,10 +28,12 @@ class RolloutBuffer:
         self.log_probs = torch.empty(scalar_shape, dtype=torch.float32)
         self.values = torch.empty(scalar_shape, dtype=torch.float32)
         self.pos = 0
+        self._pending_step = False
 
     def reset(self) -> None:
         """Reset the buffer."""
         self.pos = 0
+        self._pending_step = False
 
     def add(
         self,
@@ -43,8 +45,21 @@ class RolloutBuffer:
         value: float | torch.Tensor,
     ) -> None:
         """Add a transition to the buffer."""
+        self.start_step(state, action, log_prob, value)
+        self.finish_step(reward, done)
+
+    def start_step(
+        self,
+        state: torch.Tensor,
+        action: int | torch.Tensor,
+        log_prob: float | torch.Tensor,
+        value: float | torch.Tensor,
+    ) -> None:
+        """Store policy outputs before a shared observation buffer is overwritten."""
         if self.is_full():
             raise RuntimeError("Cannot add to a full rollout buffer")
+        if self._pending_step:
+            raise RuntimeError("Previous rollout step has not been completed")
 
         state = state.detach().to("cpu")
         if self.num_envs > 1 and (state.ndim == 0 or state.shape[0] != self.num_envs):
@@ -59,11 +74,22 @@ class RolloutBuffer:
 
         self.states[self.pos].copy_(state)
         self.actions[self.pos].copy_(torch.as_tensor(action, dtype=torch.long))
-        self.rewards[self.pos].copy_(torch.as_tensor(reward, dtype=torch.float32))
-        self.dones[self.pos].copy_(torch.as_tensor(done, dtype=torch.float32))
         self.log_probs[self.pos].copy_(torch.as_tensor(log_prob, dtype=torch.float32))
         self.values[self.pos].copy_(torch.as_tensor(value, dtype=torch.float32))
+        self._pending_step = True
+
+    def finish_step(
+        self,
+        reward: float | torch.Tensor,
+        done: bool | torch.Tensor,
+    ) -> None:
+        """Complete the pending step once the environment result is available."""
+        if not self._pending_step:
+            raise RuntimeError("No pending rollout step to complete")
+        self.rewards[self.pos].copy_(torch.as_tensor(reward, dtype=torch.float32))
+        self.dones[self.pos].copy_(torch.as_tensor(done, dtype=torch.float32))
         self.pos += 1
+        self._pending_step = False
 
     def is_full(self) -> bool:
         """Check if buffer is full."""
@@ -71,6 +97,8 @@ class RolloutBuffer:
 
     def get_batch(self) -> dict[str, torch.Tensor]:
         """Get all collected data as a batch."""
+        if self._pending_step:
+            raise RuntimeError("Cannot read a rollout with an incomplete step")
         if self.states is None or self.pos == 0:
             raise ValueError("Cannot get a batch from an empty rollout buffer")
         batch_slice = slice(0, self.pos)

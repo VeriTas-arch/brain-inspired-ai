@@ -134,3 +134,69 @@ def test_ewc_checkpoint_restores_consolidated_state(tmp_path) -> None:
     assert restored.task_fisher_summary == wrapper.task_fisher_summary
     for name, expected in wrapper.task_fisher[0].items():
         torch.testing.assert_close(restored.task_fisher[0][name], expected)
+    for name, expected in wrapper.aggregated_fisher.items():
+        torch.testing.assert_close(restored.aggregated_fisher[name], expected)
+
+
+def test_aggregated_ewc_penalty_matches_explicit_task_sum(monkeypatch) -> None:
+    agent = TinyDQN()
+    wrapper = EWCWrapper(agent, ewc_lambda=2.0)
+    fishers = iter(
+        (
+            {
+                "network.weight": torch.full_like(agent.network.weight, 2.0),
+                "network.bias": torch.full_like(agent.network.bias, 2.0),
+            },
+            {
+                "network.weight": torch.full_like(agent.network.weight, 4.0),
+                "network.bias": torch.full_like(agent.network.bias, 4.0),
+            },
+        )
+    )
+    monkeypatch.setattr(wrapper, "compute_parameter_importance", lambda batch: next(fishers))
+
+    with torch.no_grad():
+        agent.network.weight.fill_(1.0)
+        agent.network.bias.fill_(1.0)
+    wrapper.consolidate_weights(dqn_batch())
+    with torch.no_grad():
+        agent.network.weight.fill_(3.0)
+        agent.network.bias.fill_(3.0)
+    wrapper.consolidate_weights(dqn_batch())
+    with torch.no_grad():
+        agent.network.weight.fill_(5.0)
+        agent.network.bias.fill_(5.0)
+
+    explicit_penalty = torch.zeros(())
+    for task_id, weights in wrapper.task_weights.items():
+        for name, parameter in wrapper._collect_regularized_params().items():
+            explicit_penalty += (
+                wrapper.task_fisher[task_id][name] * (parameter - weights[name]).square()
+            ).sum()
+
+    torch.testing.assert_close(wrapper.compute_ewc_loss(), explicit_penalty)
+
+
+def test_legacy_ewc_checkpoint_rebuilds_aggregates(tmp_path) -> None:
+    source = EWCWrapper(TinyDQN(), ewc_lambda=1.5)
+    source.consolidate_weights(dqn_batch())
+    checkpoint = tmp_path / "ewc-v1.pt"
+    torch.save(
+        {
+            "format": "ewc-v1",
+            "agent": source.agent.checkpoint_state(),
+            "ewc_lambda": source.ewc_lambda,
+            "task_weights": source.task_weights,
+            "task_fisher": source.task_fisher,
+            "task_fisher_summary": source.task_fisher_summary,
+            "current_task_id": source.current_task_id,
+        },
+        checkpoint,
+    )
+
+    restored = EWCWrapper(TinyDQN())
+    restored.load(str(checkpoint))
+
+    assert restored.aggregated_fisher.keys() == source.aggregated_fisher.keys()
+    for name, expected in source.aggregated_fisher.items():
+        torch.testing.assert_close(restored.aggregated_fisher[name], expected)

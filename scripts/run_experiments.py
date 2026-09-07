@@ -62,6 +62,8 @@ def build_jobs(
     ewc_mode: str = "both",
     seed: int = 0,
     num_envs: int = 1,
+    env_backend: str = "sync",
+    compile_ppo: bool = False,
 ) -> list[Job]:
     """Build the process matrix formerly encoded in the shell scripts."""
     if episodes <= 0:
@@ -70,8 +72,14 @@ def build_jobs(
         raise ValueError("seed must be between 0 and 2**32 - 1")
     if num_envs <= 0:
         raise ValueError("num_envs must be positive")
+    if env_backend not in {"sync", "async"}:
+        raise ValueError("env_backend must be 'sync' or 'async'")
     if num_envs > 1 and (phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)):
         raise ValueError("num_envs greater than one supports PPO single/continual training only")
+    if (env_backend != "sync" or compile_ppo) and (
+        phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)
+    ):
+        raise ValueError("optimized PPO runtime options support single/continual PPO training only")
     if phase == "train":
         training_steps = steps if steps is not None else DEFAULT_TRAINING_STEPS[suite]
         if training_steps <= 0:
@@ -86,6 +94,8 @@ def build_jobs(
             ewc_mode,
             seed,
             num_envs,
+            env_backend,
+            compile_ppo,
         )
 
     if max_steps <= 0:
@@ -105,6 +115,8 @@ def _build_training_jobs(
     ewc_mode: str,
     seed: int,
     num_envs: int,
+    env_backend: str,
+    compile_ppo: bool,
 ) -> list[Job]:
     jobs = []
     if suite == "single":
@@ -124,6 +136,10 @@ def _build_training_jobs(
                 ]
                 if num_envs > 1:
                     arguments.extend(("--num-envs", str(num_envs)))
+                if algorithm == "ppo" and env_backend != "sync":
+                    arguments.extend(("--env-backend", env_backend))
+                if algorithm == "ppo" and compile_ppo:
+                    arguments.append("--compile-ppo")
                 jobs.append(
                     Job(
                         name,
@@ -153,6 +169,10 @@ def _build_training_jobs(
                     arguments.extend(("--use-ewc", "--ewc-lambda", str(ewc_lambda)))
                 if num_envs > 1:
                     arguments.extend(("--num-envs", str(num_envs)))
+                if algorithm == "ppo" and env_backend != "sync":
+                    arguments.extend(("--env-backend", env_backend))
+                if algorithm == "ppo" and compile_ppo:
+                    arguments.append("--compile-ppo")
                 jobs.append(
                     Job(
                         f"continual {algorithm} {variant}",
@@ -425,7 +445,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--num-envs",
         type=int,
         default=1,
-        help="Synchronous environments for batched PPO policy inference",
+        help="Environments used for batched PPO policy inference",
+    )
+    parser.add_argument(
+        "--env-backend",
+        choices=("sync", "async"),
+        default="sync",
+        help="PPO environment execution backend",
+    )
+    parser.add_argument(
+        "--compile-ppo",
+        action="store_true",
+        help="Compile PPO rollout and learner policy evaluation",
     )
     parser.add_argument("--parallel", action="store_true", help="Run all jobs concurrently")
     parser.add_argument("--log-dir", type=Path, default=Path("logs"))
@@ -455,6 +486,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                     ewc_mode=args.ewc_mode,
                     seed=seed,
                     num_envs=args.num_envs,
+                    env_backend=args.env_backend,
+                    compile_ppo=args.compile_ppo,
                 )
             )
         if args.dry_run:

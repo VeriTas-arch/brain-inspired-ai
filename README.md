@@ -134,16 +134,58 @@ optimization. Continual training writes the stage-by-task score matrix and per-t
 `outputs/continual/.../continual_evaluation.json`; configure the evaluation budget with
 `--eval-episodes`. Multi-head DQN maintains a separate exploration rate for each task, so a new task
 does not inherit the minimum epsilon reached by an earlier task. PPO uses `--batch-size` as its
-minibatch size as well as DQN's replay-sample size. PPO single-task and continual training can
-batch policy inference across synchronous environments without an additional acceleration
-framework:
+minibatch size as well as DQN's replay-sample size. PPO single-task and continual training share
+one tested collector and learner. The synchronous/eager teaching path remains the default:
 
 ```bash
 python scripts/train_continual.py --algorithm ppo --num-envs 8
 ```
 
+The optimized runtime uses Gymnasium shared-memory worker processes and compiles the complete PPO
+minibatch objective with PyTorch. It does not require an additional acceleration framework:
+
+```bash
+python scripts/train_continual.py \
+  --algorithm ppo \
+  --num-envs 8 \
+  --env-backend async \
+  --compile-ppo
+```
+
 `--steps-per-game` remains the total transition budget across all environments. The step budget
-must be divisible by `--num-envs`; each environment receives a distinct deterministic seed.
+must be divisible by `--num-envs`; each environment receives a distinct deterministic seed. The
+collector stores each pre-step observation before a worker overwrites shared memory. With
+Gymnasium's same-step autoreset, it separately recovers the real final observation for time-limit
+bootstrapping and uses the reset observation only as the next policy input.
+
+### PPO Runtime Benchmark
+
+The maintained benchmark measures complete collect-update cycles after real warmup updates while
+keeping PPO's minibatch size at 32:
+
+```bash
+python scripts/benchmark_ppo_runtime.py \
+  --configuration both \
+  --transitions 10240 \
+  --warmup-transitions 2048 \
+  --num-envs 8 \
+  --batch-size 32
+```
+
+One local measurement on 2026-09-07 used an RTX 5090, an Intel Core Ultra 9 285K, PyTorch 2.14,
+and NVIDIA driver 580.178.04. Startup and warmup compilation were excluded from the timed region:
+
+| Runtime | Time | Throughput | PyTorch peak allocated / reserved |
+| --- | ---: | ---: | ---: |
+| synchronous, eager | 7.778 s | 1,316.6 transitions/s | 131.1 / 138 MiB |
+| shared-memory async, compiled | 3.075 s | 3,330.2 transitions/s | 86.7 / 172 MiB |
+
+This is a 2.53× end-to-end speedup for that workload without changing the minibatch size. It is a
+hardware-specific engineering measurement, not evidence of learning quality or a guaranteed
+course-server result. The compiled path uses `mode="reduce-overhead"`; its first real rollout and
+update perform compilation and are intentionally not hidden behind a fake optimizer step in the
+training scripts. If a final rollout ends with an undersized minibatch, only that tail runs through
+the same eager loss instead of creating and retaining a second compiled graph.
 
 ## Evaluation
 
@@ -213,8 +255,9 @@ python scripts/run_experiments.py train continual --parallel --dry-run
 ```
 
 The runner also accepts `--games`, `--algorithms`, `--steps`, `--episodes`, `--max-steps`,
-`--ewc-mode`, `--ewc-lambda`, `--num-envs`, and `--seed`; run it with `--help` for the complete
-interface. `--num-envs` greater than one is limited to PPO single-task or continual training.
+`--ewc-mode`, `--ewc-lambda`, `--num-envs`, `--env-backend`, `--compile-ppo`, and `--seed`; run it
+with `--help` for the complete interface. PPO runtime options are limited to single-task or
+continual training.
 Training and evaluation default to seed 0 and jointly seed Python, NumPy, PyTorch, and each Atari
 environment. Use `--seeds 0 1 2` to expand a matrix over independent, seed-specific output,
 checkpoint, and log paths.
@@ -242,6 +285,11 @@ weights are squared per-sample TD-MSE gradients and are therefore labeled as a s
 than a Fisher estimate. These boundaries are not evidence that value-function preservation is
 unnecessary.
 
+The wrapper retains per-task snapshots for diagnostics and checkpoint provenance, but evaluates the
+sum of prior diagonal penalties from online sufficient statistics. Consequently, the regularizer's
+per-minibatch parameter traversal no longer grows linearly with the number of consolidated tasks.
+Version-1 EWC checkpoints remain loadable and rebuild these statistics on load.
+
 Raw rewards from different Atari games have different scales and should not be summed and
 interpreted as a single performance measure. Training loss on random data is also not evidence of
 forgetting. The next experimental phase should first freeze seeds, evaluation budgets, and the
@@ -254,7 +302,9 @@ the baseline protocol is stable.
 ```text
 algorithms/                DQN, PPO, multi-head agents, and EWC
 environments/              Atari environments and train/evaluation preprocessing
+training/                  shared PPO collector and eager/compiled learner runtime
 utils/                     replay/rollout buffers and visualization utilities
+scripts/benchmark_ppo_runtime.py  maintained PPO throughput benchmark
 scripts/train_single.py    single-task training
 scripts/train_continual.py sequential continual learning
 scripts/train_multitask.py joint multi-task training
@@ -267,8 +317,11 @@ pyproject.toml             single source of dependency and tool configuration
 
 ## Known Limitations
 
-- PPO can batch policy inference over synchronous environments, but Atari emulation still steps
-  those environments serially. Process-level environment parallelism has not started.
+- The optimized PPO path parallelizes Atari emulation with local Gymnasium processes. It has not
+  been benchmarked on the teaching server, where CPU allocation and process limits may differ.
+- Unit tests, a one-minibatch eager/compiled CUDA parity check, and the short runtime benchmark do
+  not replace a full fixed-seed learning-curve comparison. That validation should precede using the
+  optimized path for course results.
 - The replay buffer stores both `state` and `next_state` per transition. Its layout can later be
   optimized without introducing another acceleration framework.
 - Training handles Gymnasium `terminated` and `truncated` separately: DQN bootstraps time-limit

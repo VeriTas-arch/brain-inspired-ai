@@ -40,3 +40,11 @@ def test_ppo_vector_training_requires_divisible_step_budgets() -> None:
         train_single_game(algorithm="ppo", num_steps=10, num_envs=8)
     with pytest.raises(ValueError, match="divisible"):
         train_continual(algorithm="ppo", steps_per_game=10, num_envs=8)
+
+
+@pytest.mark.parametrize("train", (train_single_game, train_continual))
+def test_optimized_runtime_options_are_ppo_only(train) -> None:
+    with pytest.raises(ValueError, match="only for PPO"):
+        train(algorithm="dqn", env_backend="async")
+    with pytest.raises(ValueError, match="only for PPO"):
+        train(algorithm="dqn", compile_ppo=True)

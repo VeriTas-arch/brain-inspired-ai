@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from functools import partial
+
 import ale_py
 import gymnasium as gym
 import numpy as np
 import torch
+from gymnasium.vector import AutoresetMode
 
 from utils.atari_wrappers import (
     ClipRewardEnv,
@@ -14,6 +18,59 @@ from utils.atari_wrappers import (
     MaxAndSkipEnv,
     NoopResetEnv,
 )
+
+
+def make_atari_env(
+    game_name: str,
+    frame_stack: int = 4,
+    render_mode: str | None = None,
+    seed: int | None = None,
+    training: bool = True,
+    frame_skip: int = 4,
+) -> gym.Env:
+    """Build the Gymnasium environment used by scalar and vector wrappers."""
+    gym.register_envs(ale_py)
+    if frame_stack <= 0:
+        raise ValueError("frame_stack must be positive")
+    if frame_skip <= 0:
+        raise ValueError("frame_skip must be positive")
+
+    if not game_name.startswith("ALE/"):
+        game_name = f"ALE/{game_name}"
+
+    make_kwargs = {"frameskip": 1}
+    if render_mode is not None:
+        make_kwargs["render_mode"] = render_mode
+    env = gym.make(game_name, **make_kwargs)
+
+    env = gym.wrappers.RecordEpisodeStatistics(env)
+    env = NoopResetEnv(env, noop_max=30)
+    if frame_skip > 1:
+        env = MaxAndSkipEnv(env, skip=frame_skip)
+    if training:
+        env = EpisodicLifeEnv(env)
+    if "FIRE" in env.unwrapped.get_action_meanings():
+        env = FireResetEnv(env)
+    if training:
+        env = ClipRewardEnv(env)
+    env = gym.wrappers.ResizeObservation(env, (84, 84))
+    env = gym.wrappers.GrayscaleObservation(env)
+    env = gym.wrappers.FrameStackObservation(env, frame_stack)
+
+    if seed is not None:
+        env.action_space.seed(seed)
+    return env
+
+
+@dataclass(frozen=True)
+class VectorStep:
+    """One batched transition with post-reset and terminal observations separated."""
+
+    observations: torch.Tensor
+    transition_observations: torch.Tensor
+    rewards: torch.Tensor
+    terminated: torch.Tensor
+    truncated: torch.Tensor
 
 
 class AtariEnv:
@@ -39,42 +96,20 @@ class AtariEnv:
             training: Apply training-only life termination and reward clipping
             frame_skip: Number of emulator frames per agent action
         """
-        gym.register_envs(ale_py)
-        if frame_stack <= 0:
-            raise ValueError("frame_stack must be positive")
-        if frame_skip <= 0:
-            raise ValueError("frame_skip must be positive")
-
         self.game_name = game_name
         self.frame_stack = frame_stack
         self.training = training
         self.frame_skip = frame_skip
         self._reset_seed = seed
 
-        if not game_name.startswith("ALE/"):
-            game_name = f"ALE/{game_name}"
-
-        make_kwargs = {"frameskip": 1}
-        if render_mode is not None:
-            make_kwargs["render_mode"] = render_mode
-        self.env = gym.make(game_name, **make_kwargs)
-
-        self.env = gym.wrappers.RecordEpisodeStatistics(self.env)
-        self.env = NoopResetEnv(self.env, noop_max=30)
-        if frame_skip > 1:
-            self.env = MaxAndSkipEnv(self.env, skip=frame_skip)
-        if training:
-            self.env = EpisodicLifeEnv(self.env)
-        if "FIRE" in self.env.unwrapped.get_action_meanings():
-            self.env = FireResetEnv(self.env)
-        if training:
-            self.env = ClipRewardEnv(self.env)
-        self.env = gym.wrappers.ResizeObservation(self.env, (84, 84))
-        self.env = gym.wrappers.GrayscaleObservation(self.env)
-        self.env = gym.wrappers.FrameStackObservation(self.env, frame_stack)
-
-        if seed is not None:
-            self.env.action_space.seed(seed)
+        self.env = make_atari_env(
+            game_name,
+            frame_stack=frame_stack,
+            render_mode=render_mode,
+            seed=seed,
+            training=training,
+            frame_skip=frame_skip,
+        )
 
         self.action_space = self.env.action_space.n
 
@@ -166,7 +201,126 @@ class SyncVectorAtariEnv:
             states[index] = self.envs[index].reset()
         return states
 
+    def step_and_reset(self, actions: torch.Tensor) -> VectorStep:
+        """Step once and reset completed environments without losing terminal frames."""
+        transition_observations, rewards, terminated, truncated = self.step(actions)
+        observations = self.reset_done(transition_observations, terminated | truncated)
+        return VectorStep(
+            observations=observations,
+            transition_observations=transition_observations,
+            rewards=rewards,
+            terminated=terminated,
+            truncated=truncated,
+        )
+
     def close(self) -> None:
         """Close every underlying environment."""
         for env in self.envs:
             env.close()
+
+
+class AsyncVectorAtariEnv:
+    """Run independent Atari environments in shared-memory worker processes."""
+
+    def __init__(
+        self,
+        game_name: str,
+        num_envs: int,
+        *,
+        render_mode: str | None = None,
+        seed: int | None = None,
+        training: bool = True,
+    ) -> None:
+        if num_envs <= 0:
+            raise ValueError("num_envs must be positive")
+        env_fns = [
+            partial(
+                make_atari_env,
+                game_name,
+                render_mode=render_mode,
+                seed=None if seed is None else seed + index,
+                training=training,
+            )
+            for index in range(num_envs)
+        ]
+        self.env = gym.vector.AsyncVectorEnv(
+            env_fns,
+            shared_memory=True,
+            copy=False,
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+        self.num_envs = num_envs
+        self.action_space = self.env.single_action_space.n
+        self._reset_seeds = None if seed is None else [seed + index for index in range(num_envs)]
+
+    def reset(self) -> torch.Tensor:
+        """Reset every worker using the deterministic per-environment seed once."""
+        observations, _ = self.env.reset(seed=self._reset_seeds)
+        self._reset_seeds = None
+        return torch.as_tensor(np.asarray(observations))
+
+    def step_and_reset(self, actions: torch.Tensor) -> VectorStep:
+        """Step workers and recover final observations hidden by same-step autoreset."""
+        actions = torch.as_tensor(actions, dtype=torch.long).flatten().cpu()
+        if actions.numel() != self.num_envs:
+            raise ValueError(f"Expected {self.num_envs} actions, received {actions.numel()}")
+
+        observations, rewards, terminated, truncated, infos = self.env.step(actions.numpy())
+        observations = np.asarray(observations)
+        terminated = np.asarray(terminated, dtype=np.bool_)
+        truncated = np.asarray(truncated, dtype=np.bool_)
+        done = terminated | truncated
+        transition_observations = observations
+
+        if done.any():
+            transition_observations = observations.copy()
+            final_observations = infos.get("final_obs")
+            final_mask = np.asarray(
+                infos.get("_final_obs", np.zeros(self.num_envs, dtype=np.bool_)),
+                dtype=np.bool_,
+            )
+            if final_observations is None or not np.array_equal(final_mask, done):
+                raise RuntimeError(
+                    "Async vector environment did not preserve every final observation"
+                )
+            for index in done.nonzero()[0]:
+                transition_observations[index] = np.asarray(final_observations[index])
+
+        return VectorStep(
+            observations=torch.as_tensor(observations),
+            transition_observations=torch.as_tensor(transition_observations),
+            rewards=torch.as_tensor(rewards, dtype=torch.float32),
+            terminated=torch.as_tensor(terminated, dtype=torch.bool),
+            truncated=torch.as_tensor(truncated, dtype=torch.bool),
+        )
+
+    def close(self) -> None:
+        """Close every worker process."""
+        self.env.close()
+
+
+def make_vector_atari_env(
+    game_name: str,
+    num_envs: int,
+    *,
+    backend: str = "sync",
+    render_mode: str | None = None,
+    seed: int | None = None,
+    training: bool = True,
+) -> SyncVectorAtariEnv | AsyncVectorAtariEnv:
+    """Build a vector environment while keeping the backend choice explicit."""
+    environment_types = {
+        "sync": SyncVectorAtariEnv,
+        "async": AsyncVectorAtariEnv,
+    }
+    try:
+        environment_type = environment_types[backend]
+    except KeyError as error:
+        raise ValueError(f"Unknown vector environment backend: {backend!r}") from error
+    return environment_type(
+        game_name,
+        num_envs,
+        render_mode=render_mode,
+        seed=seed,
+        training=training,
+    )

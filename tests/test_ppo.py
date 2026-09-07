@@ -3,12 +3,16 @@
 import math
 
 import torch
+import torch.nn as nn
+from torch.distributions import Categorical
 
 from algorithms.ppo import (
     MultiHeadPPOAgent,
     PPOAgent,
     bootstrap_truncated_reward,
     generalized_advantage_estimate,
+    optimize_ppo,
+    ppo_minibatch_loss,
 )
 
 
@@ -113,6 +117,32 @@ def test_ppo_update_accepts_uint8_rollout_states() -> None:
     assert all(math.isfinite(value) for value in metrics.values())
 
 
+def test_multi_head_ppo_uses_the_shared_update_path() -> None:
+    torch.manual_seed(8)
+    agent = MultiHeadPPOAgent(state_dim=4, device="cpu")
+    agent.register_task("task", 2)
+    agent.set_task("task")
+    states = torch.randint(256, (4, 4, 84, 84), dtype=torch.uint8)
+    with torch.no_grad():
+        actions, log_probs, _, values = agent.get_action_and_value(states)
+
+    metrics = agent.update(
+        {
+            "states": states,
+            "actions": actions,
+            "rewards": torch.tensor([0.0, 0.0, 0.0, 1.0]),
+            "dones": torch.tensor([0.0, 0.0, 0.0, 1.0]),
+            "log_probs": log_probs,
+            "values": values.flatten(),
+        },
+        next_value=torch.tensor([0.0]),
+        update_epochs=1,
+        minibatch_size=2,
+    )
+
+    assert all(math.isfinite(value) for value in metrics.values())
+
+
 def test_ppo_update_flattens_vector_rollouts_after_gae() -> None:
     torch.manual_seed(13)
     agent = PPOAgent(state_dim=4, action_dim=2, device="cpu")
@@ -185,3 +215,65 @@ def test_ppo_metrics_average_all_minibatches() -> None:
     )
 
     assert abs(metrics["policy_loss"]) < 1e-6
+
+
+def test_partial_final_minibatch_uses_eager_loss_shape() -> None:
+    policy = nn.Linear(2, 3)
+    critic = nn.Linear(2, 1)
+    parameters = [*policy.parameters(), *critic.parameters()]
+    optimizer = torch.optim.SGD(parameters, lr=0.0)
+    states = torch.randn(3, 2)
+    actions = torch.tensor([0, 1, 2])
+
+    def evaluate(input_states, input_actions=None):
+        distribution = Categorical(logits=policy(input_states))
+        if input_actions is None:
+            input_actions = distribution.sample()
+        return (
+            input_actions,
+            distribution.log_prob(input_actions),
+            distribution.entropy(),
+            critic(input_states),
+        )
+
+    with torch.no_grad():
+        _, log_probs, _, values = evaluate(states, actions)
+
+    compiled_batch_sizes = []
+
+    def compiled_loss(*arguments):
+        compiled_batch_sizes.append(len(arguments[0]))
+        return ppo_minibatch_loss(
+            *arguments,
+            policy_evaluator=evaluate,
+            clip_coef=0.1,
+            ent_coef=0.01,
+            vf_coef=0.5,
+        )
+
+    optimize_ppo(
+        {
+            "states": states,
+            "actions": actions,
+            "rewards": torch.zeros(3),
+            "dones": torch.tensor([0.0, 0.0, 1.0]),
+            "log_probs": log_probs,
+            "values": values.flatten(),
+        },
+        next_value=torch.zeros(1),
+        device=torch.device("cpu"),
+        optimizer=optimizer,
+        parameters=parameters,
+        policy_evaluator=evaluate,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_coef=0.1,
+        ent_coef=0.01,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        update_epochs=1,
+        minibatch_size=2,
+        minibatch_loss=compiled_loss,
+    )
+
+    assert compiled_batch_sizes == [2]

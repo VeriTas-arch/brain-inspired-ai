@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from environments import AtariEnv, SyncVectorAtariEnv
+from environments import AsyncVectorAtariEnv, AtariEnv, SyncVectorAtariEnv
 
 
 def wrapper_names(env: AtariEnv) -> list[str]:
@@ -109,3 +109,63 @@ def test_sync_vector_environment_resets_only_finished_instances() -> None:
     torch.testing.assert_close(reset_states[1], states[1])
     assert env.envs[0].reset_count == 1
     assert env.envs[1].reset_count == 0
+
+
+def test_async_vector_environment_recovers_final_observation_after_autoreset() -> None:
+    reset_observations = np.stack(
+        (
+            np.full((4, 84, 84), 10, dtype=np.uint8),
+            np.full((4, 84, 84), 2, dtype=np.uint8),
+        )
+    )
+    final_observation = np.full((4, 84, 84), 9, dtype=np.uint8)
+
+    class _FakeAsyncEnvironment:
+        @staticmethod
+        def step(actions):
+            np.testing.assert_array_equal(actions, np.array([0, 1]))
+            return (
+                reset_observations,
+                np.array([1.0, 2.0]),
+                np.array([False, False]),
+                np.array([True, False]),
+                {
+                    "final_obs": np.array([final_observation, None], dtype=object),
+                    "_final_obs": np.array([True, False]),
+                },
+            )
+
+    env = AsyncVectorAtariEnv.__new__(AsyncVectorAtariEnv)
+    env.env = _FakeAsyncEnvironment()
+    env.num_envs = 2
+    env.action_space = 2
+
+    transition = env.step_and_reset(torch.tensor([0, 1]))
+
+    torch.testing.assert_close(transition.observations, torch.as_tensor(reset_observations))
+    torch.testing.assert_close(
+        transition.transition_observations[0], torch.as_tensor(final_observation)
+    )
+    torch.testing.assert_close(
+        transition.transition_observations[1], torch.as_tensor(reset_observations[1])
+    )
+
+
+def test_async_vector_environment_rejects_missing_final_observation() -> None:
+    class _BrokenAsyncEnvironment:
+        @staticmethod
+        def step(actions):
+            return (
+                np.zeros((2, 4, 84, 84), dtype=np.uint8),
+                np.zeros(2),
+                np.array([True, False]),
+                np.zeros(2, dtype=np.bool_),
+                {},
+            )
+
+    env = AsyncVectorAtariEnv.__new__(AsyncVectorAtariEnv)
+    env.env = _BrokenAsyncEnvironment()
+    env.num_envs = 2
+
+    with pytest.raises(RuntimeError, match="final observation"):
+        env.step_and_reset(torch.tensor([0, 0]))

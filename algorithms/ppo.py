@@ -9,6 +9,29 @@ from torch.distributions.categorical import Categorical
 
 from .base import BaseAgent, layer_init
 
+PolicyEvaluator = Callable[
+    [torch.Tensor, torch.Tensor | None],
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+]
+PPOMinibatchLoss = Callable[
+    [
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
+    tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ],
+]
+
 
 def bootstrap_truncated_reward(
     reward: float,
@@ -44,6 +67,187 @@ def generalized_advantage_estimate(
         advantages[t] = last_advantage
 
     return advantages, advantages + values
+
+
+def ppo_minibatch_loss(
+    states: torch.Tensor,
+    actions: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    returns: torch.Tensor,
+    old_values: torch.Tensor,
+    *,
+    policy_evaluator: PolicyEvaluator,
+    clip_coef: float,
+    ent_coef: float,
+    vf_coef: float,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """Compute one PPO minibatch objective and its diagnostics."""
+    _, new_log_probs, entropy, new_values = policy_evaluator(states, actions)
+    new_log_probs = new_log_probs.flatten()
+    new_values = new_values.flatten()
+
+    log_ratio = new_log_probs - old_log_probs
+    ratio = log_ratio.exp()
+    policy_loss = torch.max(
+        -advantages * ratio,
+        -advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef),
+    ).mean()
+
+    value_loss_unclipped = (new_values - returns).square()
+    clipped_values = old_values + torch.clamp(
+        new_values - old_values,
+        -clip_coef,
+        clip_coef,
+    )
+    value_loss_clipped = (clipped_values - returns).square()
+    value_loss = 0.5 * torch.max(value_loss_unclipped, value_loss_clipped).mean()
+
+    entropy_loss = entropy.mean()
+    loss = policy_loss - ent_coef * entropy_loss + vf_coef * value_loss
+    approximate_kl = ((ratio - 1) - log_ratio).mean()
+    clip_fraction = ((ratio - 1.0).abs() > clip_coef).float().mean()
+    return loss, policy_loss, value_loss, entropy_loss, approximate_kl, clip_fraction
+
+
+def optimize_ppo(
+    rollout_data: dict[str, torch.Tensor],
+    next_value: torch.Tensor,
+    *,
+    device: torch.device,
+    optimizer: optim.Optimizer,
+    parameters: list[nn.Parameter],
+    policy_evaluator: PolicyEvaluator,
+    gamma: float,
+    gae_lambda: float,
+    clip_coef: float,
+    ent_coef: float,
+    vf_coef: float,
+    max_grad_norm: float,
+    update_epochs: int,
+    minibatch_size: int,
+    regularizer: Callable[[], torch.Tensor] | None = None,
+    minibatch_loss: PPOMinibatchLoss | None = None,
+) -> dict[str, float]:
+    """Run the PPO learner shared by single-head and multi-head agents."""
+    if update_epochs <= 0:
+        raise ValueError("update_epochs must be positive")
+    if minibatch_size <= 0:
+        raise ValueError("minibatch_size must be positive")
+    if len(rollout_data["states"]) == 0:
+        raise ValueError("PPO update requires a non-empty rollout")
+
+    states = rollout_data["states"].to(device)
+    actions = rollout_data["actions"].to(device)
+    old_log_probs = rollout_data["log_probs"].to(device)
+    rewards = rollout_data["rewards"].to(device)
+    dones = rollout_data["dones"].to(device)
+    old_values = rollout_data["values"].to(device)
+
+    with torch.no_grad():
+        advantages, returns = generalized_advantage_estimate(
+            rewards,
+            old_values,
+            dones,
+            next_value.to(device),
+            gamma,
+            gae_lambda,
+        )
+        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+
+    batch_states = states.flatten(0, 1) if states.ndim == 5 else states
+    batch_actions = actions.flatten()
+    batch_log_probs = old_log_probs.flatten()
+    batch_advantages = advantages.flatten()
+    batch_returns = returns.flatten()
+    batch_values = old_values.flatten()
+
+    metric_sums = torch.zeros(6, device=device)
+    update_count = 0
+    used_regularizer = regularizer is not None
+
+    for _ in range(update_epochs):
+        batch_indices = torch.randperm(len(batch_states), device=device)
+        for start in range(0, len(batch_states), minibatch_size):
+            minibatch_indices = batch_indices[start : start + minibatch_size]
+            loss_arguments = (
+                batch_states[minibatch_indices],
+                batch_actions[minibatch_indices],
+                batch_log_probs[minibatch_indices],
+                batch_advantages[minibatch_indices],
+                batch_returns[minibatch_indices],
+                batch_values[minibatch_indices],
+            )
+            if minibatch_loss is None or len(minibatch_indices) < minibatch_size:
+                (
+                    loss,
+                    policy_loss,
+                    value_loss,
+                    entropy_loss,
+                    approximate_kl,
+                    clip_fraction,
+                ) = ppo_minibatch_loss(
+                    *loss_arguments,
+                    policy_evaluator=policy_evaluator,
+                    clip_coef=clip_coef,
+                    ent_coef=ent_coef,
+                    vf_coef=vf_coef,
+                )
+            else:
+                (
+                    loss,
+                    policy_loss,
+                    value_loss,
+                    entropy_loss,
+                    approximate_kl,
+                    clip_fraction,
+                ) = minibatch_loss(*loss_arguments)
+
+            regularization_loss = regularizer() if regularizer is not None else None
+            if regularization_loss is not None:
+                loss = loss + regularization_loss
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(parameters, max_grad_norm)
+            optimizer.step()
+
+            with torch.no_grad():
+                regularization_metric = (
+                    regularization_loss
+                    if regularization_loss is not None
+                    else torch.zeros((), device=device)
+                )
+                metric_sums += torch.stack(
+                    (
+                        policy_loss,
+                        value_loss,
+                        entropy_loss,
+                        approximate_kl,
+                        clip_fraction,
+                        regularization_metric,
+                    )
+                )
+                update_count += 1
+
+    averages = (metric_sums / update_count).tolist()
+    metrics = dict(
+        zip(
+            ("policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac"),
+            averages[:5],
+            strict=True,
+        )
+    )
+    if used_regularizer:
+        metrics["regularization_loss"] = averages[5]
+    return metrics
 
 
 class PPOAgent(BaseAgent):
@@ -170,108 +374,33 @@ class PPOAgent(BaseAgent):
         update_epochs: int = 4,
         minibatch_size: int = 32,
         regularizer: Callable[[], torch.Tensor] | None = None,
+        policy_evaluator: PolicyEvaluator | None = None,
+        minibatch_loss: PPOMinibatchLoss | None = None,
     ) -> dict[str, float]:
         """Update PPO with rollout data."""
-        if update_epochs <= 0:
-            raise ValueError("update_epochs must be positive")
-        if minibatch_size <= 0:
-            raise ValueError("minibatch_size must be positive")
-        if len(rollout_data["states"]) == 0:
-            raise ValueError("PPO update requires a non-empty rollout")
-
-        states = rollout_data["states"].to(self.device)
-        actions = rollout_data["actions"].to(self.device)
-        old_log_probs = rollout_data["log_probs"].to(self.device)
-        rewards = rollout_data["rewards"].to(self.device)
-        dones = rollout_data["dones"].to(self.device)
-        old_values = rollout_data["values"].to(self.device)
-
-        with torch.no_grad():
-            advantages, returns = self.compute_gae(rewards, old_values, dones, next_value)
-            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
-
-        b_obs = states.flatten(0, 1) if states.ndim == 5 else states
-        b_actions = actions.flatten()
-        b_log_probs = old_log_probs.flatten()
-        b_advantages = advantages.flatten()
-        b_returns = returns.flatten()
-        b_values = old_values.flatten()
-
-        policy_losses = []
-        value_losses = []
-        entropies = []
-        approx_kls = []
-        clipfracs = []
-        regularization_losses = []
         parameters = [
             *self.network.parameters(),
             *self.actor.parameters(),
             *self.critic.parameters(),
         ]
-
-        for epoch in range(update_epochs):
-            b_inds = torch.randperm(len(b_obs), device=self.device)
-            for start in range(0, len(b_obs), minibatch_size):
-                end = start + minibatch_size
-                mb_inds = b_inds[start:end]
-
-                _, new_log_probs, entropy, new_values = self.get_action_and_value(
-                    b_obs[mb_inds], b_actions[mb_inds]
-                )
-                new_log_probs = new_log_probs.flatten()
-                new_values = new_values.flatten()
-
-                logratio = new_log_probs - b_log_probs[mb_inds]
-                ratio = logratio.exp()
-
-                mb_advantages = b_advantages[mb_inds]
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(
-                    ratio, 1 - self.clip_coef, 1 + self.clip_coef
-                )
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                v_loss_unclipped = (new_values - b_returns[mb_inds]) ** 2
-                v_clipped = b_values[mb_inds] + torch.clamp(
-                    new_values - b_values[mb_inds],
-                    -self.clip_coef,
-                    self.clip_coef,
-                )
-                v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                v_loss = 0.5 * v_loss_max.mean()
-
-                entropy_loss = entropy.mean()
-                regularization_loss = regularizer() if regularizer is not None else None
-                loss = pg_loss - self.ent_coef * entropy_loss + v_loss * self.vf_coef
-                if regularization_loss is not None:
-                    loss = loss + regularization_loss
-
-                self.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
-                self.optimizer.step()
-
-                with torch.no_grad():
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    policy_losses.append(pg_loss.item())
-                    value_losses.append(v_loss.item())
-                    entropies.append(entropy_loss.item())
-                    approx_kls.append(approx_kl.item())
-                    clipfracs.append(((ratio - 1.0).abs() > self.clip_coef).float().mean().item())
-                    if regularization_loss is not None:
-                        regularization_losses.append(regularization_loss.item())
-
-        metrics = {
-            "policy_loss": sum(policy_losses) / len(policy_losses),
-            "value_loss": sum(value_losses) / len(value_losses),
-            "entropy": sum(entropies) / len(entropies),
-            "approx_kl": sum(approx_kls) / len(approx_kls),
-            "clipfrac": sum(clipfracs) / len(clipfracs),
-        }
-        if regularization_losses:
-            metrics["regularization_loss"] = sum(regularization_losses) / len(regularization_losses)
-        return metrics
+        return optimize_ppo(
+            rollout_data,
+            next_value,
+            device=self.device,
+            optimizer=self.optimizer,
+            parameters=parameters,
+            policy_evaluator=policy_evaluator or self.get_action_and_value,
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            clip_coef=self.clip_coef,
+            ent_coef=self.ent_coef,
+            vf_coef=self.vf_coef,
+            max_grad_norm=self.max_grad_norm,
+            update_epochs=update_epochs,
+            minibatch_size=minibatch_size,
+            regularizer=regularizer,
+            minibatch_loss=minibatch_loss,
+        )
 
 
 class MultiHeadPPOAgent(BaseAgent):
@@ -429,112 +558,37 @@ class MultiHeadPPOAgent(BaseAgent):
         update_epochs: int = 4,
         minibatch_size: int = 32,
         regularizer: Callable[[], torch.Tensor] | None = None,
+        policy_evaluator: PolicyEvaluator | None = None,
+        minibatch_loss: PPOMinibatchLoss | None = None,
     ) -> dict[str, float]:
         """Update PPO with rollout data using shared backbone and task-specific heads."""
         if self.current_task is None:
             raise RuntimeError("Current task is not set before update().")
         if self.optimizer is None:
             raise RuntimeError("Optimizer has not been initialized; call register_task() first.")
-        if update_epochs <= 0:
-            raise ValueError("update_epochs must be positive")
-        if minibatch_size <= 0:
-            raise ValueError("minibatch_size must be positive")
-        if len(rollout_data["states"]) == 0:
-            raise ValueError("PPO update requires a non-empty rollout")
-
-        states = rollout_data["states"].to(self.device)
-        actions = rollout_data["actions"].to(self.device)
-        old_log_probs = rollout_data["log_probs"].to(self.device)
-        rewards = rollout_data["rewards"].to(self.device)
-        dones = rollout_data["dones"].to(self.device)
-        old_values = rollout_data["values"].to(self.device)
-
-        with torch.no_grad():
-            advantages, returns = self.compute_gae(rewards, old_values, dones, next_value)
-            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
-
-        b_obs = states.flatten(0, 1) if states.ndim == 5 else states
-        b_actions = actions.flatten()
-        b_log_probs = old_log_probs.flatten()
-        b_advantages = advantages.flatten()
-        b_returns = returns.flatten()
-        b_values = old_values.flatten()
-
-        policy_losses = []
-        value_losses = []
-        entropies = []
-        approx_kls = []
-        clipfracs = []
-        regularization_losses = []
         all_params = list(self.backbone.parameters())
         for actor in self.actors.values():
             all_params.extend(actor.parameters())
         for critic in self.critics.values():
             all_params.extend(critic.parameters())
-
-        for epoch in range(update_epochs):
-            b_inds = torch.randperm(len(b_obs), device=self.device)
-            for start in range(0, len(b_obs), minibatch_size):
-                end = start + minibatch_size
-                mb_inds = b_inds[start:end]
-
-                _, new_log_probs, entropy, new_values = self.get_action_and_value(
-                    b_obs[mb_inds], b_actions[mb_inds]
-                )
-                new_log_probs = new_log_probs.flatten()
-                new_values = new_values.flatten()
-
-                logratio = new_log_probs - b_log_probs[mb_inds]
-                ratio = logratio.exp()
-
-                mb_advantages = b_advantages[mb_inds]
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(
-                    ratio, 1 - self.clip_coef, 1 + self.clip_coef
-                )
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                v_loss_unclipped = (new_values - b_returns[mb_inds]) ** 2
-                v_clipped = b_values[mb_inds] + torch.clamp(
-                    new_values - b_values[mb_inds],
-                    -self.clip_coef,
-                    self.clip_coef,
-                )
-                v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                v_loss = 0.5 * v_loss_max.mean()
-
-                entropy_loss = entropy.mean()
-                regularization_loss = regularizer() if regularizer is not None else None
-                loss = pg_loss - self.ent_coef * entropy_loss + v_loss * self.vf_coef
-                if regularization_loss is not None:
-                    loss = loss + regularization_loss
-
-                self.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                nn.utils.clip_grad_norm_(all_params, self.max_grad_norm)
-                self.optimizer.step()
-
-                with torch.no_grad():
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    policy_losses.append(pg_loss.item())
-                    value_losses.append(v_loss.item())
-                    entropies.append(entropy_loss.item())
-                    approx_kls.append(approx_kl.item())
-                    clipfracs.append(((ratio - 1.0).abs() > self.clip_coef).float().mean().item())
-                    if regularization_loss is not None:
-                        regularization_losses.append(regularization_loss.item())
-
-        metrics = {
-            "policy_loss": sum(policy_losses) / len(policy_losses),
-            "value_loss": sum(value_losses) / len(value_losses),
-            "entropy": sum(entropies) / len(entropies),
-            "approx_kl": sum(approx_kls) / len(approx_kls),
-            "clipfrac": sum(clipfracs) / len(clipfracs),
-        }
-        if regularization_losses:
-            metrics["regularization_loss"] = sum(regularization_losses) / len(regularization_losses)
-        return metrics
+        return optimize_ppo(
+            rollout_data,
+            next_value,
+            device=self.device,
+            optimizer=self.optimizer,
+            parameters=all_params,
+            policy_evaluator=policy_evaluator or self.get_action_and_value,
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            clip_coef=self.clip_coef,
+            ent_coef=self.ent_coef,
+            vf_coef=self.vf_coef,
+            max_grad_norm=self.max_grad_norm,
+            update_epochs=update_epochs,
+            minibatch_size=minibatch_size,
+            regularizer=regularizer,
+            minibatch_loss=minibatch_loss,
+        )
 
     def checkpoint_state(self) -> dict:
         """Return the shared network, task heads, and optimizer state."""

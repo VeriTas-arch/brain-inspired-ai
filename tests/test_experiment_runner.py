@@ -132,3 +132,35 @@ def test_vector_environments_reject_unsupported_training_matrices() -> None:
             pass
         else:
             raise AssertionError("unsupported vector environment matrix must be rejected")
+
+
+def test_optimized_ppo_runtime_options_are_forwarded() -> None:
+    jobs = build_jobs(
+        "train",
+        "continual",
+        games=DEFAULT_GAMES["continual"],
+        algorithms=("ppo",),
+        num_envs=8,
+        env_backend="async",
+        compile_ppo=True,
+    )
+
+    for job in jobs:
+        assert "--env-backend" in job.arguments
+        assert job.arguments[job.arguments.index("--env-backend") + 1] == "async"
+        assert "--compile-ppo" in job.arguments
+
+
+def test_optimized_ppo_runtime_rejects_mixed_algorithm_matrix() -> None:
+    try:
+        build_jobs(
+            "train",
+            "single",
+            games=DEFAULT_GAMES["single"],
+            algorithms=("dqn", "ppo"),
+            env_backend="async",
+        )
+    except ValueError as error:
+        assert "optimized PPO runtime" in str(error)
+    else:
+        raise AssertionError("optimized PPO options must not leak into DQN jobs")

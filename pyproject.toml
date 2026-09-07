@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["algorithms*", "environments*", "utils*"]
+include = ["algorithms*", "environments*", "training*", "utils*"]
 
 [tool.pytest.ini_options]
 addopts = ["-ra", "--strict-config", "--strict-markers"]

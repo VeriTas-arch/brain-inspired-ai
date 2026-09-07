@@ -14,8 +14,14 @@ from algorithms import (
     MultiHeadDQNAgent,
     MultiHeadPPOAgent,
 )
-from environments import AtariEnv, SyncVectorAtariEnv
-from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
+from environments import AtariEnv, make_vector_atari_env
+from training import (
+    PPOCollector,
+    PPOLearner,
+    configure_ppo_runtime,
+    flatten_rollout_data,
+)
+from utils import MetricsPlotter, ReplayBuffer, VideoRecorder, seed_everything
 
 
 def build_evaluation_report(eval_history: dict, games: list[str]) -> dict:
@@ -95,6 +101,8 @@ def train_continual(
     steps_per_game: int = 50000,
     batch_size: int = 32,
     num_envs: int = 1,
+    env_backend: str = "sync",
+    compile_ppo: bool = False,
     eval_episodes: int = 5,
     save_video: bool = False,
     seed: int = 0,
@@ -108,10 +116,15 @@ def train_continual(
         raise ValueError("num_envs must be positive")
     if algorithm != "ppo" and num_envs != 1:
         raise ValueError("num_envs greater than one is currently supported only for PPO")
+    if env_backend not in {"sync", "async"}:
+        raise ValueError("env_backend must be 'sync' or 'async'")
+    if algorithm != "ppo" and (env_backend != "sync" or compile_ppo):
+        raise ValueError("env_backend and compile_ppo options are supported only for PPO")
     if algorithm == "ppo" and steps_per_game % num_envs != 0:
         raise ValueError("PPO steps_per_game must be divisible by num_envs")
     if eval_episodes <= 0:
         raise ValueError("eval_episodes must be positive")
+    configure_ppo_runtime(env_backend)
     seed_everything(seed)
     game_seeds = {game: seed + index for index, game in enumerate(games)}
     run_name = f"{algorithm}_ewc{use_ewc}"
@@ -130,9 +143,10 @@ def train_continual(
         print(f"\n=== Task {game_idx + 1}/{len(games)}: {game_name} ===")
 
         env = (
-            SyncVectorAtariEnv(
+            make_vector_atari_env(
                 game_name,
                 num_envs,
+                backend=env_backend,
                 render_mode=None,
                 seed=game_seeds[game_name],
             )
@@ -186,7 +200,6 @@ def train_continual(
             rollout_length = 128
             update_epochs = 4
             minibatch_size = batch_size
-            buffer = RolloutBuffer(capacity=rollout_length, num_envs=num_envs)
 
         exp_dir = exp_root / game_name
         exp_dir.mkdir(parents=True, exist_ok=True)
@@ -195,8 +208,27 @@ def train_continual(
         if save_video:
             video_recorder = VideoRecorder(str(exp_dir / "training.mp4"), fps=30)
 
-        state = env.reset()
-        episode_reward = [0.0] * num_envs if algorithm == "ppo" else 0.0
+        if algorithm == "ppo":
+            learner = PPOLearner(
+                agent,
+                update_epochs=update_epochs,
+                minibatch_size=minibatch_size,
+                compile_policy=compile_ppo,
+            )
+
+            def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
+                if video_recorder is not None and transition_count % 2 == 0:
+                    video_recorder.add_frame(frame.cpu().numpy())
+
+            collector = PPOCollector(
+                env,
+                learner,
+                rollout_length=rollout_length,
+                frame_callback=record_ppo_frame if video_recorder is not None else None,
+            )
+        else:
+            state = env.reset()
+            episode_reward = 0.0
         episode_rewards = []
         episode_count = 0
         step = 0
@@ -250,97 +282,23 @@ def train_continual(
                     state = env.reset()
 
             else:  # ppo
-                collected_steps = 0
-                for rollout_step in range(rollout_length):
-                    if step >= steps_per_game:
-                        break
+                rollout = collector.collect(steps_per_game - step)
+                metrics = learner.update(rollout)
+                step += rollout.transition_count
+                episode_count = collector.episode_count
+                episode_rewards.extend(rollout.episode_returns)
+                if step == steps_per_game:
+                    last_rollout_data = flatten_rollout_data(rollout.data, clone=True)
 
-                    with torch.inference_mode():
-                        state_tensor = state.to(agent.device)
-                        action_tensor, log_prob, value = agent.sample_action_and_value(state_tensor)
-                    actions = action_tensor.cpu()
-
-                    next_state, rewards, terminated, truncated = env.step(actions)
-                    episode_done = terminated | truncated
-                    training_rewards = rewards.clone()
-                    bootstrap_mask = truncated & ~terminated
-                    if bootstrap_mask.any():
-                        with torch.inference_mode():
-                            truncated_values = agent.get_value(
-                                next_state[bootstrap_mask].to(agent.device)
-                            ).flatten()
-                        training_rewards[bootstrap_mask] += agent.gamma * truncated_values.cpu()
-
-                    if num_envs == 1:
-                        buffer.add(
-                            state[0],
-                            actions.item(),
-                            training_rewards.item(),
-                            episode_done.item(),
-                            log_prob.item(),
-                            value.item(),
+                pbar.set_postfix({**metrics, "episodes": episode_count})
+                for metric_name in ("policy_loss", "value_loss", "entropy", "ewc_loss"):
+                    if metric_name in metrics:
+                        continual_metrics.setdefault(game_name + f"_{metric_name}", []).append(
+                            metrics[metric_name]
                         )
-                    else:
-                        buffer.add(
-                            state,
-                            actions,
-                            training_rewards,
-                            episode_done,
-                            log_prob.cpu(),
-                            value.flatten().cpu(),
-                        )
+                pbar.update(rollout.transition_count)
 
-                    if video_recorder is not None and step % 2 == 0:
-                        frame = state[0, 0].cpu().numpy()
-                        video_recorder.add_frame(frame)
-
-                    for env_index in range(num_envs):
-                        episode_reward[env_index] += rewards[env_index].item()
-                        if episode_done[env_index]:
-                            episode_rewards.append(episode_reward[env_index])
-                            episode_reward[env_index] = 0.0
-                            episode_count += 1
-
-                    state = env.reset_done(next_state, episode_done)
-                    step += num_envs
-                    collected_steps += num_envs
-
-                if buffer.ready_for_update(final=step >= steps_per_game):
-                    with torch.inference_mode():
-                        next_value = agent.get_value(state.to(agent.device)).flatten()
-
-                    rollout_data = buffer.get_batch()
-                    last_rollout_data = {
-                        name: (
-                            value.flatten(0, 1).detach().clone()
-                            if num_envs > 1
-                            else value.detach().clone()
-                        )
-                        for name, value in rollout_data.items()
-                    }
-                    metrics = agent.update(rollout_data, next_value, update_epochs, minibatch_size)
-                    pbar.set_postfix({**metrics, "episodes": episode_count})
-
-                    if "policy_loss" in metrics:
-                        continual_metrics.setdefault(game_name + "_policy_loss", []).append(
-                            metrics["policy_loss"]
-                        )
-                    if "value_loss" in metrics:
-                        continual_metrics.setdefault(game_name + "_value_loss", []).append(
-                            metrics["value_loss"]
-                        )
-                    if "entropy" in metrics:
-                        continual_metrics.setdefault(game_name + "_entropy", []).append(
-                            metrics["entropy"]
-                        )
-                    if "ewc_loss" in metrics:
-                        continual_metrics.setdefault(game_name + "_ewc_loss", []).append(
-                            metrics["ewc_loss"]
-                        )
-
-                    buffer.reset()
-
-                pbar.update(collected_steps)
+        pbar.close()
 
         if episode_rewards:
             continual_metrics.setdefault(game_name + "_episode_reward", []).extend(episode_rewards)
@@ -388,8 +346,6 @@ def train_continual(
                 sample_batch = buffer.sample(min(batch_size, 100))
             elif algorithm == "ppo":
                 sample_batch = last_rollout_data
-                if sample_batch is None and len(buffer) > 0:
-                    sample_batch = buffer.get_batch()
 
             ewc_diagnostics[game_name] = agent.consolidate_weights(sample_batch)
             print(f"Weights consolidated for EWC: {ewc_diagnostics[game_name]}")
@@ -416,6 +372,8 @@ def train_continual(
         "ewc_lambda": ewc_lambda if use_ewc else None,
         "steps_per_game": steps_per_game,
         "num_envs": num_envs,
+        "env_backend": env_backend if algorithm == "ppo" else None,
+        "compile_ppo": compile_ppo if algorithm == "ppo" else None,
         "eval_episodes": eval_episodes,
         "seed": seed,
         "ewc_diagnostics": ewc_diagnostics if use_ewc else None,
@@ -446,6 +404,8 @@ if __name__ == "__main__":
     parser.add_argument("--steps-per-game", type=int, default=50000)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-envs", type=int, default=1)
+    parser.add_argument("--env-backend", choices=("sync", "async"), default="sync")
+    parser.add_argument("--compile-ppo", action="store_true")
     parser.add_argument("--eval-episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -462,6 +422,8 @@ if __name__ == "__main__":
         steps_per_game=args.steps_per_game,
         batch_size=args.batch_size,
         num_envs=args.num_envs,
+        env_backend=args.env_backend,
+        compile_ppo=args.compile_ppo,
         eval_episodes=args.eval_episodes,
         save_video=args.save_video,
         seed=args.seed,

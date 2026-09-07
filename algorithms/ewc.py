@@ -47,6 +47,9 @@ class EWCWrapper:
         self.task_weights: dict[int, dict[str, torch.Tensor]] = {}
         self.task_fisher: dict[int, dict[str, torch.Tensor]] = {}
         self.task_fisher_summary: dict[int, dict] = {}
+        self.aggregated_fisher: dict[str, torch.Tensor] = {}
+        self.aggregated_mean: dict[str, torch.Tensor] = {}
+        self.aggregated_correction: dict[str, torch.Tensor] = {}
         self.current_task_id = 0
 
     def _collect_regularized_params(self) -> dict[str, torch.Tensor]:
@@ -181,22 +184,73 @@ class EWCWrapper:
         self.task_weights[task_id] = weights
         self.task_fisher[task_id] = fisher
         self.task_fisher_summary[task_id] = diagnostic
+        self._accumulate_task(weights, fisher)
         self.current_task_id += 1
         return diagnostic
 
+    def _accumulate_task(
+        self,
+        weights: dict[str, torch.Tensor],
+        fisher: dict[str, torch.Tensor],
+    ) -> None:
+        """Update sufficient statistics for the sum of diagonal EWC penalties."""
+        with torch.no_grad():
+            for name, importance in fisher.items():
+                task_weight = weights[name]
+                if name not in self.aggregated_fisher:
+                    self.aggregated_fisher[name] = importance.detach().clone()
+                    self.aggregated_mean[name] = task_weight.detach().clone()
+                    self.aggregated_correction[name] = torch.zeros(
+                        (), device=importance.device, dtype=importance.dtype
+                    )
+                    continue
+
+                previous_importance = self.aggregated_fisher[name]
+                previous_mean = self.aggregated_mean[name]
+                total_importance = previous_importance + importance
+                nonzero = total_importance > 0
+                mean = torch.where(
+                    nonzero,
+                    (previous_importance * previous_mean + importance * task_weight)
+                    / total_importance.clamp_min(torch.finfo(total_importance.dtype).tiny),
+                    previous_mean,
+                )
+                correction = torch.where(
+                    nonzero,
+                    previous_importance
+                    * importance
+                    / total_importance.clamp_min(torch.finfo(total_importance.dtype).tiny)
+                    * (previous_mean - task_weight).square(),
+                    torch.zeros_like(total_importance),
+                ).sum()
+
+                self.aggregated_fisher[name] = total_importance
+                self.aggregated_mean[name] = mean
+                self.aggregated_correction[name] += correction
+
+    def _rebuild_aggregates(self) -> None:
+        """Reconstruct sufficient statistics when loading a legacy checkpoint."""
+        self.aggregated_fisher = {}
+        self.aggregated_mean = {}
+        self.aggregated_correction = {}
+        for task_id in sorted(self.task_weights):
+            self._accumulate_task(self.task_weights[task_id], self.task_fisher[task_id])
+
     def compute_ewc_loss(self) -> torch.Tensor:
-        """Compute the EWC penalty over all consolidated tasks."""
+        """Compute all consolidated penalties from task-independent sufficient statistics."""
         current_params = self._collect_regularized_params()
         penalty = torch.zeros((), device=self.agent.device)
 
-        for task_id, previous_params in self.task_weights.items():
-            fisher = self.task_fisher[task_id]
-            for name, parameter in current_params.items():
-                if name in previous_params:
-                    penalty = (
-                        penalty
-                        + (fisher[name] * (parameter - previous_params[name]).square()).sum()
-                    )
+        for name, parameter in current_params.items():
+            if name in self.aggregated_fisher:
+                penalty = (
+                    penalty
+                    + (
+                        self.aggregated_fisher[name]
+                        * (parameter - self.aggregated_mean[name]).square()
+                    ).sum()
+                    + self.aggregated_correction[name]
+                )
 
         return 0.5 * self.ewc_lambda * penalty
 
@@ -251,12 +305,15 @@ class EWCWrapper:
         """Save both the wrapped agent and EWC consolidation state."""
         torch.save(
             {
-                "format": "ewc-v1",
+                "format": "ewc-v2",
                 "agent": self.agent.checkpoint_state(),
                 "ewc_lambda": self.ewc_lambda,
                 "task_weights": self.task_weights,
                 "task_fisher": self.task_fisher,
                 "task_fisher_summary": self.task_fisher_summary,
+                "aggregated_fisher": self.aggregated_fisher,
+                "aggregated_mean": self.aggregated_mean,
+                "aggregated_correction": self.aggregated_correction,
                 "current_task_id": self.current_task_id,
             },
             path,
@@ -265,7 +322,7 @@ class EWCWrapper:
     def load(self, path: str) -> None:
         """Restore an EWC checkpoint, accepting old agent-only checkpoints."""
         checkpoint = safe_torch_load(path, map_location=self.device)
-        if checkpoint.get("format") != "ewc-v1":
+        if checkpoint.get("format") not in {"ewc-v1", "ewc-v2"}:
             self.agent.load_checkpoint_state(checkpoint)
             return
 
@@ -275,3 +332,9 @@ class EWCWrapper:
         self.task_fisher = checkpoint["task_fisher"]
         self.task_fisher_summary = checkpoint.get("task_fisher_summary", {})
         self.current_task_id = checkpoint["current_task_id"]
+        if checkpoint.get("format") == "ewc-v2":
+            self.aggregated_fisher = checkpoint["aggregated_fisher"]
+            self.aggregated_mean = checkpoint["aggregated_mean"]
+            self.aggregated_correction = checkpoint["aggregated_correction"]
+        else:
+            self._rebuild_aggregates()

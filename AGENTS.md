@@ -40,6 +40,14 @@
   in notebook cells.
 - Keep single-task, sequential continual-learning, and joint multi-task training protocols
   separate unless a genuinely shared maintained contract has been identified.
+- Keep shared PPO collection and optimization mechanics in `training/ppo_runtime.py`; do not copy
+  rollout loops back into the protocol scripts. The synchronous/eager path is the readable default,
+  while `--env-backend async --compile-ppo` selects the optimized path.
+- Shared-memory vector environments must store the pre-step observation before stepping and recover
+  Gymnasium's `final_obs` under same-step autoreset. Never bootstrap a truncated transition from its
+  reset observation.
+- Keep PPO transition budgets exact across environments and compute GAE independently along each
+  environment axis. Do not change the minibatch size when claiming a code-level speedup.
 - Extract repeated evaluation, serialization, and plotting behavior when semantics are identical;
   avoid generic wrappers that only hide protocol differences.
 - Use `scripts/run_experiments.py` for experiment matrices. Add Python options or job definitions
@@ -48,6 +56,9 @@
   across Atari games with different reward scales.
 - EWC is a stability regularizer, not a task-conflict solver. Report retention, new-task
   plasticity, and the stage-by-task score matrix separately.
+- Use `scripts/benchmark_ppo_runtime.py` for PPO performance comparisons. Report warmup policy,
+  timed transition count, minibatch size, hardware, throughput, and PyTorch allocated/reserved
+  memory; do not infer learning quality from throughput.
 
 ## Validation
 

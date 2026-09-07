@@ -11,8 +11,9 @@ from algorithms import (
     DQNAgent,
     PPOAgent,
 )
-from environments import AtariEnv, SyncVectorAtariEnv
-from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
+from environments import AtariEnv, make_vector_atari_env
+from training import PPOCollector, PPOLearner, configure_ppo_runtime
+from utils import MetricsPlotter, ReplayBuffer, VideoRecorder, seed_everything
 
 
 def train_single_game(
@@ -21,6 +22,8 @@ def train_single_game(
     num_steps: int = 500000,
     batch_size: int = 32,
     num_envs: int = 1,
+    env_backend: str = "sync",
+    compile_ppo: bool = False,
     save_video: bool = False,
     seed: int = 0,
 ):
@@ -31,13 +34,24 @@ def train_single_game(
         raise ValueError("num_envs must be positive")
     if algorithm != "ppo" and num_envs != 1:
         raise ValueError("num_envs greater than one is currently supported only for PPO")
+    if env_backend not in {"sync", "async"}:
+        raise ValueError("env_backend must be 'sync' or 'async'")
+    if algorithm != "ppo" and (env_backend != "sync" or compile_ppo):
+        raise ValueError("env_backend and compile_ppo options are supported only for PPO")
     if algorithm == "ppo" and num_steps % num_envs != 0:
         raise ValueError("PPO steps must be divisible by num_envs")
+    configure_ppo_runtime(env_backend)
     seed_everything(seed)
     print(f"Training {algorithm.upper()} on {game_name}")
 
     env = (
-        SyncVectorAtariEnv(game_name, num_envs, render_mode=None, seed=seed)
+        make_vector_atari_env(
+            game_name,
+            num_envs,
+            backend=env_backend,
+            render_mode=None,
+            seed=seed,
+        )
         if algorithm == "ppo"
         else AtariEnv(game_name, render_mode=None, seed=seed)
     )
@@ -75,7 +89,6 @@ def train_single_game(
         rollout_length = 128
         update_epochs = 4
         minibatch_size = batch_size
-        buffer = RolloutBuffer(capacity=rollout_length, num_envs=num_envs)
 
     run_name = f"{game_name}_{algorithm}"
     exp_dir = Path("outputs") / "single" / run_name / f"seed-{seed}"
@@ -92,8 +105,28 @@ def train_single_game(
     metrics_plotter = MetricsPlotter()
     episode_rewards = []
 
-    state = env.reset()
-    episode_reward = [0.0] * num_envs if algorithm == "ppo" else 0.0
+    if algorithm == "ppo":
+        learner = PPOLearner(
+            agent,
+            update_epochs=update_epochs,
+            minibatch_size=minibatch_size,
+            compile_policy=compile_ppo,
+        )
+
+        def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
+            if video_recorder is not None and transition_count % 2 == 0:
+                video_recorder.add_frame(frame.cpu().numpy())
+
+        collector = PPOCollector(
+            env,
+            learner,
+            rollout_length=rollout_length,
+            frame_callback=record_ppo_frame if video_recorder is not None else None,
+        )
+        print(f"PPO runtime: env_backend={env_backend}, compiled={compile_ppo}")
+    else:
+        state = env.reset()
+        episode_reward = 0.0
     episode_count = 0
 
     pbar = tqdm(total=num_steps, desc="Training")
@@ -136,81 +169,20 @@ def train_single_game(
                 state = env.reset()
 
         else:
-            collected_steps = 0
-            for rollout_step in range(rollout_length):
-                if step >= num_steps:
-                    break
+            rollout = collector.collect(num_steps - step)
+            metrics = learner.update(rollout)
+            step += rollout.transition_count
+            episode_count = collector.episode_count
+            episode_rewards.extend(rollout.episode_returns)
+            for reward_value in rollout.episode_returns:
+                metrics_plotter.add_metric("episode_reward", reward_value)
 
-                with torch.inference_mode():
-                    state_tensor = state.to(agent.device)
-                    action_tensor, log_prob, value = agent.sample_action_and_value(state_tensor)
-                actions = action_tensor.cpu()
-
-                next_state, rewards, terminated, truncated = env.step(actions)
-                episode_done = terminated | truncated
-                training_rewards = rewards.clone()
-                bootstrap_mask = truncated & ~terminated
-                if bootstrap_mask.any():
-                    with torch.inference_mode():
-                        truncated_values = agent.get_value(
-                            next_state[bootstrap_mask].to(agent.device)
-                        ).flatten()
-                    training_rewards[bootstrap_mask] += agent.gamma * truncated_values.cpu()
-
-                if num_envs == 1:
-                    buffer.add(
-                        state[0],
-                        actions.item(),
-                        training_rewards.item(),
-                        episode_done.item(),
-                        log_prob.item(),
-                        value.item(),
-                    )
-                else:
-                    buffer.add(
-                        state,
-                        actions,
-                        training_rewards,
-                        episode_done,
-                        log_prob.cpu(),
-                        value.flatten().cpu(),
-                    )
-
-                if video_recorder is not None and step % 2 == 0:
-                    frame = state[0, 0].cpu().numpy()
-                    video_recorder.add_frame(frame)
-
-                for env_index in range(num_envs):
-                    episode_reward[env_index] += rewards[env_index].item()
-                    if episode_done[env_index]:
-                        reward_value = episode_reward[env_index]
-                        episode_rewards.append(reward_value)
-                        metrics_plotter.add_metric("episode_reward", reward_value)
-                        episode_reward[env_index] = 0.0
-                        episode_count += 1
-
-                state = env.reset_done(next_state, episode_done)
-                step += num_envs
-                collected_steps += num_envs
-
-            if buffer.ready_for_update(final=step >= num_steps):
-                with torch.inference_mode():
-                    next_value = agent.get_value(state.to(agent.device)).flatten()
-
-                rollout_data = buffer.get_batch()
-                metrics = agent.update(rollout_data, next_value, update_epochs, minibatch_size)
-                pbar.set_postfix({**metrics, "episodes": episode_count})
-
-                if "policy_loss" in metrics:
-                    metrics_plotter.add_metric("policy_loss", metrics["policy_loss"])
-                if "value_loss" in metrics:
-                    metrics_plotter.add_metric("value_loss", metrics["value_loss"])
-                if "entropy" in metrics:
-                    metrics_plotter.add_metric("entropy", metrics["entropy"])
-
-                buffer.reset()
-
-            pbar.update(collected_steps)
+            pbar.set_postfix({**metrics, "episodes": episode_count})
+            for metric_name in ("policy_loss", "value_loss", "entropy"):
+                if metric_name in metrics:
+                    metrics_plotter.add_metric(metric_name, metrics[metric_name])
+            pbar.update(rollout.transition_count)
+    pbar.close()
 
     if video_recorder is not None:
         video_recorder.save(format="mp4")
@@ -268,6 +240,8 @@ if __name__ == "__main__":
     parser.add_argument("--steps", type=int, default=500000)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-envs", type=int, default=1)
+    parser.add_argument("--env-backend", choices=("sync", "async"), default="sync")
+    parser.add_argument("--compile-ppo", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
@@ -281,6 +255,8 @@ if __name__ == "__main__":
         num_steps=args.steps,
         batch_size=args.batch_size,
         num_envs=args.num_envs,
+        env_backend=args.env_backend,
+        compile_ppo=args.compile_ppo,
         save_video=args.save_video,
         seed=args.seed,
     )
