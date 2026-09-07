@@ -40,7 +40,12 @@ class ReplayBuffer:
             }
         )
 
-    def sample(self, batch_size: int) -> dict[str, torch.Tensor]:
+    def sample(
+        self,
+        batch_size: int,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> dict[str, torch.Tensor]:
         """Sample a batch of experiences."""
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -48,7 +53,8 @@ class ReplayBuffer:
             raise ValueError("Cannot sample from an empty replay buffer")
 
         actual_batch_size = min(batch_size, len(self.buffer))
-        indices = np.random.choice(len(self.buffer), actual_batch_size, replace=False)
+        choice = np.random.choice if rng is None else rng.choice
+        indices = choice(len(self.buffer), actual_batch_size, replace=False)
         batch = [self.buffer[i] for i in indices]
 
         states = torch.from_numpy(np.stack([b["state"] for b in batch]))

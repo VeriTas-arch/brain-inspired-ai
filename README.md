@@ -286,6 +286,12 @@ weights are squared per-sample TD-MSE gradients and are therefore labeled as a s
 than a Fisher estimate. These boundaries are not evidence that value-function preservation is
 unnecessary.
 
+Fisher and consolidation-batch sampling use task-local random generators. They do not advance the
+global training random streams, so adding EWC does not silently change later task-head
+initialization or exploration solely because the method performs an extra sampling pass. Reports
+record the ordered games, per-task environment seeds, and minibatch size alongside the evaluation
+protocol.
+
 The wrapper retains per-task snapshots for diagnostics and checkpoint provenance, but evaluates the
 sum of prior diagonal penalties from online sufficient statistics. Consequently, the regularizer's
 per-minibatch parameter traversal no longer grows linearly with the number of consolidated tasks.

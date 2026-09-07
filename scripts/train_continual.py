@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -342,7 +343,8 @@ def train_continual(
         if use_ewc:
             sample_batch = None
             if algorithm == "dqn" and buffer.is_ready(batch_size):
-                sample_batch = buffer.sample(min(batch_size, 100))
+                fisher_rng = np.random.default_rng([seed, game_idx])
+                sample_batch = buffer.sample(min(batch_size, 100), rng=fisher_rng)
             elif algorithm == "ppo":
                 sample_batch = last_rollout_data
 
@@ -367,15 +369,18 @@ def train_continual(
 
     evaluation_report = {
         "algorithm": algorithm,
+        "games": games,
         "use_ewc": use_ewc,
         "ewc_lambda": ewc_lambda if use_ewc else None,
         "steps_per_game": steps_per_game,
+        "batch_size": batch_size,
         "num_envs": num_envs,
         "env_backend": env_backend if algorithm == "ppo" else None,
         "compile_ppo": compile_ppo if algorithm == "ppo" else None,
         "eval_episodes": eval_episodes,
         "eval_max_steps": eval_max_steps,
         "seed": seed,
+        "task_seeds": game_seeds,
         "ewc_diagnostics": ewc_diagnostics if use_ewc else None,
         **build_evaluation_report(eval_history, games),
     }

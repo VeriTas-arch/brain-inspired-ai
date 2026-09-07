@@ -137,7 +137,12 @@ class EWCWrapper:
         params = self._collect_regularized_params()
         fisher = {name: torch.zeros_like(parameter) for name, parameter in params.items()}
         sample_count = min(num_samples, len(batch["states"]))
-        indices = torch.randperm(len(batch["states"]))[:sample_count].tolist()
+        sampling_generator = torch.Generator(device="cpu")
+        sampling_generator.manual_seed(self.current_task_id)
+        indices = torch.randperm(
+            len(batch["states"]),
+            generator=sampling_generator,
+        )[:sample_count].tolist()
         is_dqn = "next_states" in batch
 
         for index in indices:

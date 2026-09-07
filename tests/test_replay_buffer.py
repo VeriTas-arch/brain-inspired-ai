@@ -27,3 +27,17 @@ def test_oversized_sample_returns_every_transition_once() -> None:
     batch = buffer.sample(10)
 
     assert sorted(batch["actions"].tolist()) == [0, 1]
+
+
+def test_local_sampling_generator_does_not_advance_training_rng() -> None:
+    buffer = ReplayBuffer(capacity=2)
+    state = torch.zeros((4, 84, 84), dtype=torch.uint8)
+    buffer.add(state, 0, 0.0, state, False)
+    buffer.add(state, 1, 0.0, state, False)
+
+    np.random.seed(17)
+    expected = np.random.random()
+    np.random.seed(17)
+    buffer.sample(1, rng=np.random.default_rng(23))
+
+    assert np.random.random() == expected

@@ -90,6 +90,21 @@ def test_importance_averages_per_sample_squared_gradients() -> None:
     torch.testing.assert_close(fisher["network.bias"][0], torch.tensor(4.0))
 
 
+def test_importance_sampling_does_not_advance_training_rng() -> None:
+    agent = TinyDQN()
+    batch = {
+        name: values.repeat((60,) + (1,) * (values.ndim - 1))
+        for name, values in dqn_batch().items()
+    }
+
+    torch.manual_seed(17)
+    expected = torch.rand(3)
+    torch.manual_seed(17)
+    EWCWrapper(agent).compute_parameter_importance(batch, num_samples=2)
+
+    torch.testing.assert_close(torch.rand(3), expected)
+
+
 def test_ppo_fisher_does_not_require_dqn_transition_fields() -> None:
     wrapper = EWCWrapper(TinyPPO())
     fisher = wrapper.compute_parameter_importance(
