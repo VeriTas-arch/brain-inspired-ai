@@ -67,3 +67,52 @@ def test_ppo_update_accepts_uint8_rollout_states() -> None:
     )
 
     assert all(math.isfinite(value) for value in metrics.values())
+
+
+def test_ppo_update_rejects_invalid_optimization_sizes() -> None:
+    agent = PPOAgent(state_dim=4, action_dim=2, device="cpu")
+    rollout = {
+        "states": torch.zeros((1, 4, 84, 84), dtype=torch.uint8),
+        "actions": torch.zeros(1, dtype=torch.long),
+        "rewards": torch.zeros(1),
+        "dones": torch.ones(1),
+        "log_probs": torch.zeros(1),
+        "values": torch.zeros(1),
+    }
+
+    for update_epochs, minibatch_size in ((0, 1), (1, 0)):
+        try:
+            agent.update(
+                rollout,
+                next_value=torch.zeros(1),
+                update_epochs=update_epochs,
+                minibatch_size=minibatch_size,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid PPO optimization sizes must be rejected")
+
+
+def test_ppo_metrics_average_all_minibatches() -> None:
+    torch.manual_seed(11)
+    agent = PPOAgent(state_dim=4, action_dim=2, lr=0.0, device="cpu")
+    states = torch.randint(256, (4, 4, 84, 84), dtype=torch.uint8)
+    with torch.no_grad():
+        actions, log_probs, _, values = agent.get_action_and_value(states)
+
+    metrics = agent.update(
+        {
+            "states": states,
+            "actions": actions,
+            "rewards": torch.tensor([0.0, 0.0, 0.0, 1.0]),
+            "dones": torch.tensor([0.0, 0.0, 0.0, 1.0]),
+            "log_probs": log_probs,
+            "values": values.flatten(),
+        },
+        next_value=torch.zeros(1),
+        update_epochs=1,
+        minibatch_size=2,
+    )
+
+    assert abs(metrics["policy_loss"]) < 1e-6

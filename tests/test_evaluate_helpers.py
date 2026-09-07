@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from scripts.evaluate import _infer_eval_dir_from_model_path, _run_episodes, _set_agent_eval
@@ -39,10 +40,9 @@ def test_run_episodes_is_deterministic_and_honors_episode_boundaries() -> None:
     assert agent.deterministic_flags == [True, True, True, True]
 
 
-def test_run_episodes_honors_max_steps() -> None:
-    rewards = _run_episodes(_FakeAgent(), _FakeEnv(), episodes=1, max_steps=1)
-
-    assert rewards == [1.0]
+def test_run_episodes_rejects_incomplete_episode_at_max_steps() -> None:
+    with pytest.raises(RuntimeError, match="did not finish within 1 steps"):
+        _run_episodes(_FakeAgent(), _FakeEnv(), episodes=1, max_steps=1)
 
 
 def test_set_agent_eval_switches_owned_modules() -> None:

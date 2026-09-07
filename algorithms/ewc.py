@@ -7,12 +7,12 @@ from torch.distributions import Categorical
 from .base import BaseAgent, safe_torch_load
 
 
-def summarize_fisher_information(
-    fisher: dict[str, torch.Tensor],
+def summarize_parameter_importance(
+    importance: dict[str, torch.Tensor],
 ) -> dict[str, dict[str, float | int]]:
-    """Summarize diagonal Fisher coverage by top-level module."""
+    """Summarize diagonal parameter-importance coverage by top-level module."""
     modules: dict[str, dict[str, float | int]] = {}
-    for name, values in fisher.items():
+    for name, values in importance.items():
         module = name.split(".", 1)[0]
         summary = modules.setdefault(
             module,
@@ -20,15 +20,15 @@ def summarize_fisher_information(
                 "parameter_tensors": 0,
                 "elements": 0,
                 "nonzero_elements": 0,
-                "fisher_sum": 0.0,
-                "fisher_max": 0.0,
+                "importance_sum": 0.0,
+                "importance_max": 0.0,
             },
         )
         summary["parameter_tensors"] += 1
         summary["elements"] += values.numel()
         summary["nonzero_elements"] += torch.count_nonzero(values).item()
-        summary["fisher_sum"] += values.sum().item()
-        summary["fisher_max"] = max(float(summary["fisher_max"]), values.max().item())
+        summary["importance_sum"] += values.sum().item()
+        summary["importance_max"] = max(float(summary["importance_max"]), values.max().item())
 
     for summary in modules.values():
         elements = int(summary["elements"])
@@ -74,13 +74,10 @@ class EWCWrapper:
             add_module(f"heads.{current_task}", heads[current_task])
 
         actors = getattr(self.agent, "actors", None)
-        critics = getattr(self.agent, "critics", None)
         if actors is not None and current_task in actors:
             add_module(f"actors.{current_task}", actors[current_task])
-            add_module(f"critics.{current_task}", critics[current_task])
         else:
             add_module("actor", getattr(self.agent, "actor", None))
-            add_module("critic", getattr(self.agent, "critic", None))
 
         return params
 
@@ -117,18 +114,22 @@ class EWCWrapper:
 
         return -Categorical(logits=logits).log_prob(actions).mean()
 
-    def compute_fisher_information(
+    def compute_parameter_importance(
         self,
         batch: dict[str, torch.Tensor],
         num_samples: int = 100,
     ) -> dict[str, torch.Tensor]:
-        """Estimate a diagonal empirical Fisher from per-sample squared gradients."""
+        """Estimate diagonal importance from per-sample squared gradients.
+
+        PPO uses a policy empirical Fisher. DQN uses a squared TD-loss-gradient
+        surrogate because a Q function does not define a policy likelihood.
+        """
         if "states" not in batch or "actions" not in batch:
-            raise ValueError("Fisher estimation requires states and actions")
+            raise ValueError("Importance estimation requires states and actions")
         if len(batch["states"]) == 0:
-            raise ValueError("Fisher estimation requires a non-empty batch")
+            raise ValueError("Importance estimation requires a non-empty batch")
         if num_samples <= 0:
-            raise ValueError("Fisher estimation requires at least one sample")
+            raise ValueError("Importance estimation requires at least one sample")
 
         params = self._collect_regularized_params()
         fisher = {name: torch.zeros_like(parameter) for name, parameter in params.items()}
@@ -163,16 +164,19 @@ class EWCWrapper:
             raise RuntimeError("Agent has no trainable parameters to consolidate")
 
         weights = {name: parameter.detach().clone() for name, parameter in params.items()}
-        fisher = self.compute_fisher_information(batch)
+        fisher = self.compute_parameter_importance(batch)
+        module_summary = summarize_parameter_importance(fisher)
         task_id = self.current_task_id
         diagnostic = {
             "estimator": (
-                "td_mse_squared_gradient"
+                "td_mse_squared_gradient_importance"
                 if "next_states" in batch
                 else "policy_nll_empirical_fisher"
             ),
+            "is_empirical_fisher": "next_states" not in batch,
             "sample_count": min(100, len(batch["states"])),
-            "modules": summarize_fisher_information(fisher),
+            "protected_modules": list(module_summary),
+            "modules": module_summary,
         }
         self.task_weights[task_id] = weights
         self.task_fisher[task_id] = fisher

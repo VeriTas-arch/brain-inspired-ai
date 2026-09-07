@@ -11,6 +11,8 @@ from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgen
 from environments import AtariEnv
 from utils import VideoRecorder, seed_everything
 
+DEFAULT_MAX_EPISODE_STEPS = 30_000
+
 
 def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:
     """Infer the evaluation directory from the checkpoint name."""
@@ -60,7 +62,7 @@ def _run_episodes(agent, env: AtariEnv, episodes: int, max_steps: int) -> list[f
 
     rewards = []
     with torch.no_grad():
-        for _ in range(episodes):
+        for episode_index in range(episodes):
             state = env.reset()
             done = False
             episode_reward = 0.0
@@ -71,6 +73,11 @@ def _run_episodes(agent, env: AtariEnv, episodes: int, max_steps: int) -> list[f
                 done = terminated or truncated
                 episode_reward += reward
                 steps += 1
+            if not done:
+                raise RuntimeError(
+                    f"Evaluation episode {episode_index + 1} did not finish within "
+                    f"{max_steps} steps; increase --max-steps instead of recording a partial score"
+                )
             rewards.append(episode_reward)
     return rewards
 
@@ -346,7 +353,12 @@ def main() -> None:
     parser.add_argument("--game", help="Game name for single mode (e.g., Pong-v5)")
     parser.add_argument("--games", nargs="*", help="List of games for continual/multitask mode")
     parser.add_argument("--episodes", type=int, default=5, help="Episodes per game")
-    parser.add_argument("--max-steps", type=int, default=10000, help="Max steps per episode")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=DEFAULT_MAX_EPISODE_STEPS,
+        help="Maximum agent steps per episode; incomplete episodes are rejected",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--ewc", action="store_true", help="Use EWC wrapper in continual mode")
     parser.add_argument("--ewc-lambda", type=float, default=0.4, help="EWC lambda (if --ewc)")

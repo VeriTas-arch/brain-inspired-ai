@@ -1,6 +1,13 @@
 """Tests for the unified Python experiment runner."""
 
-from scripts.run_experiments import DEFAULT_GAMES, _job_environment, build_jobs, main
+from scripts.evaluate import DEFAULT_MAX_EPISODE_STEPS as EVALUATE_MAX_EPISODE_STEPS
+from scripts.run_experiments import (
+    DEFAULT_GAMES,
+    DEFAULT_MAX_EPISODE_STEPS,
+    _job_environment,
+    build_jobs,
+    main,
+)
 
 
 def _default_jobs(phase: str, suite: str):
@@ -45,6 +52,9 @@ def test_default_evaluation_matrices_preserve_checkpoint_and_output_paths() -> N
     assert "checkpoints/continual/ppo_ewcTrue/seed-0.pt" in continual[-1].arguments
     assert "--ewc" in continual[-1].arguments
     assert "checkpoints/multitask/dqn/seed-0.pt" in multitask[0].arguments
+    max_steps_index = single[0].arguments.index("--max-steps")
+    assert single[0].arguments[max_steps_index + 1] == str(DEFAULT_MAX_EPISODE_STEPS)
+    assert DEFAULT_MAX_EPISODE_STEPS == EVALUATE_MAX_EPISODE_STEPS
 
 
 def test_cpu_dry_run_prints_commands_without_launching(capsys) -> None:

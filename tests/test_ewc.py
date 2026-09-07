@@ -1,4 +1,4 @@
-"""Regression tests for EWC Fisher estimation and persistence."""
+"""Regression tests for EWC importance estimation and persistence."""
 
 from copy import deepcopy
 
@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from algorithms import BaseAgent, EWCWrapper, summarize_fisher_information
+from algorithms import BaseAgent, EWCWrapper, summarize_parameter_importance
 
 
 class TinyDQN(BaseAgent):
@@ -77,14 +77,14 @@ def dqn_batch() -> dict[str, torch.Tensor]:
     }
 
 
-def test_fisher_averages_per_sample_squared_gradients() -> None:
+def test_importance_averages_per_sample_squared_gradients() -> None:
     agent = TinyDQN()
     with torch.no_grad():
         agent.network.weight.zero_()
         agent.network.bias.zero_()
         agent.target_network.load_state_dict(agent.network.state_dict())
 
-    fisher = EWCWrapper(agent).compute_fisher_information(dqn_batch(), num_samples=2)
+    fisher = EWCWrapper(agent).compute_parameter_importance(dqn_batch(), num_samples=2)
 
     torch.testing.assert_close(fisher["network.weight"][0, 0], torch.tensor(4.0))
     torch.testing.assert_close(fisher["network.bias"][0], torch.tensor(4.0))
@@ -92,7 +92,7 @@ def test_fisher_averages_per_sample_squared_gradients() -> None:
 
 def test_ppo_fisher_does_not_require_dqn_transition_fields() -> None:
     wrapper = EWCWrapper(TinyPPO())
-    fisher = wrapper.compute_fisher_information(
+    fisher = wrapper.compute_parameter_importance(
         {"states": torch.ones(2, 2), "actions": torch.tensor([0, 1])},
         num_samples=2,
     )
@@ -100,10 +100,23 @@ def test_ppo_fisher_does_not_require_dqn_transition_fields() -> None:
     assert "network.weight" in fisher
     assert "actor.weight" in fisher
 
-    summary = summarize_fisher_information(fisher)
+    summary = summarize_parameter_importance(fisher)
     assert summary["network"]["nonzero_fraction"] > 0
     assert summary["actor"]["nonzero_fraction"] > 0
-    assert summary["critic"]["nonzero_fraction"] == 0
+    assert "critic" not in summary
+
+
+def test_dqn_and_ppo_importance_estimators_are_named_distinctly() -> None:
+    dqn_diagnostic = EWCWrapper(TinyDQN()).consolidate_weights(dqn_batch())
+    ppo_diagnostic = EWCWrapper(TinyPPO()).consolidate_weights(
+        {"states": torch.ones(2, 2), "actions": torch.tensor([0, 1])}
+    )
+
+    assert dqn_diagnostic["estimator"] == "td_mse_squared_gradient_importance"
+    assert not dqn_diagnostic["is_empirical_fisher"]
+    assert ppo_diagnostic["estimator"] == "policy_nll_empirical_fisher"
+    assert ppo_diagnostic["is_empirical_fisher"]
+    assert ppo_diagnostic["protected_modules"] == ["network", "actor"]
 
 
 def test_ewc_checkpoint_restores_consolidated_state(tmp_path) -> None:

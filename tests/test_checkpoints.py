@@ -19,6 +19,7 @@ def test_multihead_dqn_checkpoint_restores_heads_and_optimizer(tmp_path) -> None
         "dones": torch.tensor([0.0, 1.0]),
     }
     source.update(batch)
+    assert source.task_epsilons["breakout"] < source.task_epsilons["pong"]
 
     checkpoint = tmp_path / "multihead-dqn.pt"
     source.save(str(checkpoint))
@@ -28,6 +29,7 @@ def test_multihead_dqn_checkpoint_restores_heads_and_optimizer(tmp_path) -> None
 
     assert list(restored.heads) == ["pong", "breakout"]
     assert restored.current_task == "breakout"
+    assert restored.task_epsilons == source.task_epsilons
     assert len(restored.optimizer.param_groups) == len(source.optimizer.param_groups)
     for task_id in source.heads:
         for expected, actual in zip(

@@ -22,6 +22,7 @@ DEFAULT_TRAINING_STEPS = {
     "continual": 500_000,
     "multitask": 50_000,
 }
+DEFAULT_MAX_EPISODE_STEPS = 30_000
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,7 @@ def build_jobs(
     algorithms: Sequence[str],
     steps: int | None = None,
     episodes: int = 10,
-    max_steps: int = 10_000,
+    max_steps: int = DEFAULT_MAX_EPISODE_STEPS,
     ewc_lambda: float = 0.4,
     ewc_mode: str = "both",
     seed: int = 0,
@@ -391,7 +392,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--steps", type=int, help="Training steps or steps per game")
     parser.add_argument("--episodes", type=int, default=10, help="Evaluation episodes per game")
-    parser.add_argument("--max-steps", type=int, default=10_000, help="Maximum steps per episode")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=DEFAULT_MAX_EPISODE_STEPS,
+        help="Maximum agent steps per episode; incomplete episodes are rejected",
+    )
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument("--seed", type=int, default=0)
     seed_group.add_argument("--seeds", type=int, nargs="+", help="Expand the matrix over seeds")

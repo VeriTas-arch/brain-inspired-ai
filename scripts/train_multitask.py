@@ -29,6 +29,8 @@ def train_multitask(
     """Train agent on multiple games jointly (random task sampling per iteration)."""
     if games is None:
         games = ["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
     seed_everything(seed)
 
     print(f"Multi-task Joint Training: {algorithm.upper()} on {games}")
@@ -67,7 +69,7 @@ def train_multitask(
         train_frequency = 1
         rollout_length = 128
         update_epochs = 4
-        minibatch_size = 32
+        minibatch_size = batch_size
         buffers = {game: RolloutBuffer(capacity=rollout_length) for game in games}
 
     # Register all tasks

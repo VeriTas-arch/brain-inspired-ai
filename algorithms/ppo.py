@@ -162,6 +162,13 @@ class PPOAgent(BaseAgent):
         regularizer: Callable[[], torch.Tensor] | None = None,
     ) -> dict[str, float]:
         """Update PPO with rollout data."""
+        if update_epochs <= 0:
+            raise ValueError("update_epochs must be positive")
+        if minibatch_size <= 0:
+            raise ValueError("minibatch_size must be positive")
+        if len(rollout_data["states"]) == 0:
+            raise ValueError("PPO update requires a non-empty rollout")
+
         states = rollout_data["states"].to(self.device)
         actions = rollout_data["actions"].to(self.device)
         old_log_probs = rollout_data["log_probs"].to(self.device)
@@ -180,7 +187,12 @@ class PPOAgent(BaseAgent):
         b_returns = returns.flatten()
         b_values = old_values.flatten()
 
+        policy_losses = []
+        value_losses = []
+        entropies = []
+        approx_kls = []
         clipfracs = []
+        regularization_losses = []
         parameters = [
             *self.network.parameters(),
             *self.actor.parameters(),
@@ -232,17 +244,23 @@ class PPOAgent(BaseAgent):
 
                 with torch.no_grad():
                     approx_kl = ((ratio - 1) - logratio).mean()
+                    policy_losses.append(pg_loss.item())
+                    value_losses.append(v_loss.item())
+                    entropies.append(entropy_loss.item())
+                    approx_kls.append(approx_kl.item())
                     clipfracs.append(((ratio - 1.0).abs() > self.clip_coef).float().mean().item())
+                    if regularization_loss is not None:
+                        regularization_losses.append(regularization_loss.item())
 
         metrics = {
-            "policy_loss": pg_loss.item(),
-            "value_loss": v_loss.item(),
-            "entropy": entropy_loss.item(),
-            "approx_kl": approx_kl.item(),
+            "policy_loss": sum(policy_losses) / len(policy_losses),
+            "value_loss": sum(value_losses) / len(value_losses),
+            "entropy": sum(entropies) / len(entropies),
+            "approx_kl": sum(approx_kls) / len(approx_kls),
             "clipfrac": sum(clipfracs) / len(clipfracs),
         }
-        if regularizer is not None:
-            metrics["regularization_loss"] = regularization_loss.detach().item()
+        if regularization_losses:
+            metrics["regularization_loss"] = sum(regularization_losses) / len(regularization_losses)
         return metrics
 
 
@@ -397,6 +415,12 @@ class MultiHeadPPOAgent(BaseAgent):
             raise RuntimeError("Current task is not set before update().")
         if self.optimizer is None:
             raise RuntimeError("Optimizer has not been initialized; call register_task() first.")
+        if update_epochs <= 0:
+            raise ValueError("update_epochs must be positive")
+        if minibatch_size <= 0:
+            raise ValueError("minibatch_size must be positive")
+        if len(rollout_data["states"]) == 0:
+            raise ValueError("PPO update requires a non-empty rollout")
 
         states = rollout_data["states"].to(self.device)
         actions = rollout_data["actions"].to(self.device)
@@ -416,7 +440,12 @@ class MultiHeadPPOAgent(BaseAgent):
         b_returns = returns.flatten()
         b_values = old_values.flatten()
 
+        policy_losses = []
+        value_losses = []
+        entropies = []
+        approx_kls = []
         clipfracs = []
+        regularization_losses = []
         all_params = list(self.backbone.parameters())
         for actor in self.actors.values():
             all_params.extend(actor.parameters())
@@ -468,17 +497,23 @@ class MultiHeadPPOAgent(BaseAgent):
 
                 with torch.no_grad():
                     approx_kl = ((ratio - 1) - logratio).mean()
+                    policy_losses.append(pg_loss.item())
+                    value_losses.append(v_loss.item())
+                    entropies.append(entropy_loss.item())
+                    approx_kls.append(approx_kl.item())
                     clipfracs.append(((ratio - 1.0).abs() > self.clip_coef).float().mean().item())
+                    if regularization_loss is not None:
+                        regularization_losses.append(regularization_loss.item())
 
         metrics = {
-            "policy_loss": pg_loss.item(),
-            "value_loss": v_loss.item(),
-            "entropy": entropy_loss.item(),
-            "approx_kl": approx_kl.item(),
+            "policy_loss": sum(policy_losses) / len(policy_losses),
+            "value_loss": sum(value_losses) / len(value_losses),
+            "entropy": sum(entropies) / len(entropies),
+            "approx_kl": sum(approx_kls) / len(approx_kls),
             "clipfrac": sum(clipfracs) / len(clipfracs),
         }
-        if regularizer is not None:
-            metrics["regularization_loss"] = regularization_loss.detach().item()
+        if regularization_losses:
+            metrics["regularization_loss"] = sum(regularization_losses) / len(regularization_losses)
         return metrics
 
     def checkpoint_state(self) -> dict:

@@ -12,7 +12,7 @@ dependencies.
 
 - Single-task DQN and PPO training
 - Joint and sequential training with a shared visual backbone and game-specific output heads
-- EWC with a diagonal empirical Fisher estimated from per-sample squared gradients
+- Policy-only diagonal empirical EWC for PPO and squared TD-gradient importance for DQN
 - Deterministic evaluation of every previously seen task after each training stage
 - Complete checkpoints containing networks, task heads, optimizer state, and EWC state
 - pytest regression tests and Ruff static checks
@@ -132,7 +132,9 @@ Training videos are disabled by default and can be enabled with `--save-video`. 
 updating after 10,000 agent steps so the 50,000-step-per-task course configuration performs actual
 optimization. Continual training writes the stage-by-task score matrix and per-task forgetting to
 `outputs/continual/.../continual_evaluation.json`; configure the evaluation budget with
-`--eval-episodes`.
+`--eval-episodes`. Multi-head DQN maintains a separate exploration rate for each task, so a new task
+does not inherit the minimum epsilon reached by an earlier task. PPO uses `--batch-size` as its
+minibatch size as well as DQN's replay-sample size.
 
 ## Evaluation
 
@@ -173,6 +175,11 @@ python scripts/visualize_results.py --type continual --results-dir outputs
 
 Each game is displayed on a separate raw-reward axis. The script does not average raw rewards
 across games or infer that EWC is effective from an experiment directory name.
+
+Standalone evaluation allows up to 30,000 agent steps per episode by default, which exceeds ALE's
+wrapped 108,000-frame time limit at frame skip 4. If an explicit lower `--max-steps` limit is reached
+before the environment terminates or truncates, evaluation fails instead of recording a partial
+episode return as a complete score.
 
 ## Experiment Matrices
 
@@ -217,11 +224,13 @@ least the following quantities separately:
 - New-task plasticity: `R[j, j]`, measured immediately after training task `j`
 - Joint trade-off: retention and plasticity for the same method, rather than only a final average
 
-EWC runs also write `ewc_diagnostics` into `continual_evaluation.json`. It records the Fisher
-estimator, sample count, and nonzero coverage by module. The current PPO estimator is based on the
-policy negative log-likelihood, so it protects policy-sensitive backbone and actor directions but
-does not produce nonzero Fisher entries for the critic. Treat this as an explicit implementation
-boundary, not as evidence that value-function preservation is unnecessary.
+EWC runs also write `ewc_diagnostics` into `continual_evaluation.json`. It records the estimator,
+whether that estimator is an empirical Fisher, the protected modules, sample count, and nonzero
+coverage. PPO uses policy negative log-likelihood, so it protects policy-sensitive backbone and
+actor directions and explicitly excludes the critic. DQN has no policy likelihood; its importance
+weights are squared per-sample TD-MSE gradients and are therefore labeled as a surrogate rather
+than a Fisher estimate. These boundaries are not evidence that value-function preservation is
+unnecessary.
 
 Raw rewards from different Atari games have different scales and should not be summed and
 interpreted as a single performance measure. Training loss on random data is also not evidence of
@@ -255,8 +264,9 @@ pyproject.toml             single source of dependency and tool configuration
   optimized without introducing another acceleration framework.
 - Training handles Gymnasium `terminated` and `truncated` separately: DQN bootstraps time-limit
   transitions, while PPO bootstraps the final observation and then closes the GAE segment.
-- The current EWC implementation uses a diagonal empirical Fisher. It cannot represent parameter
-  correlations and does not guarantee positive transfer or resolution of task conflicts.
+- PPO EWC uses a policy-only diagonal empirical Fisher, while DQN uses diagonal squared TD-gradient
+  importance. Neither represents parameter correlations or guarantees positive transfer or
+  resolution of task conflicts.
 
 ## References
 

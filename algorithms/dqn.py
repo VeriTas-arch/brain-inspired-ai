@@ -186,9 +186,10 @@ class MultiHeadDQNAgent(BaseAgent):
 
         self.lr = lr
         self.gamma = gamma
-        self.epsilon = epsilon
+        self.initial_epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
+        self.task_epsilons: dict[str, float] = {}
         self.update_count = 0
         self.target_update_freq = 1000
         self.loss_fn = nn.MSELoss()
@@ -213,6 +214,7 @@ class MultiHeadDQNAgent(BaseAgent):
 
         self.heads[task_id] = head
         self.target_heads[task_id] = target_head
+        self.task_epsilons[task_id] = self.initial_epsilon
         if self.optimizer is None:
             self._rebuild_optimizer()
         else:
@@ -235,7 +237,8 @@ class MultiHeadDQNAgent(BaseAgent):
         if self.current_task is None:
             raise RuntimeError("Current task is not set before select_action().")
 
-        if not deterministic and np.random.random() < self.epsilon:
+        epsilon = self.task_epsilons[self.current_task]
+        if not deterministic and np.random.random() < epsilon:
             return np.random.randint(self.action_dim)
 
         with torch.no_grad():
@@ -291,9 +294,13 @@ class MultiHeadDQNAgent(BaseAgent):
             for name, src_head in self.heads.items():
                 self.target_heads[name].load_state_dict(src_head.state_dict())
 
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        epsilon = max(
+            self.epsilon_min,
+            self.task_epsilons[self.current_task] * self.epsilon_decay,
+        )
+        self.task_epsilons[self.current_task] = epsilon
 
-        metrics = {"loss": loss.item(), "epsilon": self.epsilon}
+        metrics = {"loss": loss.item(), "epsilon": epsilon}
         if regularization_loss is not None:
             metrics["regularization_loss"] = regularization_loss.detach().item()
         return metrics
@@ -308,7 +315,7 @@ class MultiHeadDQNAgent(BaseAgent):
             "task_action_dims": {name: head.out_features for name, head in self.heads.items()},
             "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
             "current_task": self.current_task,
-            "epsilon": self.epsilon,
+            "task_epsilons": self.task_epsilons,
             "update_count": self.update_count,
         }
 
@@ -337,7 +344,10 @@ class MultiHeadDQNAgent(BaseAgent):
 
         if checkpoint.get("optimizer") is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
-        self.epsilon = checkpoint.get("epsilon", self.epsilon)
+        if "task_epsilons" in checkpoint:
+            self.task_epsilons.update(checkpoint["task_epsilons"])
+        elif "epsilon" in checkpoint:
+            self.task_epsilons = {task_id: checkpoint["epsilon"] for task_id in self.task_epsilons}
         self.update_count = checkpoint.get("update_count", 0)
         current_task = checkpoint.get("current_task")
         if current_task in self.heads:

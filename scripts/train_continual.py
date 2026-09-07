@@ -102,6 +102,8 @@ def train_continual(
     """Train agent on multiple games sequentially."""
     if games is None:
         games = ["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
     if eval_episodes <= 0:
         raise ValueError("eval_episodes must be positive")
     seed_everything(seed)
@@ -168,7 +170,7 @@ def train_continual(
             train_frequency = 1
             rollout_length = 128
             update_epochs = 4
-            minibatch_size = 32
+            minibatch_size = batch_size
             buffer = RolloutBuffer(capacity=rollout_length)
 
         exp_dir = exp_root / game_name

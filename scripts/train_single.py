@@ -25,6 +25,8 @@ def train_single_game(
     seed: int = 0,
 ):
     """Train agent on a single game."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
     seed_everything(seed)
     print(f"Training {algorithm.upper()} on {game_name}")
 
@@ -62,7 +64,7 @@ def train_single_game(
         train_frequency = 1
         rollout_length = 128
         update_epochs = 4
-        minibatch_size = 32
+        minibatch_size = batch_size
         buffer = RolloutBuffer(capacity=rollout_length)
 
     run_name = f"{game_name}_{algorithm}"
