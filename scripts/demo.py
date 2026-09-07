@@ -1,11 +1,8 @@
 """Demo script showing framework usage."""
 
-import sys
 from pathlib import Path
 
 import torch
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from algorithms import DQNAgent, EWCWrapper, PPOAgent
 from utils import ReplayBuffer, RolloutBuffer

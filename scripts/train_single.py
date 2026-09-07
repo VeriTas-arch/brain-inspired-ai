@@ -1,17 +1,19 @@
 """Train a single agent on a single Atari game."""
 
 import argparse
-import sys
 from pathlib import Path
 
 import torch
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from algorithms import DEFAULT_DQN_LEARNING_STARTS, DQNAgent, PPOAgent
+from algorithms import (
+    DEFAULT_DQN_LEARNING_STARTS,
+    DQNAgent,
+    PPOAgent,
+    bootstrap_truncated_reward,
+)
 from environments import AtariEnv
-from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder
+from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
 
 
 def train_single_game(
@@ -20,11 +22,13 @@ def train_single_game(
     num_steps: int = 500000,
     batch_size: int = 32,
     save_video: bool = False,
+    seed: int = 0,
 ):
     """Train agent on a single game."""
+    seed_everything(seed)
     print(f"Training {algorithm.upper()} on {game_name}")
 
-    env = AtariEnv(game_name, render_mode=None)
+    env = AtariEnv(game_name, render_mode=None, seed=seed)
 
     if algorithm == "dqn":
         agent = DQNAgent(
@@ -61,7 +65,8 @@ def train_single_game(
         minibatch_size = 32
         buffer = RolloutBuffer(capacity=rollout_length)
 
-    exp_dir = Path("outputs") / "single" / f"{game_name}_{algorithm}"
+    run_name = f"{game_name}_{algorithm}"
+    exp_dir = Path("outputs") / "single" / run_name / f"seed-{seed}"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     video_recorder = None
@@ -86,9 +91,10 @@ def train_single_game(
         if algorithm == "dqn":
             agent.global_step = step
             action = agent.select_action(state)
-            next_state, reward, done = env.step(action)
+            next_state, reward, terminated, truncated = env.step(action)
+            episode_done = terminated or truncated
             episode_reward += reward
-            buffer.add(state, action, reward, next_state, done)
+            buffer.add(state, action, reward, next_state, terminated)
 
             if video_recorder is not None and step % 2 == 0:
                 frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
@@ -111,7 +117,7 @@ def train_single_game(
             step += 1
             pbar.update(1)
 
-            if done:
+            if episode_done:
                 episode_rewards.append(episode_reward)
                 metrics_plotter.add_metric("episode_reward", episode_reward)
                 episode_reward = 0
@@ -130,9 +136,30 @@ def train_single_game(
                     log_prob_val = log_prob.item()
                     value_val = value.item()
 
-                next_state, reward, done = env.step(action)
+                next_state, reward, terminated, truncated = env.step(action)
+                episode_done = terminated or truncated
                 episode_reward += reward
-                buffer.add(state, action, reward, done, log_prob_val, value_val)
+                training_reward = reward
+                if truncated and not terminated:
+                    with torch.no_grad():
+                        truncated_value = agent.get_value(
+                            next_state.unsqueeze(0).to(agent.device)
+                        ).item()
+                    training_reward = bootstrap_truncated_reward(
+                        reward,
+                        truncated_value,
+                        terminated=terminated,
+                        truncated=truncated,
+                        gamma=agent.gamma,
+                    )
+                buffer.add(
+                    state,
+                    action,
+                    training_reward,
+                    episode_done,
+                    log_prob_val,
+                    value_val,
+                )
 
                 if video_recorder is not None and step % 2 == 0:
                     frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
@@ -142,14 +169,14 @@ def train_single_game(
                 step += 1
                 collected_steps += 1
 
-                if done:
+                if episode_done:
                     episode_rewards.append(episode_reward)
                     metrics_plotter.add_metric("episode_reward", episode_reward)
                     episode_reward = 0
                     state = env.reset()
                     episode_count += 1
 
-            if buffer.is_full() and step >= rollout_length:
+            if buffer.ready_for_update(final=step >= num_steps):
                 with torch.no_grad():
                     next_state_tensor = state.unsqueeze(0).to(agent.device)
                     next_value = agent.get_value(next_state_tensor).flatten()
@@ -210,7 +237,7 @@ def train_single_game(
     print(f"Metrics plot saved to {metrics_output_path}")
 
     Path("checkpoints").mkdir(exist_ok=True)
-    checkpoint_path = Path("checkpoints") / "single" / f"{game_name}_{algorithm}.pt"
+    checkpoint_path = Path("checkpoints") / "single" / run_name / f"seed-{seed}.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     agent.save(str(checkpoint_path))
     print(f"Agent saved to {checkpoint_path}")
@@ -224,6 +251,7 @@ if __name__ == "__main__":
     parser.add_argument("--algorithm", default="dqn", choices=["dqn", "ppo"])
     parser.add_argument("--steps", type=int, default=500000)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
@@ -236,4 +264,5 @@ if __name__ == "__main__":
         num_steps=args.steps,
         batch_size=args.batch_size,
         save_video=args.save_video,
+        seed=args.seed,
     )

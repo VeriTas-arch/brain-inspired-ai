@@ -1,11 +1,6 @@
 """Compatibility entry point for the framework smoke demonstration."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from scripts.demo import demo_basic_usage
+from demo import demo_basic_usage
 
 if __name__ == "__main__":
     demo_basic_usage()

@@ -2,63 +2,85 @@
 
 import argparse
 import json
-import sys
 from pathlib import Path
-from typing import Optional
 
 import matplotlib.pyplot as plt
 import torch
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
 from environments import AtariEnv
-from utils import VideoRecorder
-
-EVAL_DIR = None
+from utils import VideoRecorder, seed_everything
 
 
 def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:
-    """Infer evaluation directory from model path to match training structure."""
-    model_path = Path(model_path)
-    if mode == "single":
-        checkpoint_name = model_path.stem
-        eval_dir = Path("outputs") / "single" / checkpoint_name / "eval"
-    elif mode == "multitask":
-        checkpoint_name = model_path.stem
-        eval_dir = Path("outputs") / "multitask" / checkpoint_name / "eval"
-    else:  # continual
-        checkpoint_name = model_path.stem
-        eval_dir = Path("outputs") / "continual" / checkpoint_name / "eval"
-    return eval_dir
+    """Infer the evaluation directory from the checkpoint name."""
+    model = Path(model_path)
+    parts = model.parts
+    for index in range(len(parts) - 1):
+        if parts[index : index + 2] == ("checkpoints", mode):
+            relative_checkpoint = Path(*parts[index + 2 :]).with_suffix("")
+            return Path("outputs") / mode / relative_checkpoint / "eval"
+    return Path("outputs") / mode / model.stem / "eval"
 
 
-def _set_eval_dir_from_json_out(json_out: Optional[str], model_path: str, mode: str) -> None:
-    """Configure EVAL_DIR from json_out or infer from model path."""
-    global EVAL_DIR
-    if json_out:
-        EVAL_DIR = Path(json_out).parent
-    else:
-        EVAL_DIR = _infer_eval_dir_from_model_path(model_path, mode)
-    EVAL_DIR.mkdir(parents=True, exist_ok=True)
+def _prepare_output_dir(output_dir: Path | None, model_path: str, mode: str) -> Path:
+    """Create and return the directory used by evaluation artifacts."""
+    resolved = output_dir or _infer_eval_dir_from_model_path(model_path, mode)
+    resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
 
 
-def _get_eval_dir() -> Path:
-    """Ensure and return the evaluation output directory."""
-    if EVAL_DIR is None:
-        raise RuntimeError("EVAL_DIR not set. Call _set_eval_dir_from_json_out first.")
-    EVAL_DIR.mkdir(parents=True, exist_ok=True)
-    return EVAL_DIR
+def _set_agent_eval(agent) -> None:
+    """Put all neural modules owned by an agent into evaluation mode."""
+    inner_agent = agent.agent if isinstance(agent, EWCWrapper) else agent
+    module_names = (
+        "network",
+        "backbone",
+        "target_network",
+        "target_backbone",
+        "actor",
+        "critic",
+        "heads",
+        "target_heads",
+        "actors",
+        "critics",
+    )
+    for name in module_names:
+        module = getattr(inner_agent, name, None)
+        if isinstance(module, torch.nn.Module):
+            module.eval()
 
 
-def _plot_single_results(result: dict) -> Path:
+def _run_episodes(agent, env: AtariEnv, episodes: int, max_steps: int) -> list[float]:
+    """Run deterministic evaluation episodes in an existing environment."""
+    if episodes <= 0:
+        raise ValueError("episodes must be positive")
+    if max_steps <= 0:
+        raise ValueError("max_steps must be positive")
+
+    rewards = []
+    with torch.no_grad():
+        for _ in range(episodes):
+            state = env.reset()
+            done = False
+            episode_reward = 0.0
+            steps = 0
+            while not done and steps < max_steps:
+                action = agent.select_action(state, deterministic=True)
+                state, reward, terminated, truncated = env.step(action)
+                done = terminated or truncated
+                episode_reward += reward
+                steps += 1
+            rewards.append(episode_reward)
+    return rewards
+
+
+def _plot_single_results(result: dict, output_dir: Path) -> Path:
     """Plot episode rewards for a single-task evaluation."""
-    out_dir = _get_eval_dir()
     game = result["game"]
     algorithm = result["algorithm"]
     rewards = result["rewards"]
-
-    plot_path = out_dir / f"{game}_{algorithm}_eval_rewards.png"
+    plot_path = output_dir / f"{game}_{algorithm}_eval_rewards.png"
 
     plt.figure(figsize=(6, 4))
     plt.plot(range(1, len(rewards) + 1), rewards, marker="o")
@@ -69,365 +91,254 @@ def _plot_single_results(result: dict) -> Path:
     plt.tight_layout()
     plt.savefig(plot_path, dpi=150)
     plt.close()
-
     return plot_path
 
 
-def _plot_continual_results(result: dict) -> Path:
-    """Plot average reward per game for continual evaluation."""
-    out_dir = _get_eval_dir()
+def _plot_multi_game_results(result: dict, output_dir: Path) -> Path:
+    """Plot each game's average raw reward without cross-game aggregation."""
+    mode = result["mode"]
     algorithm = result["algorithm"]
-    games = sorted(result["games"].keys())
-    avg_rewards = [result["games"][g]["avg_reward"] for g in games]
-
-    plot_path = out_dir / f"continual_{algorithm}_avg_rewards.png"
+    games = sorted(result["games"])
+    avg_rewards = [result["games"][game]["avg_reward"] for game in games]
+    plot_path = output_dir / f"{mode}_{algorithm}_avg_rewards.png"
 
     plt.figure(figsize=(6, 4))
     plt.bar(games, avg_rewards)
-    plt.title(f"Continual {algorithm.upper()} Avg Reward per Game")
+    plt.title(f"{mode.title()} {algorithm.upper()} Raw Reward per Game")
     plt.xlabel("Game")
-    plt.ylabel("Average Reward")
+    plt.ylabel("Average Raw Reward")
     plt.xticks(rotation=30, ha="right")
     plt.tight_layout()
     plt.savefig(plot_path, dpi=150)
     plt.close()
-
-    return plot_path
-
-
-def _plot_multitask_results(result: dict) -> Path:
-    """Plot average reward per game for multi-task evaluation."""
-    out_dir = _get_eval_dir()
-    algorithm = result["algorithm"]
-    games = sorted(result["games"].keys())
-    avg_rewards = [result["games"][g]["avg_reward"] for g in games]
-
-    plot_path = out_dir / f"multitask_{algorithm}_avg_rewards.png"
-
-    plt.figure(figsize=(6, 4))
-    plt.bar(games, avg_rewards)
-    plt.title(f"Multi-task {algorithm.upper()} Avg Reward per Game")
-    plt.xlabel("Game")
-    plt.ylabel("Average Reward")
-    plt.xticks(rotation=30, ha="right")
-    plt.tight_layout()
-    plt.savefig(plot_path, dpi=150)
-    plt.close()
-
     return plot_path
 
 
 def _record_example_video(
-    agent, game: str, algorithm: str, output_path: Path, max_steps: int = 10000
-):
-    """Record a single-episode gameplay video."""
-    env = AtariEnv(game, render_mode="rgb_array", training=False)
-    video_recorder = VideoRecorder(str(output_path), fps=30)
-
+    agent,
+    game: str,
+    output_path: Path,
+    max_steps: int = 10000,
+    seed: int = 0,
+) -> None:
+    """Record one deterministic evaluation episode."""
+    env = AtariEnv(game, render_mode="rgb_array", training=False, seed=seed)
+    recorder = VideoRecorder(str(output_path), fps=30)
     if hasattr(agent, "set_task"):
         agent.set_task(game)
 
-    with torch.no_grad():
-        state = env.reset()
-        for _ in range(max_steps):
-            frame = None
-            try:
-                if hasattr(env.env, "render"):
-                    frame = env.env.render()
-                if frame is None and hasattr(env.env, "unwrapped"):
-                    unwrapped = env.env.unwrapped
-                    if hasattr(unwrapped, "render"):
-                        frame = unwrapped.render()
-                if frame is None:
-                    if isinstance(state, torch.Tensor):
-                        frame = state[0].cpu().numpy()
-                    else:
-                        frame = state[0] if len(state.shape) > 2 else state
-            except Exception:
-                if isinstance(state, torch.Tensor):
-                    frame = state[0].cpu().numpy()
-                else:
-                    frame = state[0] if len(state.shape) > 2 else state
-
-            if frame is not None:
-                video_recorder.add_frame(frame)
-
-            action = agent.select_action(state, deterministic=True)
-            state, _, done = env.step(action)
-
-            if done:
-                break
-
-    video_recorder.save(format="mp4")
-    env.close()
-
-
-def evaluate_single(model_path: str, game: str, algorithm: str, episodes: int, max_steps: int):
-    """Evaluate a single-task agent checkpoint on one game."""
-    env = AtariEnv(game, render_mode=None, training=False)
-
-    if algorithm == "dqn":
-        agent = DQNAgent(state_dim=4, action_dim=env.action_space)
-    else:
-        agent = PPOAgent(state_dim=4, action_dim=env.action_space)
-
-    agent.load(model_path)
-    if hasattr(agent, "network"):
-        agent.network.eval()
-    if hasattr(agent, "actor"):
-        agent.actor.eval()
-    if hasattr(agent, "critic"):
-        agent.critic.eval()
-
-    episode_rewards = []
-    with torch.no_grad():
-        for _ in range(episodes):
+    try:
+        with torch.no_grad():
             state = env.reset()
-            done = False
-            ep_r = 0.0
-            steps = 0
-            while not done and steps < max_steps:
+            for _ in range(max_steps):
+                recorder.add_frame(env.env.render())
                 action = agent.select_action(state, deterministic=True)
-                state, reward, done = env.step(action)
-                ep_r += reward
-                steps += 1
-            episode_rewards.append(ep_r)
+                state, _, terminated, truncated = env.step(action)
+                done = terminated or truncated
+                if done:
+                    break
+        recorder.save(format="mp4")
+    finally:
+        env.close()
 
-    env.close()
 
-    avg_r = sum(episode_rewards) / len(episode_rewards)
+def evaluate_single(
+    model_path: str,
+    game: str,
+    algorithm: str,
+    episodes: int,
+    max_steps: int,
+    output_dir: Path | None = None,
+    seed: int = 0,
+) -> dict:
+    """Evaluate a single-task agent checkpoint on one game."""
+    seed_everything(seed)
+    output_dir = _prepare_output_dir(output_dir, model_path, "single")
+    env = AtariEnv(game, render_mode=None, training=False, seed=seed)
+    try:
+        if algorithm == "dqn":
+            agent = DQNAgent(state_dim=4, action_dim=env.action_space)
+        else:
+            agent = PPOAgent(state_dim=4, action_dim=env.action_space)
+        agent.load(model_path)
+        _set_agent_eval(agent)
+        episode_rewards = _run_episodes(agent, env, episodes, max_steps)
+    finally:
+        env.close()
+
+    avg_reward = sum(episode_rewards) / len(episode_rewards)
     print(f"[Single] {game} ({algorithm}) - Episodes: {episodes}")
     print(
-        f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}"
+        f"  Avg reward: {avg_reward:.2f}, Min: {min(episode_rewards):.2f}, "
+        f"Max: {max(episode_rewards):.2f}"
     )
-
     result = {
         "mode": "single",
         "game": game,
         "algorithm": algorithm,
         "episodes": episodes,
+        "seed": seed,
         "rewards": episode_rewards,
-        "avg_reward": avg_r,
+        "avg_reward": avg_reward,
     }
 
-    plot_path = _plot_single_results(result)
+    plot_path = _plot_single_results(result, output_dir)
     print(f"  Reward plot saved to: {plot_path}")
-
-    video_path = _get_eval_dir() / f"{game}_{algorithm}_eval_gameplay.mp4"
-    _record_example_video(agent, game, algorithm, video_path, max_steps=max_steps)
+    video_path = output_dir / f"{game}_{algorithm}_eval_gameplay.mp4"
+    _record_example_video(agent, game, video_path, max_steps=max_steps, seed=seed)
     print(f"  Example gameplay video saved to: {video_path}")
-
     return result
 
 
-def _build_continual_agent(algorithm: str, games: list, use_ewc: bool, ewc_lambda: float):
-    """Rebuild a continual agent architecture for evaluation."""
+def _build_multihead_agent(algorithm: str, games: list[str], use_ewc: bool, ewc_lambda: float):
+    """Rebuild a multi-head agent architecture for evaluation."""
     if algorithm == "dqn":
         base_agent = MultiHeadDQNAgent(state_dim=4)
-        for game in games:
-            env = AtariEnv(game, render_mode=None, training=False)
-            base_agent.register_task(game, env.action_space)
-            env.close()
-    else:  # ppo
+    else:
         base_agent = MultiHeadPPOAgent(state_dim=4)
-        for game in games:
-            env = AtariEnv(game, render_mode=None, training=False)
+
+    for game in games:
+        env = AtariEnv(game, render_mode=None, training=False)
+        try:
             base_agent.register_task(game, env.action_space)
+        finally:
             env.close()
 
     if use_ewc:
-        agent = EWCWrapper(base_agent, ewc_lambda=ewc_lambda)
-    else:
-        agent = base_agent
+        return EWCWrapper(base_agent, ewc_lambda=ewc_lambda)
+    return base_agent
 
-    return agent
+
+def _evaluate_games(
+    agent,
+    games: list[str],
+    mode: str,
+    algorithm: str,
+    episodes: int,
+    max_steps: int,
+    seed: int,
+) -> dict:
+    """Evaluate a multi-head agent independently on every requested game."""
+    results = {
+        "mode": mode,
+        "algorithm": algorithm,
+        "games": {},
+        "episodes": episodes,
+        "seed": seed,
+    }
+    label = "Multi-task" if mode == "multitask" else "Continual"
+
+    for game_index, game in enumerate(games):
+        print(f"\n[{label}] Evaluating on {game} ...")
+        env = AtariEnv(game, render_mode=None, training=False, seed=seed + game_index)
+        try:
+            agent.set_task(game)
+            episode_rewards = _run_episodes(agent, env, episodes, max_steps)
+        finally:
+            env.close()
+
+        avg_reward = sum(episode_rewards) / len(episode_rewards)
+        print(
+            f"  Avg reward: {avg_reward:.2f}, Min: {min(episode_rewards):.2f}, "
+            f"Max: {max(episode_rewards):.2f}"
+        )
+        results["games"][game] = {
+            "rewards": episode_rewards,
+            "avg_reward": avg_reward,
+        }
+    return results
+
+
+def _evaluate_multihead_checkpoint(
+    model_path: str,
+    games: list[str],
+    algorithm: str,
+    episodes: int,
+    max_steps: int,
+    mode: str,
+    use_ewc: bool,
+    ewc_lambda: float,
+    output_dir: Path | None,
+    seed: int,
+) -> dict:
+    """Shared evaluation workflow for continual and joint multi-task checkpoints."""
+    label = "multi-task" if mode == "multitask" else "continual"
+    print(f"Loading {label} agent from {model_path}...")
+    seed_everything(seed)
+    output_dir = _prepare_output_dir(output_dir, model_path, mode)
+    agent = _build_multihead_agent(algorithm, games, use_ewc, ewc_lambda)
+    agent.load(model_path)
+    _set_agent_eval(agent)
+
+    results = _evaluate_games(agent, games, mode, algorithm, episodes, max_steps, seed)
+    plot_path = _plot_multi_game_results(results, output_dir)
+    print(f"\n[{label.title()}] Raw reward plot saved to: {plot_path}")
+
+    for game_index, game in enumerate(games):
+        video_path = output_dir / f"{mode}_{algorithm}_{game}_eval_gameplay.mp4"
+        _record_example_video(
+            agent,
+            game,
+            video_path,
+            max_steps=max_steps,
+            seed=seed + game_index,
+        )
+        print(f"[{label.title()}] Example gameplay video for {game} saved to: {video_path}")
+    return results
 
 
 def evaluate_continual(
     model_path: str,
-    games: list,
+    games: list[str],
     algorithm: str,
     episodes: int,
     max_steps: int,
     use_ewc: bool,
     ewc_lambda: float,
-):
-    """Evaluate a continual-learning agent on a list of games.
-
-    In addition to printing statistics (and optional JSON via CLI), this will:
-    - Save a bar plot of average reward per game under the experiment's eval dir
-    - Save one example gameplay video **per game** under the same directory
-    """
-    print(f"Loading continual agent from {model_path}...")
-    agent = _build_continual_agent(algorithm, games, use_ewc=use_ewc, ewc_lambda=ewc_lambda)
-    agent.load(model_path)
-    # Set eval mode - handle EWCWrapper case
-    if isinstance(agent, EWCWrapper):
-        inner_agent = agent.agent
-    else:
-        inner_agent = agent
-
-    if hasattr(inner_agent, "network") and inner_agent.network is not None:
-        inner_agent.network.eval()
-    if hasattr(inner_agent, "backbone") and inner_agent.backbone is not None:
-        inner_agent.backbone.eval()
-    if hasattr(inner_agent, "target_network") and inner_agent.target_network is not None:
-        inner_agent.target_network.eval()
-    if hasattr(inner_agent, "target_backbone") and inner_agent.target_backbone is not None:
-        inner_agent.target_backbone.eval()
-    if hasattr(inner_agent, "actor"):
-        inner_agent.actor.eval()
-    if hasattr(inner_agent, "critic"):
-        inner_agent.critic.eval()
-    if hasattr(inner_agent, "heads"):
-        for head in inner_agent.heads.values():
-            head.eval()
-    if hasattr(inner_agent, "target_heads"):
-        for head in inner_agent.target_heads.values():
-            head.eval()
-    if hasattr(inner_agent, "actors"):
-        for actor in inner_agent.actors.values():
-            actor.eval()
-    if hasattr(inner_agent, "critics"):
-        for critic in inner_agent.critics.values():
-            critic.eval()
-
-    results = {"mode": "continual", "algorithm": algorithm, "games": {}, "episodes": episodes}
-
-    with torch.no_grad():
-        for game in games:
-            print(f"\n[Continual] Evaluating on {game} ...")
-            env = AtariEnv(game, render_mode=None, training=False)
-
-            # For MultiHeadDQN, select the appropriate head
-            if hasattr(agent, "set_task"):
-                agent.set_task(game)
-
-            episode_rewards = []
-            for _ in range(episodes):
-                state = env.reset()
-                done = False
-                ep_r = 0.0
-                steps = 0
-                while not done and steps < max_steps:
-                    action = agent.select_action(state, deterministic=True)
-                    state, reward, done = env.step(action)
-                    ep_r += reward
-                    steps += 1
-                episode_rewards.append(ep_r)
-
-            env.close()
-
-            avg_r = sum(episode_rewards) / len(episode_rewards)
-            print(
-                f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}"
-            )
-
-            results["games"][game] = {
-                "rewards": episode_rewards,
-                "avg_reward": avg_r,
-            }
-
-    plot_path = _plot_continual_results(results)
-    print(f"\n[Continual] Avg reward plot saved to: {plot_path}")
-
-    for game in games:
-        video_path = _get_eval_dir() / f"continual_{algorithm}_{game}_eval_gameplay.mp4"
-        _record_example_video(agent, game, algorithm, video_path, max_steps=max_steps)
-        print(f"[Continual] Example gameplay video for {game} saved to: {video_path}")
-
-    return results
+    output_dir: Path | None = None,
+    seed: int = 0,
+) -> dict:
+    """Evaluate a continual-learning checkpoint on each game."""
+    return _evaluate_multihead_checkpoint(
+        model_path,
+        games,
+        algorithm,
+        episodes,
+        max_steps,
+        "continual",
+        use_ewc,
+        ewc_lambda,
+        output_dir,
+        seed,
+    )
 
 
-def evaluate_multitask(model_path: str, games: list, algorithm: str, episodes: int, max_steps: int):
-    """Evaluate a multi-task joint training agent on a list of games.
-
-    In addition to printing statistics (and optional JSON via CLI), this will:
-    - Save a bar plot of average reward per game under the experiment's eval dir
-    - Save one example gameplay video **per game** under the same directory
-    """
-    print(f"Loading multi-task agent from {model_path}...")
-    agent = _build_continual_agent(algorithm, games, use_ewc=False, ewc_lambda=0.4)
-    agent.load(model_path)
-    # Set eval mode - handle EWCWrapper case
-    if isinstance(agent, EWCWrapper):
-        inner_agent = agent.agent
-    else:
-        inner_agent = agent
-
-    if hasattr(inner_agent, "network") and inner_agent.network is not None:
-        inner_agent.network.eval()
-    if hasattr(inner_agent, "backbone") and inner_agent.backbone is not None:
-        inner_agent.backbone.eval()
-    if hasattr(inner_agent, "target_network") and inner_agent.target_network is not None:
-        inner_agent.target_network.eval()
-    if hasattr(inner_agent, "target_backbone") and inner_agent.target_backbone is not None:
-        inner_agent.target_backbone.eval()
-    if hasattr(inner_agent, "actor"):
-        inner_agent.actor.eval()
-    if hasattr(inner_agent, "critic"):
-        inner_agent.critic.eval()
-    if hasattr(inner_agent, "heads"):
-        for head in inner_agent.heads.values():
-            head.eval()
-    if hasattr(inner_agent, "target_heads"):
-        for head in inner_agent.target_heads.values():
-            head.eval()
-    if hasattr(inner_agent, "actors"):
-        for actor in inner_agent.actors.values():
-            actor.eval()
-    if hasattr(inner_agent, "critics"):
-        for critic in inner_agent.critics.values():
-            critic.eval()
-
-    results = {"mode": "multitask", "algorithm": algorithm, "games": {}, "episodes": episodes}
-
-    with torch.no_grad():
-        for game in games:
-            print(f"\n[Multi-task] Evaluating on {game} ...")
-            env = AtariEnv(game, render_mode=None, training=False)
-
-            # For MultiHeadDQN, select the appropriate head
-            if hasattr(agent, "set_task"):
-                agent.set_task(game)
-
-            episode_rewards = []
-            for _ in range(episodes):
-                state = env.reset()
-                done = False
-                ep_r = 0.0
-                steps = 0
-                while not done and steps < max_steps:
-                    action = agent.select_action(state, deterministic=True)
-                    state, reward, done = env.step(action)
-                    ep_r += reward
-                    steps += 1
-                episode_rewards.append(ep_r)
-
-            env.close()
-
-            avg_r = sum(episode_rewards) / len(episode_rewards)
-            print(
-                f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}"
-            )
-
-            results["games"][game] = {
-                "rewards": episode_rewards,
-                "avg_reward": avg_r,
-            }
-
-    plot_path = _plot_multitask_results(results)
-    print(f"\n[Multi-task] Avg reward plot saved to: {plot_path}")
-
-    for game in games:
-        video_path = _get_eval_dir() / f"multitask_{algorithm}_{game}_eval_gameplay.mp4"
-        _record_example_video(agent, game, algorithm, video_path, max_steps=max_steps)
-        print(f"[Multi-task] Example gameplay video for {game} saved to: {video_path}")
-
-    return results
+def evaluate_multitask(
+    model_path: str,
+    games: list[str],
+    algorithm: str,
+    episodes: int,
+    max_steps: int,
+    output_dir: Path | None = None,
+    seed: int = 0,
+) -> dict:
+    """Evaluate a jointly trained multi-task checkpoint on each game."""
+    return _evaluate_multihead_checkpoint(
+        model_path,
+        games,
+        algorithm,
+        episodes,
+        max_steps,
+        "multitask",
+        False,
+        0.0,
+        output_dir,
+        seed,
+    )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Parse command-line arguments and run evaluation."""
     parser = argparse.ArgumentParser(description="Evaluate trained Atari agents")
     parser.add_argument("--mode", choices=["single", "continual", "multitask"], default="single")
     parser.add_argument("--model", required=True, help="Path to model checkpoint")
@@ -436,51 +347,63 @@ if __name__ == "__main__":
     parser.add_argument("--games", nargs="*", help="List of games for continual/multitask mode")
     parser.add_argument("--episodes", type=int, default=5, help="Episodes per game")
     parser.add_argument("--max-steps", type=int, default=10000, help="Max steps per episode")
-    parser.add_argument("--ewc", action="store_true", help="Use EWC wrapper for continual DQN/PPO")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--ewc", action="store_true", help="Use EWC wrapper in continual mode")
     parser.add_argument("--ewc-lambda", type=float, default=0.4, help="EWC lambda (if --ewc)")
     parser.add_argument("--json-out", help="Optional path to write JSON results")
-
     args = parser.parse_args()
 
-    _set_eval_dir_from_json_out(args.json_out, args.model, args.mode)
-
+    output_dir = (
+        Path(args.json_out).parent
+        if args.json_out
+        else _infer_eval_dir_from_model_path(args.model, args.mode)
+    )
     if args.mode == "single":
         if not args.game:
             raise SystemExit("--game is required for single mode")
         result = evaluate_single(
-            model_path=args.model,
-            game=args.game,
-            algorithm=args.algorithm,
-            episodes=args.episodes,
-            max_steps=args.max_steps,
+            args.model,
+            args.game,
+            args.algorithm,
+            args.episodes,
+            args.max_steps,
+            output_dir,
+            args.seed,
         )
     elif args.mode == "multitask":
-        games = args.games
-        if not games:
+        if not args.games:
             raise SystemExit("--games is required for multitask mode")
         result = evaluate_multitask(
-            model_path=args.model,
-            games=games,
-            algorithm=args.algorithm,
-            episodes=args.episodes,
-            max_steps=args.max_steps,
+            args.model,
+            args.games,
+            args.algorithm,
+            args.episodes,
+            args.max_steps,
+            output_dir,
+            args.seed,
         )
-    else:  # continual
-        games = args.games
-        if not games:
+    else:
+        if not args.games:
             raise SystemExit("--games is required for continual mode")
         result = evaluate_continual(
-            model_path=args.model,
-            games=games,
-            algorithm=args.algorithm,
-            episodes=args.episodes,
-            max_steps=args.max_steps,
-            use_ewc=args.ewc,
-            ewc_lambda=args.ewc_lambda,
+            args.model,
+            args.games,
+            args.algorithm,
+            args.episodes,
+            args.max_steps,
+            args.ewc,
+            args.ewc_lambda,
+            output_dir,
+            args.seed,
         )
 
     if args.json_out:
-        Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
-        with open(args.json_out, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"Results written to {args.json_out}")
+        output_path = Path(args.json_out)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as output_file:
+            json.dump(result, output_file, indent=2)
+        print(f"Results written to {output_path}")
+
+
+if __name__ == "__main__":
+    main()

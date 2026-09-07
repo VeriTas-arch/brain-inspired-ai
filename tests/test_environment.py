@@ -1,5 +1,6 @@
 """Integration tests for the Atari preprocessing contract."""
 
+import numpy as np
 import pytest
 import torch
 
@@ -49,3 +50,26 @@ def test_invalid_action_is_not_silently_clipped() -> None:
             env.step(env.action_space)
     finally:
         env.close()
+
+
+def test_step_preserves_terminated_and_truncated_flags() -> None:
+    class _ActionSpace:
+        @staticmethod
+        def contains(action: int) -> bool:
+            return action == 0
+
+    class _TruncatedEnv:
+        action_space = _ActionSpace()
+
+        @staticmethod
+        def step(action: int):
+            return np.zeros((4, 84, 84), dtype=np.uint8), 1.0, False, True, {}
+
+    env = AtariEnv.__new__(AtariEnv)
+    env.env = _TruncatedEnv()
+
+    _, reward, terminated, truncated = env.step(0)
+
+    assert reward == 1.0
+    assert not terminated
+    assert truncated

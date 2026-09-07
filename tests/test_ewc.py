@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from algorithms import BaseAgent, EWCWrapper
+from algorithms import BaseAgent, EWCWrapper, summarize_fisher_information
 
 
 class TinyDQN(BaseAgent):
@@ -100,6 +100,11 @@ def test_ppo_fisher_does_not_require_dqn_transition_fields() -> None:
     assert "network.weight" in fisher
     assert "actor.weight" in fisher
 
+    summary = summarize_fisher_information(fisher)
+    assert summary["network"]["nonzero_fraction"] > 0
+    assert summary["actor"]["nonzero_fraction"] > 0
+    assert summary["critic"]["nonzero_fraction"] == 0
+
 
 def test_ewc_checkpoint_restores_consolidated_state(tmp_path) -> None:
     wrapper = EWCWrapper(TinyDQN(), ewc_lambda=1.5)
@@ -113,5 +118,6 @@ def test_ewc_checkpoint_restores_consolidated_state(tmp_path) -> None:
     assert restored.current_task_id == 1
     assert restored.ewc_lambda == 1.5
     assert restored.task_weights.keys() == wrapper.task_weights.keys()
+    assert restored.task_fisher_summary == wrapper.task_fisher_summary
     for name, expected in wrapper.task_fisher[0].items():
         torch.testing.assert_close(restored.task_fisher[0][name], expected)

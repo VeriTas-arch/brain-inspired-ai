@@ -103,19 +103,18 @@ class DQNAgent(BaseAgent):
         regularization_loss = regularizer() if regularizer is not None else None
         total_loss = loss if regularization_loss is None else loss + regularization_loss
 
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), 10.0)
         self.optimizer.step()
 
         self.update_count += 1
         if self.update_count % self.target_update_freq == 0:
-            for target_param, q_network_param in zip(
-                self.target_network.parameters(), self.network.parameters()
-            ):
-                target_param.data.copy_(
-                    self.tau * q_network_param.data + (1.0 - self.tau) * target_param.data
-                )
+            with torch.no_grad():
+                for target_param, q_network_param in zip(
+                    self.target_network.parameters(), self.network.parameters()
+                ):
+                    target_param.lerp_(q_network_param, self.tau)
 
         epsilon = linear_schedule(
             self.epsilon_start,
@@ -279,7 +278,7 @@ class MultiHeadDQNAgent(BaseAgent):
         regularization_loss = regularizer() if regularizer is not None else None
         total_loss = loss if regularization_loss is None else loss + regularization_loss
 
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.backbone.parameters(), 1.0)
         for head in self.heads.values():

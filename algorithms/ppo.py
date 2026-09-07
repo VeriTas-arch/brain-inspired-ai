@@ -2,13 +2,26 @@
 
 from collections.abc import Callable
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 
 from .base import BaseAgent, layer_init
+
+
+def bootstrap_truncated_reward(
+    reward: float,
+    next_value: float,
+    *,
+    terminated: bool,
+    truncated: bool,
+    gamma: float,
+) -> float:
+    """Bootstrap a time-limit transition while still ending its GAE segment."""
+    if truncated and not terminated:
+        return reward + gamma * next_value
+    return reward
 
 
 def generalized_advantage_estimate(
@@ -168,10 +181,14 @@ class PPOAgent(BaseAgent):
         b_values = old_values.flatten()
 
         clipfracs = []
-        b_inds = np.arange(len(b_obs))
+        parameters = [
+            *self.network.parameters(),
+            *self.actor.parameters(),
+            *self.critic.parameters(),
+        ]
 
         for epoch in range(update_epochs):
-            np.random.shuffle(b_inds)
+            b_inds = torch.randperm(len(b_obs), device=self.device)
             for start in range(0, len(b_obs), minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
@@ -208,14 +225,9 @@ class PPOAgent(BaseAgent):
                 if regularization_loss is not None:
                     loss = loss + regularization_loss
 
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                nn.utils.clip_grad_norm_(
-                    list(self.network.parameters())
-                    + list(self.actor.parameters())
-                    + list(self.critic.parameters()),
-                    self.max_grad_norm,
-                )
+                nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
                 self.optimizer.step()
 
                 with torch.no_grad():
@@ -227,7 +239,7 @@ class PPOAgent(BaseAgent):
             "value_loss": v_loss.item(),
             "entropy": entropy_loss.item(),
             "approx_kl": approx_kl.item(),
-            "clipfrac": np.mean(clipfracs),
+            "clipfrac": sum(clipfracs) / len(clipfracs),
         }
         if regularizer is not None:
             metrics["regularization_loss"] = regularization_loss.detach().item()
@@ -405,10 +417,14 @@ class MultiHeadPPOAgent(BaseAgent):
         b_values = old_values.flatten()
 
         clipfracs = []
-        b_inds = np.arange(len(b_obs))
+        all_params = list(self.backbone.parameters())
+        for actor in self.actors.values():
+            all_params.extend(actor.parameters())
+        for critic in self.critics.values():
+            all_params.extend(critic.parameters())
 
         for epoch in range(update_epochs):
-            np.random.shuffle(b_inds)
+            b_inds = torch.randperm(len(b_obs), device=self.device)
             for start in range(0, len(b_obs), minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
@@ -445,14 +461,8 @@ class MultiHeadPPOAgent(BaseAgent):
                 if regularization_loss is not None:
                     loss = loss + regularization_loss
 
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                # Collect all parameters for gradient clipping
-                all_params = list(self.backbone.parameters())
-                for actor in self.actors.values():
-                    all_params.extend(list(actor.parameters()))
-                for critic in self.critics.values():
-                    all_params.extend(list(critic.parameters()))
                 nn.utils.clip_grad_norm_(all_params, self.max_grad_norm)
                 self.optimizer.step()
 
@@ -465,7 +475,7 @@ class MultiHeadPPOAgent(BaseAgent):
             "value_loss": v_loss.item(),
             "entropy": entropy_loss.item(),
             "approx_kl": approx_kl.item(),
-            "clipfrac": np.mean(clipfracs),
+            "clipfrac": sum(clipfracs) / len(clipfracs),
         }
         if regularizer is not None:
             metrics["regularization_loss"] = regularization_loss.detach().item()

@@ -2,23 +2,21 @@
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import torch
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from algorithms import (
     DEFAULT_DQN_LEARNING_STARTS,
     EWCWrapper,
     MultiHeadDQNAgent,
     MultiHeadPPOAgent,
+    bootstrap_truncated_reward,
 )
 from environments import AtariEnv
-from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder
+from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
 
 
 def build_evaluation_report(eval_history: dict, games: list[str]) -> dict:
@@ -99,12 +97,17 @@ def train_continual(
     batch_size: int = 32,
     eval_episodes: int = 5,
     save_video: bool = False,
+    seed: int = 0,
 ):
     """Train agent on multiple games sequentially."""
     if games is None:
         games = ["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
     if eval_episodes <= 0:
         raise ValueError("eval_episodes must be positive")
+    seed_everything(seed)
+    game_seeds = {game: seed + index for index, game in enumerate(games)}
+    run_name = f"{algorithm}_ewc{use_ewc}"
+    exp_root = Path("outputs") / "continual" / run_name / f"seed-{seed}"
 
     print(f"Continual Learning: {algorithm.upper()} on {games}")
     print(f"EWC: {use_ewc}")
@@ -113,11 +116,12 @@ def train_continual(
 
     continual_metrics = {}
     eval_history = {game: [] for game in games}
+    ewc_diagnostics = {}
     agent = None
     for game_idx, game_name in enumerate(games):
         print(f"\n=== Task {game_idx + 1}/{len(games)}: {game_name} ===")
 
-        env = AtariEnv(game_name, render_mode=None)
+        env = AtariEnv(game_name, render_mode=None, seed=game_seeds[game_name])
         action_dim = env.action_space
         task_id = game_name
 
@@ -167,7 +171,7 @@ def train_continual(
             minibatch_size = 32
             buffer = RolloutBuffer(capacity=rollout_length)
 
-        exp_dir = Path("outputs") / "continual" / f"{algorithm}_ewc{use_ewc}" / game_name
+        exp_dir = exp_root / game_name
         exp_dir.mkdir(parents=True, exist_ok=True)
 
         video_recorder = None
@@ -187,9 +191,10 @@ def train_continual(
             if algorithm == "dqn":
                 action = agent.select_action(state)
 
-                next_state, reward, done = env.step(action)
+                next_state, reward, terminated, truncated = env.step(action)
+                episode_done = terminated or truncated
                 episode_reward += reward
-                buffer.add(state, action, reward, next_state, done)
+                buffer.add(state, action, reward, next_state, terminated)
 
                 if video_recorder is not None and step % 2 == 0:
                     frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
@@ -222,7 +227,7 @@ def train_continual(
                 step += 1
                 pbar.update(1)
 
-                if done:
+                if episode_done:
                     episode_rewards.append(episode_reward)
                     episode_reward = 0
                     state = env.reset()
@@ -242,9 +247,30 @@ def train_continual(
                         log_prob_val = log_prob.item()
                         value_val = value.item()
 
-                    next_state, reward, done = env.step(action)
+                    next_state, reward, terminated, truncated = env.step(action)
+                    episode_done = terminated or truncated
                     episode_reward += reward
-                    buffer.add(state, action, reward, done, log_prob_val, value_val)
+                    training_reward = reward
+                    if truncated and not terminated:
+                        with torch.no_grad():
+                            truncated_value = agent.get_value(
+                                next_state.unsqueeze(0).to(agent.device)
+                            ).item()
+                        training_reward = bootstrap_truncated_reward(
+                            reward,
+                            truncated_value,
+                            terminated=terminated,
+                            truncated=truncated,
+                            gamma=agent.gamma,
+                        )
+                    buffer.add(
+                        state,
+                        action,
+                        training_reward,
+                        episode_done,
+                        log_prob_val,
+                        value_val,
+                    )
 
                     if video_recorder is not None and step % 2 == 0:
                         frame = (
@@ -256,13 +282,13 @@ def train_continual(
                     step += 1
                     collected_steps += 1
 
-                    if done:
+                    if episode_done:
                         episode_rewards.append(episode_reward)
                         episode_reward = 0
                         state = env.reset()
                         episode_count += 1
 
-                if buffer.is_full() and step >= rollout_length:
+                if buffer.ready_for_update(final=step >= steps_per_game):
                     with torch.no_grad():
                         next_state_tensor = state.unsqueeze(0).to(agent.device)
                         next_value = agent.get_value(next_state_tensor).flatten()
@@ -299,7 +325,12 @@ def train_continual(
             continual_metrics.setdefault(game_name + "_episode_reward", []).extend(episode_rewards)
 
         for eval_game in games[: game_idx + 1]:
-            eval_env = AtariEnv(eval_game, render_mode=None, training=False)
+            eval_env = AtariEnv(
+                eval_game,
+                render_mode=None,
+                training=False,
+                seed=game_seeds[eval_game],
+            )
             eval_task_id = eval_game
             if isinstance(agent, EWCWrapper) and hasattr(agent.agent, "set_task"):
                 agent.set_task(eval_task_id)
@@ -314,7 +345,8 @@ def train_continual(
                 while not done_eval:
                     with torch.no_grad():
                         a = agent.select_action(s, deterministic=True)
-                    s, r, done_eval = eval_env.step(a)
+                    s, r, terminated_eval, truncated_eval = eval_env.step(a)
+                    done_eval = terminated_eval or truncated_eval
                     ep_r += r
                 total_eval_reward += ep_r
             avg_eval_reward = total_eval_reward / eval_episodes
@@ -338,8 +370,8 @@ def train_continual(
                 if sample_batch is None and len(buffer) > 0:
                     sample_batch = buffer.get_batch()
 
-            agent.consolidate_weights(sample_batch)
-            print("Weights consolidated for EWC")
+            ewc_diagnostics[game_name] = agent.consolidate_weights(sample_batch)
+            print(f"Weights consolidated for EWC: {ewc_diagnostics[game_name]}")
 
         env.close()
 
@@ -348,7 +380,6 @@ def train_continual(
         for v in values:
             metrics_plotter.add_metric(name, v)
 
-    exp_root = Path("outputs") / "continual" / f"{algorithm}_ewc{use_ewc}"
     exp_root.mkdir(parents=True, exist_ok=True)
 
     metrics_output_path = exp_root / "training_metrics.png"
@@ -364,6 +395,8 @@ def train_continual(
         "ewc_lambda": ewc_lambda if use_ewc else None,
         "steps_per_game": steps_per_game,
         "eval_episodes": eval_episodes,
+        "seed": seed,
+        "ewc_diagnostics": ewc_diagnostics if use_ewc else None,
         **build_evaluation_report(eval_history, games),
     }
     evaluation_path = exp_root / "continual_evaluation.json"
@@ -374,7 +407,8 @@ def train_continual(
     # Save final agent checkpoint in a structured location
     ckpt_root = Path("checkpoints") / "continual"
     ckpt_root.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = ckpt_root / f"{algorithm}_ewc{use_ewc}.pt"
+    checkpoint_path = ckpt_root / run_name / f"seed-{seed}.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     agent.save(str(checkpoint_path))
     print(f"\nAgent saved: {checkpoint_path}")
 
@@ -390,6 +424,7 @@ if __name__ == "__main__":
     parser.add_argument("--steps-per-game", type=int, default=50000)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--eval-episodes", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
@@ -405,4 +440,5 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         eval_episodes=args.eval_episodes,
         save_video=args.save_video,
+        seed=args.seed,
     )

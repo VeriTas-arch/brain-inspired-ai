@@ -19,6 +19,7 @@ dependencies = [
     "opencv-python>=5",
     "torch>=2.14",
     "torchrl>=0.13.3",
+    "tensordict>=0.13",
     "tqdm>=4.70",
 ]
 
@@ -33,10 +34,12 @@ include = ["algorithms*", "environments*", "utils*"]
 
 [tool.pytest.ini_options]
 addopts = ["-ra", "--strict-config", "--strict-markers"]
+cache_dir = ".cache/pytest"
 pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.ruff]
+cache-dir = ".cache/ruff"
 line-length = 100
 target-version = "py312"
 extend-exclude = ["Atari_RL_Complete_Tutorial.ipynb"]

@@ -1,12 +1,8 @@
 """Visualize trained agent gameplay by loading saved models."""
 
 import argparse
-import sys
-from pathlib import Path
 
 import torch
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from algorithms import DQNAgent, PPOAgent
 from environments import AtariEnv
@@ -100,7 +96,8 @@ def visualize_agent(
                 action = agent.select_action(state, deterministic=True)
 
                 # Take step
-                next_state, reward, done = env.step(action)
+                next_state, reward, terminated, truncated = env.step(action)
+                done = terminated or truncated
                 episode_reward += reward
                 state = next_state
 

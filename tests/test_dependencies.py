@@ -22,3 +22,12 @@ def test_torchrl_is_the_only_added_rl_framework() -> None:
     assert any(requirement.startswith("torchrl>=") for requirement in dependencies)
     assert not any("stable-baselines3" in requirement for requirement in dependencies)
     assert not any("envpool" in requirement for requirement in dependencies)
+
+
+def test_compute_stack_uses_the_current_development_baseline() -> None:
+    config = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+
+    dependencies = config["project"]["dependencies"]
+    assert "torch>=2.14" in dependencies
+    assert "torchrl>=0.13.3" in dependencies
+    assert "tensordict>=0.13" in dependencies

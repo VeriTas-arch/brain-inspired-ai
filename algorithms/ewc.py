@@ -7,6 +7,37 @@ from torch.distributions import Categorical
 from .base import BaseAgent, safe_torch_load
 
 
+def summarize_fisher_information(
+    fisher: dict[str, torch.Tensor],
+) -> dict[str, dict[str, float | int]]:
+    """Summarize diagonal Fisher coverage by top-level module."""
+    modules: dict[str, dict[str, float | int]] = {}
+    for name, values in fisher.items():
+        module = name.split(".", 1)[0]
+        summary = modules.setdefault(
+            module,
+            {
+                "parameter_tensors": 0,
+                "elements": 0,
+                "nonzero_elements": 0,
+                "fisher_sum": 0.0,
+                "fisher_max": 0.0,
+            },
+        )
+        summary["parameter_tensors"] += 1
+        summary["elements"] += values.numel()
+        summary["nonzero_elements"] += torch.count_nonzero(values).item()
+        summary["fisher_sum"] += values.sum().item()
+        summary["fisher_max"] = max(float(summary["fisher_max"]), values.max().item())
+
+    for summary in modules.values():
+        elements = int(summary["elements"])
+        summary["nonzero_fraction"] = (
+            int(summary["nonzero_elements"]) / elements if elements else 0.0
+        )
+    return modules
+
+
 class EWCWrapper:
     """Add an EWC regularizer without duplicating an agent's update loop."""
 
@@ -15,6 +46,7 @@ class EWCWrapper:
         self.ewc_lambda = ewc_lambda
         self.task_weights: dict[int, dict[str, torch.Tensor]] = {}
         self.task_fisher: dict[int, dict[str, torch.Tensor]] = {}
+        self.task_fisher_summary: dict[int, dict] = {}
         self.current_task_id = 0
 
     def _collect_regularized_params(self) -> dict[str, torch.Tensor]:
@@ -105,7 +137,7 @@ class EWCWrapper:
         is_dqn = "next_states" in batch
 
         for index in indices:
-            self.agent.optimizer.zero_grad()
+            self.agent.optimizer.zero_grad(set_to_none=True)
             loss = (
                 self._dqn_sample_loss(batch, index)
                 if is_dqn
@@ -116,12 +148,12 @@ class EWCWrapper:
                 if parameter.grad is not None:
                     fisher[name].add_(parameter.grad.detach().square())
 
-        self.agent.optimizer.zero_grad()
+        self.agent.optimizer.zero_grad(set_to_none=True)
         for value in fisher.values():
             value.div_(sample_count)
         return fisher
 
-    def consolidate_weights(self, batch: dict[str, torch.Tensor] | None = None) -> None:
+    def consolidate_weights(self, batch: dict[str, torch.Tensor] | None = None) -> dict:
         """Save a task snapshot and its empirical Fisher."""
         if batch is None:
             raise ValueError("EWC consolidation requires a representative task batch")
@@ -132,9 +164,21 @@ class EWCWrapper:
 
         weights = {name: parameter.detach().clone() for name, parameter in params.items()}
         fisher = self.compute_fisher_information(batch)
-        self.task_weights[self.current_task_id] = weights
-        self.task_fisher[self.current_task_id] = fisher
+        task_id = self.current_task_id
+        diagnostic = {
+            "estimator": (
+                "td_mse_squared_gradient"
+                if "next_states" in batch
+                else "policy_nll_empirical_fisher"
+            ),
+            "sample_count": min(100, len(batch["states"])),
+            "modules": summarize_fisher_information(fisher),
+        }
+        self.task_weights[task_id] = weights
+        self.task_fisher[task_id] = fisher
+        self.task_fisher_summary[task_id] = diagnostic
         self.current_task_id += 1
+        return diagnostic
 
     def compute_ewc_loss(self) -> torch.Tensor:
         """Compute the EWC penalty over all consolidated tasks."""
@@ -182,6 +226,11 @@ class EWCWrapper:
         """Return the wrapped agent's device."""
         return self.agent.device
 
+    @property
+    def gamma(self):
+        """Return the wrapped agent's discount factor."""
+        return self.agent.gamma
+
     def register_task(self, task_id: str, action_dim: int) -> None:
         """Register a task on a multi-head agent."""
         self.agent.register_task(task_id, action_dim)
@@ -199,6 +248,7 @@ class EWCWrapper:
                 "ewc_lambda": self.ewc_lambda,
                 "task_weights": self.task_weights,
                 "task_fisher": self.task_fisher,
+                "task_fisher_summary": self.task_fisher_summary,
                 "current_task_id": self.current_task_id,
             },
             path,
@@ -215,4 +265,5 @@ class EWCWrapper:
         self.ewc_lambda = checkpoint["ewc_lambda"]
         self.task_weights = checkpoint["task_weights"]
         self.task_fisher = checkpoint["task_fisher"]
+        self.task_fisher_summary = checkpoint.get("task_fisher_summary", {})
         self.current_task_id = checkpoint["current_task_id"]

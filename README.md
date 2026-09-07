@@ -1,37 +1,51 @@
 # Atari RL Playground
 
-一个面向课程教学的 Atari 强化学习与持续学习仓库。仓库保留可读的 PyTorch 手工实现，便于学生检查 DQN、PPO、多任务头和 EWC 的关键步骤；TorchRL 作为后续逐步迁移与对照验证的唯一新增强化学习框架依赖。
+An educational repository for Atari reinforcement learning and continual learning. It keeps
+readable, hand-written PyTorch implementations so students can inspect the essential steps in
+DQN, PPO, multi-head agents, and EWC. TorchRL is the only newly introduced reinforcement-learning
+framework dependency and will be adopted incrementally for migration and reference testing.
 
-当前没有引入 Stable-Baselines3，也没有引入 EnvPool 等外部加速框架。
+Stable-Baselines3 and external acceleration frameworks such as EnvPool are not currently project
+dependencies.
 
-## 当前范围
+## Current Scope
 
-- DQN 与 PPO 的单任务训练
-- 共享视觉骨干、按游戏划分输出头的联合训练和顺序训练
-- 基于逐样本平方梯度估计对角 Fisher 的 EWC
-- 每个训练阶段完成后，对所有已见任务进行确定性评估
-- 完整保存网络、任务头、优化器以及 EWC 状态
-- pytest 回归测试与 Ruff 静态检查
+- Single-task DQN and PPO training
+- Joint and sequential training with a shared visual backbone and game-specific output heads
+- EWC with a diagonal empirical Fisher estimated from per-sample squared gradients
+- Deterministic evaluation of every previously seen task after each training stage
+- Complete checkpoints containing networks, task heads, optimizer state, and EWC state
+- pytest regression tests and Ruff static checks
 
-TorchRL 目前只建立了依赖和导入测试。现有教学算法尚未整体改写为 TorchRL trainer；后续可以分别评估其 TensorDict、replay buffer、collector 和 objective 组件，避免一次性替换后失去可读的课程基线。
+TorchRL currently has a dependency and import smoke test only. The teaching implementations have
+not been replaced by a TorchRL trainer. Its TensorDict, replay buffer, collector, and objective
+components can be evaluated independently later without removing the readable baseline all at
+once.
 
-## 安装
+## Installation
 
-项目要求 Python 3.12 或更高版本。`pyproject.toml` 只声明经过验证的最低版本，不设置依赖上界。安装项目及开发工具：
+Python 3.12 or newer is required. `pyproject.toml` declares tested minimum versions without upper
+bounds. Install the project and development tools with pip:
 
 ```bash
 python -m pip install -e ".[dev]"
 ```
 
-兼容旧的安装命令：
+The current development baseline is PyTorch 2.14 with TorchRL 0.13.3 and TensorDict 0.13. It is not
+compatible with the teaching server's current NVIDIA 550 driver. Upgrade that server to a driver
+supported by the selected PyTorch wheel before deploying this development version; the previous
+PyTorch 2.6 CUDA 12.4 stack is no longer a compatibility target.
+
+The legacy installation command remains available:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` 只是指向 `pyproject.toml` 的兼容入口，不再维护第二份版本列表。
+`requirements.txt` is only a compatibility entry point to `pyproject.toml`; it does not maintain a
+second dependency list. This project does not use `uv`.
 
-## 验证
+## Validation
 
 ```bash
 pytest
@@ -39,26 +53,44 @@ ruff check .
 python scripts/demo.py
 ```
 
-`test_framework.py` 仍可作为旧课程材料的兼容入口：
+`test_framework.py` remains as a compatibility entry point for older course material:
 
 ```bash
 python test_framework.py
 ```
 
-## 环境契约
+## Teaching Notebook
 
-训练与评估共享相同的视觉与时间预处理：
+`Atari_RL_Complete_Tutorial.ipynb` is a thin teaching interface for prose, equations, short calls
+into tested Python examples, experiment previews, and result display. It does not install packages
+or contain independent training implementations. The executable examples live in
+`scripts/tutorial_examples.py`, and full experiments remain available through the training,
+evaluation, and experiment-runner scripts.
 
-- ALE 内建 `frameskip=1`
-- 项目中的 `MaxAndSkipEnv` 执行一次 `frame_skip=4`
-- 观测缩放到 84×84、灰度化并堆叠 4 帧
-- 像素在环境和 replay buffer 中保持 `uint8`，采样后才转为浮点
+In a restricted execution sandbox, PyTorch may warn that it cannot initialize NVML even when CUDA
+computation works. This is caused by unavailable NVIDIA management device nodes rather than by the
+repository. Run `nvidia-smi` or GPU integration tests with elevated permissions when GPU telemetry
+is required; do not suppress the warning in project code.
 
-训练环境额外使用 episodic-life 和符号奖励裁剪。评估环境不使用这两项训练技巧，因此报告的是完整游戏上的原始奖励。DQN 和 PPO 的评估动作都是确定性的。
+pytest and Ruff keep their repository-local caches under `.cache/pytest` and `.cache/ruff`.
 
-## 训练
+## Environment Contract
 
-单任务：
+Training and evaluation use the same visual and temporal preprocessing:
+
+- ALE uses its built-in `frameskip=1`.
+- The project applies `frame_skip=4` once through `MaxAndSkipEnv`.
+- Observations are resized to 84×84, converted to grayscale, and stacked over four frames.
+- Pixels remain `uint8` through environment and buffer storage and during device transfer; network
+  preprocessing converts them to floating point.
+
+Training additionally uses episodic-life termination and sign-based reward clipping. Evaluation
+uses neither training-only technique, so it reports raw rewards over complete games. DQN and PPO
+both use deterministic actions during evaluation.
+
+## Training
+
+Single-task training:
 
 ```bash
 python scripts/train_single.py \
@@ -67,7 +99,7 @@ python scripts/train_single.py \
   --steps 500000
 ```
 
-顺序持续学习：
+Sequential continual learning:
 
 ```bash
 python scripts/train_continual.py \
@@ -76,7 +108,7 @@ python scripts/train_continual.py \
   --steps-per-game 50000
 ```
 
-加入 EWC：
+Continual learning with EWC:
 
 ```bash
 python scripts/train_continual.py \
@@ -87,7 +119,7 @@ python scripts/train_continual.py \
   --steps-per-game 50000
 ```
 
-联合多任务训练：
+Joint multi-task training:
 
 ```bash
 python scripts/train_multitask.py \
@@ -96,71 +128,137 @@ python scripts/train_multitask.py \
   --steps 150000
 ```
 
-训练视频默认关闭，可通过 `--save-video` 开启。DQN 默认在 10,000 个 agent steps 后开始更新，使每任务 50,000 步的课程配置能够实际发生学习。持续学习入口会把阶段×任务矩阵和逐任务遗忘量写入 `outputs/continual/.../continual_evaluation.json`；评估次数可用 `--eval-episodes` 调整。
+Training videos are disabled by default and can be enabled with `--save-video`. DQN starts
+updating after 10,000 agent steps so the 50,000-step-per-task course configuration performs actual
+optimization. Continual training writes the stage-by-task score matrix and per-task forgetting to
+`outputs/continual/.../continual_evaluation.json`; configure the evaluation budget with
+`--eval-episodes`.
 
-## 评估
+## Evaluation
 
-单任务 checkpoint：
+Evaluate a single-task checkpoint:
 
 ```bash
 python scripts/evaluate.py \
   --mode single \
-  --model checkpoints/single/Pong-v5_dqn.pt \
+  --model checkpoints/single/Pong-v5_dqn/seed-0.pt \
   --algorithm dqn \
   --game Pong-v5 \
   --episodes 10 \
-  --json-out outputs/single/Pong-v5_dqn/eval/metrics.json
+  --seed 0 \
+  --json-out outputs/single/Pong-v5_dqn/seed-0/eval/metrics.json
 ```
 
-持续学习 checkpoint：
+Evaluate a continual-learning checkpoint:
 
 ```bash
 python scripts/evaluate.py \
   --mode continual \
-  --model checkpoints/continual/ppo_ewcTrue.pt \
+  --model checkpoints/continual/ppo_ewcTrue/seed-0.pt \
   --algorithm ppo \
   --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
   --ewc \
   --episodes 5 \
-  --json-out outputs/continual/ppo_ewcTrue/eval/metrics.json
+  --seed 0 \
+  --json-out outputs/continual/ppo_ewcTrue/seed-0/eval/metrics.json
 ```
 
-批处理脚本同时提供 GPU 默认版和 `_cpu.sh` 版本。
+The visualization script reads these `metrics.json` files and the
+`continual_evaluation.json` files produced during training:
 
-## 如何解释 EWC 结果
+```bash
+python scripts/visualize_results.py --type evaluation --results-dir outputs
+python scripts/visualize_results.py --type continual --results-dir outputs
+```
 
-EWC 是稳定性正则项，不是任务冲突求解器。它可以限制对旧任务重要参数的漂移，因此可能减缓遗忘；当新旧任务在共享骨干上需要相反的更新方向时，提高 EWC 强度通常只会把问题转化为“旧任务保留更多、但新任务学得更慢”。多头输出解决了动作空间不同的问题，但没有消除共享表征中的梯度冲突。
+Each game is displayed on a separate raw-reward axis. The script does not average raw rewards
+across games or infer that EWC is effective from an experiment directory name.
 
-持续学习实验应保存阶段×任务得分矩阵 `R[i, j]`，并至少分开报告：
+## Experiment Matrices
 
-- 旧任务保持：任务 `j` 的历史最佳得分与最终得分之差
-- 新任务可塑性：首次完成任务 `j` 训练后的 `R[j, j]`
-- 联合折中：同一方法的保持与可塑性，而不是只看最终平均分
+The standard experiment matrices are defined in one Python entry point instead of separate
+CPU/GPU and parallel/sequential shell scripts. Runs are sequential by default:
 
-不同 Atari 游戏的原始奖励尺度不同，不应直接把它们相加后解释为单一性能指标。随机数据上的训练损失也不能证明发生了遗忘。下一阶段应先固定 seeds、评估预算和得分矩阵，再比较 EWC 与能够处理冲突的候选方法，例如小型 episodic replay；只有在基线协议稳定后再考虑更复杂的梯度投影或蒸馏方法。
+```bash
+python scripts/run_experiments.py train single
+python scripts/run_experiments.py train continual --device cpu
+python scripts/run_experiments.py evaluate multitask
+```
 
-## 代码结构
+Use `--parallel` to launch every job in the selected matrix concurrently. In automatic or CUDA
+mode, parallel jobs are assigned to visible GPUs round-robin; sequential jobs use the first visible
+GPU. Use `--device cpu` to hide CUDA from child processes. Training output and all parallel-job
+output are written under `logs/`.
+
+Inspect a matrix without starting any training or evaluation:
+
+```bash
+python scripts/run_experiments.py train continual --parallel --dry-run
+```
+
+The runner also accepts `--games`, `--algorithms`, `--steps`, `--episodes`, `--max-steps`,
+`--ewc-mode`, `--ewc-lambda`, and `--seed`; run it with `--help` for the complete interface. Training
+and evaluation default to seed 0 and jointly seed Python, NumPy, PyTorch, and each Atari environment.
+Use `--seeds 0 1 2` to expand a matrix over independent, seed-specific output, checkpoint, and log
+paths.
+
+## Interpreting EWC Results
+
+EWC is a stability regularizer, not a task-conflict solver. It can limit movement in parameters
+that were important to previous tasks and may therefore reduce forgetting. When old and new tasks
+require opposing updates in the shared backbone, increasing EWC strength generally changes the
+trade-off to better retention but slower new-task learning. Multi-head outputs resolve differing
+action spaces but do not remove gradient conflicts in shared representations.
+
+Continual-learning experiments should retain the stage-by-task score matrix `R[i, j]` and report at
+least the following quantities separately:
+
+- Old-task retention: the difference between task `j`'s best historical score and final score
+- New-task plasticity: `R[j, j]`, measured immediately after training task `j`
+- Joint trade-off: retention and plasticity for the same method, rather than only a final average
+
+EWC runs also write `ewc_diagnostics` into `continual_evaluation.json`. It records the Fisher
+estimator, sample count, and nonzero coverage by module. The current PPO estimator is based on the
+policy negative log-likelihood, so it protects policy-sensitive backbone and actor directions but
+does not produce nonzero Fisher entries for the critic. Treat this as an explicit implementation
+boundary, not as evidence that value-function preservation is unnecessary.
+
+Raw rewards from different Atari games have different scales and should not be summed and
+interpreted as a single performance measure. Training loss on random data is also not evidence of
+forgetting. The next experimental phase should first freeze seeds, evaluation budgets, and the
+score matrix, then compare EWC with a conflict-aware candidate such as a small episodic replay
+baseline. More complex gradient projection or distillation methods should be considered only after
+the baseline protocol is stable.
+
+## Repository Layout
 
 ```text
-algorithms/               DQN、PPO、多头模型与 EWC
-environments/             Atari 环境及训练/评估预处理
-utils/                    replay/rollout buffer 与可视化
-scripts/train_single.py   单任务训练
-scripts/train_continual.py 顺序持续学习
-scripts/train_multitask.py 联合多任务训练
-scripts/evaluate.py       checkpoint 评估
-tests/                    正确性与兼容性回归测试
-pyproject.toml            唯一依赖与工具配置源
+algorithms/                DQN, PPO, multi-head agents, and EWC
+environments/              Atari environments and train/evaluation preprocessing
+utils/                     replay/rollout buffers and visualization utilities
+scripts/train_single.py    single-task training
+scripts/train_continual.py sequential continual learning
+scripts/train_multitask.py joint multi-task training
+scripts/evaluate.py        checkpoint evaluation
+scripts/run_experiments.py standard experiment matrices and process execution
+scripts/tutorial_examples.py short, testable examples used by the notebook
+tests/                     correctness and compatibility regression tests
+pyproject.toml             single source of dependency and tool configuration
 ```
 
-## 当前已知边界
+## Known Limitations
 
-- 训练循环仍是教学用途的同步、单环境实现；尚未开始性能优化。
-- replay buffer 仍按 transition 保存 `state` 和 `next_state`，后续可在不引入额外加速库的前提下优化布局。
-- 简化的环境接口目前将 Gymnasium 的 `terminated` 与 `truncated` 合并为 `done`；在开展时间限制敏感的实验前应进一步拆分。
-- 现有 EWC 使用对角经验 Fisher，它不能表达参数之间的相关性，也不保证解决正向迁移或任务冲突。
+- Training loops remain synchronous, single-environment teaching implementations. The first data
+  path optimizations preserve `uint8` pixels through transfer and reuse preallocated rollout
+  storage; environment parallelism has not started.
+- The replay buffer stores both `state` and `next_state` per transition. Its layout can later be
+  optimized without introducing another acceleration framework.
+- Training handles Gymnasium `terminated` and `truncated` separately: DQN bootstraps time-limit
+  transitions, while PPO bootstraps the final observation and then closes the GAE segment.
+- The current EWC implementation uses a diagonal empirical Fisher. It cannot represent parameter
+  correlations and does not guarantee positive transfer or resolution of task conflicts.
 
-## 参考资料
+## References
 
 - [DQN](https://www.nature.com/articles/nature14236)
 - [PPO](https://arxiv.org/abs/1707.06347)

@@ -84,7 +84,7 @@ class AtariEnv:
         self._reset_seed = None
         return torch.as_tensor(np.asarray(obs))
 
-    def step(self, action: int) -> tuple[torch.Tensor, float, bool]:
+    def step(self, action: int) -> tuple[torch.Tensor, float, bool, bool]:
         """Take a step in the environment.
 
         Args:
@@ -93,12 +93,13 @@ class AtariEnv:
         Returns:
             state: Current state
             reward: Reward
-            done: Whether episode is done
+            terminated: Whether the transition reached an MDP terminal state
+            truncated: Whether an external time limit ended the episode
         """
         if not self.env.action_space.contains(action):
             raise ValueError(f"Action {action!r} is outside {self.env.action_space}")
         obs, reward, terminated, truncated, _ = self.env.step(action)
-        return torch.as_tensor(np.asarray(obs)), float(reward), terminated or truncated
+        return torch.as_tensor(np.asarray(obs)), float(reward), terminated, truncated
 
     def close(self) -> None:
         """Close environment."""

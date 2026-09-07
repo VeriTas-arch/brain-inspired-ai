@@ -1,7 +1,6 @@
 """Multi-task joint training on multiple Atari games."""
 
 import argparse
-import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -9,11 +8,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from algorithms import DEFAULT_DQN_LEARNING_STARTS, MultiHeadDQNAgent, MultiHeadPPOAgent
+from algorithms import (
+    DEFAULT_DQN_LEARNING_STARTS,
+    MultiHeadDQNAgent,
+    MultiHeadPPOAgent,
+    bootstrap_truncated_reward,
+)
 from environments import AtariEnv
-from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder
+from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
 
 
 def train_multitask(
@@ -22,10 +24,12 @@ def train_multitask(
     total_steps: int = 150000,
     batch_size: int = 32,
     save_video: bool = False,
+    seed: int = 0,
 ):
     """Train agent on multiple games jointly (random task sampling per iteration)."""
     if games is None:
         games = ["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
+    seed_everything(seed)
 
     print(f"Multi-task Joint Training: {algorithm.upper()} on {games}")
     print(f"Total steps: {total_steps}")
@@ -33,8 +37,8 @@ def train_multitask(
     # Initialize environments and get action dimensions
     envs = {}
     action_dims = {}
-    for game_name in games:
-        env = AtariEnv(game_name, render_mode=None)
+    for game_index, game_name in enumerate(games):
+        env = AtariEnv(game_name, render_mode=None, seed=seed + game_index)
         envs[game_name] = env
         action_dims[game_name] = env.action_space
 
@@ -70,7 +74,7 @@ def train_multitask(
     for game_name in games:
         agent.register_task(game_name, action_dims[game_name])
 
-    exp_dir = Path("outputs") / "multitask" / f"{algorithm}"
+    exp_dir = Path("outputs") / "multitask" / algorithm / f"seed-{seed}"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     # Per-game video recorders (optional)
@@ -108,9 +112,10 @@ def train_multitask(
         if algorithm == "dqn":
             # DQN: collect one step, then potentially train
             action = agent.select_action(state)
-            next_state, reward, done = env.step(action)
+            next_state, reward, terminated, truncated = env.step(action)
+            episode_done = terminated or truncated
             episode_reward[current_game] += reward
-            buffer.add(state, action, reward, next_state, done)
+            buffer.add(state, action, reward, next_state, terminated)
 
             if save_video and current_game in video_recorders and step % 2 == 0:
                 frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
@@ -120,7 +125,7 @@ def train_multitask(
             step += 1
             pbar.update(1)
 
-            if done:
+            if episode_done:
                 episode_rewards[current_game].append(episode_reward[current_game])
                 metrics_plotter.add_metric(
                     f"{current_game}_episode_reward", episode_reward[current_game]
@@ -167,9 +172,30 @@ def train_multitask(
                     log_prob_val = log_prob.item()
                     value_val = value.item()
 
-                next_state, reward, done = env.step(action)
+                next_state, reward, terminated, truncated = env.step(action)
+                episode_done = terminated or truncated
                 episode_reward[current_game] += reward
-                buffer.add(state, action, reward, done, log_prob_val, value_val)
+                training_reward = reward
+                if truncated and not terminated:
+                    with torch.no_grad():
+                        truncated_value = agent.get_value(
+                            next_state.unsqueeze(0).to(agent.device)
+                        ).item()
+                    training_reward = bootstrap_truncated_reward(
+                        reward,
+                        truncated_value,
+                        terminated=terminated,
+                        truncated=truncated,
+                        gamma=agent.gamma,
+                    )
+                buffer.add(
+                    state,
+                    action,
+                    training_reward,
+                    episode_done,
+                    log_prob_val,
+                    value_val,
+                )
 
                 if save_video and current_game in video_recorders and step % 2 == 0:
                     frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
@@ -180,7 +206,7 @@ def train_multitask(
                 rollout_step += 1
                 pbar.update(1)
 
-                if done:
+                if episode_done:
                     episode_rewards[current_game].append(episode_reward[current_game])
                     metrics_plotter.add_metric(
                         f"{current_game}_episode_reward", episode_reward[current_game]
@@ -190,7 +216,7 @@ def train_multitask(
                     episode_count[current_game] += 1
 
             # Update when buffer is full
-            if buffer.is_full() and rollout_step >= rollout_length:
+            if buffer.ready_for_update(final=step >= total_steps):
                 with torch.no_grad():
                     next_state_tensor = states[current_game].unsqueeze(0).to(agent.device)
                     next_value = agent.get_value(next_state_tensor).flatten()
@@ -242,7 +268,8 @@ def train_multitask(
     # Save model checkpoint
     ckpt_root = Path("checkpoints") / "multitask"
     ckpt_root.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = ckpt_root / f"{algorithm}.pt"
+    checkpoint_path = ckpt_root / algorithm / f"seed-{seed}.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     agent.save(str(checkpoint_path))
     print(f"Agent saved: {checkpoint_path}")
 
@@ -261,6 +288,7 @@ if __name__ == "__main__":
         "--steps", type=int, default=150000, help="Total training steps across all games"
     )
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
@@ -273,4 +301,5 @@ if __name__ == "__main__":
         total_steps=args.steps,
         batch_size=args.batch_size,
         save_video=args.save_video,
+        seed=args.seed,
     )

@@ -1,6 +1,5 @@
 """Rollout buffer for on-policy algorithms like PPO."""
 
-import numpy as np
 import torch
 
 
@@ -14,17 +13,19 @@ class RolloutBuffer:
         Args:
             capacity: Number of steps to collect before updating (rollout length)
         """
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
         self.capacity = capacity
-        self.reset()
+        self.states: torch.Tensor | None = None
+        self.actions = torch.empty(capacity, dtype=torch.long)
+        self.rewards = torch.empty(capacity, dtype=torch.float32)
+        self.dones = torch.empty(capacity, dtype=torch.float32)
+        self.log_probs = torch.empty(capacity, dtype=torch.float32)
+        self.values = torch.empty(capacity, dtype=torch.float32)
+        self.pos = 0
 
     def reset(self) -> None:
         """Reset the buffer."""
-        self.states = []
-        self.actions = []
-        self.rewards = []
-        self.dones = []
-        self.log_probs = []
-        self.values = []
         self.pos = 0
 
     def add(
@@ -37,12 +38,24 @@ class RolloutBuffer:
         value: float,
     ) -> None:
         """Add a transition to the buffer."""
-        self.states.append(state.detach().cpu().numpy().copy())
-        self.actions.append(action)
-        self.rewards.append(reward)
-        self.dones.append(done)
-        self.log_probs.append(log_prob)
-        self.values.append(value)
+        if self.is_full():
+            raise RuntimeError("Cannot add to a full rollout buffer")
+
+        state = state.detach().to("cpu")
+        if self.states is None:
+            self.states = torch.empty(
+                (self.capacity, *state.shape),
+                dtype=state.dtype,
+            )
+        elif state.shape != self.states.shape[1:] or state.dtype != self.states.dtype:
+            raise ValueError("Rollout states must have a consistent shape and dtype")
+
+        self.states[self.pos].copy_(state)
+        self.actions[self.pos] = action
+        self.rewards[self.pos] = reward
+        self.dones[self.pos] = done
+        self.log_probs[self.pos] = log_prob
+        self.values[self.pos] = value
         self.pos += 1
 
     def is_full(self) -> bool:
@@ -51,14 +64,21 @@ class RolloutBuffer:
 
     def get_batch(self) -> dict[str, torch.Tensor]:
         """Get all collected data as a batch."""
+        if self.states is None or self.pos == 0:
+            raise ValueError("Cannot get a batch from an empty rollout buffer")
+        batch_slice = slice(0, self.pos)
         return {
-            "states": torch.from_numpy(np.stack(self.states)).float(),
-            "actions": torch.from_numpy(np.array(self.actions)).long(),
-            "rewards": torch.from_numpy(np.array(self.rewards)).float(),
-            "dones": torch.from_numpy(np.array(self.dones)).float(),
-            "log_probs": torch.from_numpy(np.array(self.log_probs)).float(),
-            "values": torch.from_numpy(np.array(self.values)).float(),
+            "states": self.states[batch_slice],
+            "actions": self.actions[batch_slice],
+            "rewards": self.rewards[batch_slice],
+            "dones": self.dones[batch_slice],
+            "log_probs": self.log_probs[batch_slice],
+            "values": self.values[batch_slice],
         }
+
+    def ready_for_update(self, *, final: bool = False) -> bool:
+        """Return whether a full or final partial rollout should be optimized."""
+        return self.is_full() or (final and self.pos > 0)
 
     def __len__(self) -> int:
         """Return current buffer size."""

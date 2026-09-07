@@ -2,8 +2,8 @@
 
 from .base import BaseAgent, SimpleNet
 from .dqn import DEFAULT_DQN_LEARNING_STARTS, DQNAgent, MultiHeadDQNAgent
-from .ewc import EWCWrapper
-from .ppo import MultiHeadPPOAgent, PPOAgent
+from .ewc import EWCWrapper, summarize_fisher_information
+from .ppo import MultiHeadPPOAgent, PPOAgent, bootstrap_truncated_reward
 
 __all__ = [
     "BaseAgent",
@@ -14,4 +14,6 @@ __all__ = [
     "PPOAgent",
     "MultiHeadPPOAgent",
     "EWCWrapper",
+    "bootstrap_truncated_reward",
+    "summarize_fisher_information",
 ]
