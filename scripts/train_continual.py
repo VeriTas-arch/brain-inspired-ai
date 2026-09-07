@@ -1,17 +1,59 @@
 """Continual learning on multiple Atari games."""
-import sys
-import torch
+
 import argparse
+import json
+import sys
 from pathlib import Path
-from tqdm import tqdm
-import numpy as np
+
 import matplotlib.pyplot as plt
+import torch
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms import DQNAgent, PPOAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent
+from algorithms import (
+    DEFAULT_DQN_LEARNING_STARTS,
+    EWCWrapper,
+    MultiHeadDQNAgent,
+    MultiHeadPPOAgent,
+)
 from environments import AtariEnv
-from utils import ReplayBuffer, RolloutBuffer, VideoRecorder, MetricsPlotter
+from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder
+
+
+def build_evaluation_report(eval_history: dict, games: list[str]) -> dict:
+    """Build a stage-by-task score matrix without aggregating across games."""
+    history_by_game = {
+        game: {stage: float(reward) for stage, reward in eval_history.get(game, [])}
+        for game in games
+    }
+    score_matrix = [
+        {
+            "stage": stage,
+            "after_task": trained_game,
+            "scores": {game: history_by_game[game].get(stage) for game in games},
+        }
+        for stage, trained_game in enumerate(games, start=1)
+    ]
+
+    per_task = {}
+    for game in games:
+        history = sorted(eval_history.get(game, []), key=lambda item: item[0])
+        if not history:
+            continue
+        scores = [float(reward) for _, reward in history]
+        per_task[game] = {
+            "score_after_learning": scores[0],
+            "best_score": max(scores),
+            "final_score": scores[-1],
+            "forgetting": max(scores) - scores[-1],
+        }
+
+    return {
+        "score_units": "raw_environment_reward",
+        "score_matrix": score_matrix,
+        "per_task": per_task,
+    }
 
 
 def plot_forgetting_curves(eval_history: dict, output_path: Path) -> bool:
@@ -55,11 +97,14 @@ def train_continual(
     ewc_lambda: float = 0.4,
     steps_per_game: int = 50000,
     batch_size: int = 32,
+    eval_episodes: int = 5,
     save_video: bool = False,
 ):
     """Train agent on multiple games sequentially."""
     if games is None:
         games = ["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
+    if eval_episodes <= 0:
+        raise ValueError("eval_episodes must be positive")
 
     print(f"Continual Learning: {algorithm.upper()} on {games}")
     print(f"EWC: {use_ewc}")
@@ -69,8 +114,6 @@ def train_continual(
     continual_metrics = {}
     eval_history = {game: [] for game in games}
     agent = None
-    base_action_dim = None
-
     for game_idx, game_name in enumerate(games):
         print(f"\n=== Task {game_idx + 1}/{len(games)}: {game_name} ===")
 
@@ -79,7 +122,6 @@ def train_continual(
         task_id = game_name
 
         if agent is None:
-            base_action_dim = action_dim
             if algorithm == "dqn":
                 base_agent = MultiHeadDQNAgent(
                     state_dim=4,
@@ -114,7 +156,7 @@ def train_continual(
 
         # Initialize buffers and training parameters based on algorithm
         if algorithm == "dqn":
-            learning_starts = 80000
+            learning_starts = DEFAULT_DQN_LEARNING_STARTS
             train_frequency = 4
             buffer = ReplayBuffer(capacity=100000)
         else:  # ppo
@@ -130,33 +172,21 @@ def train_continual(
 
         video_recorder = None
         if save_video:
-            video_recorder = VideoRecorder(
-                str(exp_dir / "training.mp4"),
-                fps=30
-            )
+            video_recorder = VideoRecorder(str(exp_dir / "training.mp4"), fps=30)
 
         state = env.reset()
         episode_reward = 0
         episode_rewards = []
         episode_count = 0
         step = 0
+        last_rollout_data = None
 
         pbar = tqdm(total=steps_per_game, desc=f"Training on {game_name}")
-        
+
         while step < steps_per_game:
             if algorithm == "dqn":
-                # DQN training logic (same as train_single.py)
-                if isinstance(agent, EWCWrapper) and isinstance(agent.agent, MultiHeadDQNAgent):
-                    # MultiHeadDQNAgent uses its own epsilon management
-                    action = agent.select_action(state)
-                elif isinstance(agent, MultiHeadDQNAgent):
-                    action = agent.select_action(state)
-                else:
-                    # Regular DQNAgent
-                    if hasattr(agent, 'global_step'):
-                        agent.global_step = step
-                    action = agent.select_action(state, training=True)
-                
+                action = agent.select_action(state)
+
                 next_state, reward, done = env.step(action)
                 episode_reward += reward
                 buffer.add(state, action, reward, next_state, done)
@@ -165,20 +195,28 @@ def train_continual(
                     frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
                     video_recorder.add_frame(frame)
 
-                if step > learning_starts and step % train_frequency == 0:
+                if step >= learning_starts and step % train_frequency == 0:
                     if buffer.is_ready(batch_size):
                         batch = buffer.sample(batch_size)
                         metrics = agent.update(batch)
                         pbar.set_postfix(metrics)
 
                         if "loss" in metrics:
-                            continual_metrics.setdefault(game_name + "_loss", []).append(metrics["loss"])
+                            continual_metrics.setdefault(game_name + "_loss", []).append(
+                                metrics["loss"]
+                            )
                         if "epsilon" in metrics:
-                            continual_metrics.setdefault(game_name + "_epsilon", []).append(metrics["epsilon"])
+                            continual_metrics.setdefault(game_name + "_epsilon", []).append(
+                                metrics["epsilon"]
+                            )
                         if "q_value" in metrics:
-                            continual_metrics.setdefault(game_name + "_q_value", []).append(metrics["q_value"])
+                            continual_metrics.setdefault(game_name + "_q_value", []).append(
+                                metrics["q_value"]
+                            )
                         if "ewc_loss" in metrics:
-                            continual_metrics.setdefault(game_name + "_ewc_loss", []).append(metrics["ewc_loss"])
+                            continual_metrics.setdefault(game_name + "_ewc_loss", []).append(
+                                metrics["ewc_loss"]
+                            )
 
                 state = next_state
                 step += 1
@@ -188,14 +226,15 @@ def train_continual(
                     episode_rewards.append(episode_reward)
                     episode_reward = 0
                     state = env.reset()
-            
+
             else:  # ppo
                 # PPO training logic (same as train_single.py)
                 # MultiHeadPPOAgent uses the same interface as MultiHeadDQNAgent
+                collected_steps = 0
                 for rollout_step in range(rollout_length):
                     if step >= steps_per_game:
                         break
-                    
+
                     with torch.no_grad():
                         state_tensor = state.unsqueeze(0).to(agent.device)
                         action_tensor, log_prob, _, value = agent.get_action_and_value(state_tensor)
@@ -208,11 +247,14 @@ def train_continual(
                     buffer.add(state, action, reward, done, log_prob_val, value_val)
 
                     if video_recorder is not None and step % 2 == 0:
-                        frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
+                        frame = (
+                            state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
+                        )
                         video_recorder.add_frame(frame)
 
                     state = next_state
                     step += 1
+                    collected_steps += 1
 
                     if done:
                         episode_rewards.append(episode_reward)
@@ -226,80 +268,76 @@ def train_continual(
                         next_value = agent.get_value(next_state_tensor).flatten()
 
                     rollout_data = buffer.get_batch()
+                    last_rollout_data = {
+                        name: value.detach().clone() for name, value in rollout_data.items()
+                    }
                     metrics = agent.update(rollout_data, next_value, update_epochs, minibatch_size)
                     pbar.set_postfix({**metrics, "episodes": episode_count})
 
                     if "policy_loss" in metrics:
-                        continual_metrics.setdefault(game_name + "_policy_loss", []).append(metrics["policy_loss"])
+                        continual_metrics.setdefault(game_name + "_policy_loss", []).append(
+                            metrics["policy_loss"]
+                        )
                     if "value_loss" in metrics:
-                        continual_metrics.setdefault(game_name + "_value_loss", []).append(metrics["value_loss"])
+                        continual_metrics.setdefault(game_name + "_value_loss", []).append(
+                            metrics["value_loss"]
+                        )
                     if "entropy" in metrics:
-                        continual_metrics.setdefault(game_name + "_entropy", []).append(metrics["entropy"])
+                        continual_metrics.setdefault(game_name + "_entropy", []).append(
+                            metrics["entropy"]
+                        )
                     if "ewc_loss" in metrics:
-                        continual_metrics.setdefault(game_name + "_ewc_loss", []).append(metrics["ewc_loss"])
+                        continual_metrics.setdefault(game_name + "_ewc_loss", []).append(
+                            metrics["ewc_loss"]
+                        )
 
                     buffer.reset()
-                
-                pbar.update(min(rollout_length, steps_per_game - step))
+
+                pbar.update(collected_steps)
 
         if episode_rewards:
             continual_metrics.setdefault(game_name + "_episode_reward", []).extend(episode_rewards)
 
-        for eval_task_idx, eval_game in enumerate(games[: game_idx + 1]):
-            eval_env = AtariEnv(eval_game, render_mode=None)
+        for eval_game in games[: game_idx + 1]:
+            eval_env = AtariEnv(eval_game, render_mode=None, training=False)
             eval_task_id = eval_game
             if isinstance(agent, EWCWrapper) and hasattr(agent.agent, "set_task"):
-                try:
-                    agent.set_task(eval_task_id)
-                except Exception:
-                    pass
+                agent.set_task(eval_task_id)
             elif hasattr(agent, "set_task"):
-                try:
-                    agent.set_task(eval_task_id)
-                except Exception:
-                    pass
+                agent.set_task(eval_task_id)
 
-            num_eval_episodes = 5
             total_eval_reward = 0.0
-            for _ in range(num_eval_episodes):
+            for _ in range(eval_episodes):
                 s = eval_env.reset()
                 done_eval = False
                 ep_r = 0.0
                 while not done_eval:
                     with torch.no_grad():
-                        a = agent.select_action(s)
+                        a = agent.select_action(s, deterministic=True)
                     s, r, done_eval = eval_env.step(a)
                     ep_r += r
                 total_eval_reward += ep_r
-            avg_eval_reward = total_eval_reward / num_eval_episodes
+            avg_eval_reward = total_eval_reward / eval_episodes
             eval_env.close()
 
             eval_history[eval_game].append((game_idx + 1, avg_eval_reward))
-            print(f"[Eval] After task {game_name}, on {eval_game}: avg reward {avg_eval_reward:.2f}")
+            print(
+                f"[Eval] After task {game_name}, on {eval_game}: avg reward {avg_eval_reward:.2f}"
+            )
 
         if video_recorder is not None:
             video_recorder.save(format="mp4")
             print(f"Video saved: {exp_dir / 'training.mp4'}")
 
         if use_ewc:
-            # For Fisher Information computation, we need a sample batch
-            # Use the last batch from the buffer if available
             sample_batch = None
             if algorithm == "dqn" and buffer.is_ready(batch_size):
                 sample_batch = buffer.sample(min(batch_size, 100))
-            elif algorithm == "ppo" and buffer.is_full():
-                sample_batch = buffer.get_batch()
-                # Convert to dict format if needed
-                if not isinstance(sample_batch, dict):
-                    sample_batch = {
-                        "states": sample_batch[0],
-                        "actions": sample_batch[1],
-                        "rewards": sample_batch[2],
-                        "dones": sample_batch[3],
-                        "log_probs": sample_batch[4],
-                        "values": sample_batch[5],
-                    }
-            
+            elif algorithm == "ppo":
+                sample_batch = last_rollout_data
+                if sample_batch is None and len(buffer) > 0:
+                    sample_batch = buffer.get_batch()
+
             agent.consolidate_weights(sample_batch)
             print("Weights consolidated for EWC")
 
@@ -320,6 +358,19 @@ def train_continual(
     eval_metrics_path = exp_root / "forgetting_eval.png"
     plot_forgetting_curves(eval_history, eval_metrics_path)
 
+    evaluation_report = {
+        "algorithm": algorithm,
+        "use_ewc": use_ewc,
+        "ewc_lambda": ewc_lambda if use_ewc else None,
+        "steps_per_game": steps_per_game,
+        "eval_episodes": eval_episodes,
+        **build_evaluation_report(eval_history, games),
+    }
+    evaluation_path = exp_root / "continual_evaluation.json"
+    with evaluation_path.open("w", encoding="utf-8") as output_file:
+        json.dump(evaluation_report, output_file, indent=2)
+    print(f"Continual evaluation data saved: {evaluation_path}")
+
     # Save final agent checkpoint in a structured location
     ckpt_root = Path("checkpoints") / "continual"
     ckpt_root.mkdir(parents=True, exist_ok=True)
@@ -330,13 +381,18 @@ def train_continual(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--games", nargs="+", default=["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"])
+    parser.add_argument(
+        "--games", nargs="+", default=["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
+    )
     parser.add_argument("--algorithm", default="dqn", choices=["dqn", "ppo"])
     parser.add_argument("--use-ewc", action="store_true")
     parser.add_argument("--ewc-lambda", type=float, default=0.4, help="EWC regularization strength")
     parser.add_argument("--steps-per-game", type=int, default=50000)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--save-video", action="store_true", help="Enable video recording (disabled by default)")
+    parser.add_argument("--eval-episodes", type=int, default=5)
+    parser.add_argument(
+        "--save-video", action="store_true", help="Enable video recording (disabled by default)"
+    )
 
     args = parser.parse_args()
 
@@ -347,6 +403,6 @@ if __name__ == "__main__":
         ewc_lambda=args.ewc_lambda,
         steps_per_game=args.steps_per_game,
         batch_size=args.batch_size,
+        eval_episodes=args.eval_episodes,
         save_video=args.save_video,
     )
-

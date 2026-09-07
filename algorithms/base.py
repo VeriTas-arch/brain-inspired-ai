@@ -1,28 +1,20 @@
-"""Base Agent class for RL algorithms."""
-import inspect
+"""Base agent and shared network components."""
+
+from abc import ABC, abstractmethod
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Any
-
-
-_HAS_WEIGHTS_ONLY_ARG = "weights_only" in inspect.signature(torch.load).parameters
 
 
 def safe_torch_load(path: str, map_location=None):
-    """Load checkpoints while explicitly disabling weights_only when available."""
-    load_kwargs = {}
-    if map_location is not None:
-        load_kwargs["map_location"] = map_location
-    if _HAS_WEIGHTS_ONLY_ARG:
-        load_kwargs["weights_only"] = False
-    return torch.load(path, **load_kwargs)
+    """Load tensor-only checkpoints without allowing arbitrary object creation."""
+    return torch.load(path, map_location=map_location, weights_only=True)
 
 
 class BaseAgent(ABC):
     """Abstract base class for RL agents."""
-    
+
     def __init__(self, state_dim: int, action_dim: int, device: str = "cuda"):
         """
         Initialize the base agent.
@@ -37,47 +29,58 @@ class BaseAgent(ABC):
 
         if device == "cuda" and not torch.cuda.is_available():
             import warnings
+
             warnings.warn("CUDA requested but not available, falling back to CPU")
             self.device = torch.device("cpu")
         else:
             self.device = torch.device(device)
 
         self.network = None
-        
+
     @abstractmethod
-    def select_action(self, state: torch.Tensor) -> int:
+    def select_action(self, state: torch.Tensor, deterministic: bool = False) -> int:
         """Select an action given a state."""
-        pass
-    
+        raise NotImplementedError
+
     @abstractmethod
-    def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    def update(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
         """Update the agent with a batch of experiences."""
-        pass
-    
+        raise NotImplementedError
+
+    def checkpoint_state(self) -> dict:
+        """Return serializable state needed to restore the agent."""
+        if self.network is None:
+            return {}
+        return {"network": self.network.state_dict()}
+
+    def load_checkpoint_state(self, checkpoint: dict) -> None:
+        """Restore state produced by :meth:`checkpoint_state`."""
+        if self.network is not None and "network" in checkpoint:
+            self.network.load_state_dict(checkpoint["network"])
+
     def save(self, path: str):
-        """Save the agent's network."""
-        if self.network is not None:
-            torch.save(self.network.state_dict(), path)
-    
+        """Save the complete agent checkpoint."""
+        torch.save(self.checkpoint_state(), path)
+
     def load(self, path: str):
-        """Load the agent's network."""
-        if self.network is not None:
-            state_dict = safe_torch_load(path, map_location=self.device)
-            self.network.load_state_dict(state_dict)
-    
-    def get_weights(self) -> Dict[str, torch.Tensor]:
+        """Load an agent checkpoint."""
+        checkpoint = safe_torch_load(path, map_location=self.device)
+        self.load_checkpoint_state(checkpoint)
+
+    def get_weights(self) -> dict[str, torch.Tensor]:
         """Get network weights for EWC."""
         if self.network is None:
             return {}
         return {name: param.clone().detach() for name, param in self.network.named_parameters()}
-    
-    def set_weights(self, weights: Dict[str, torch.Tensor]):
+
+    def set_weights(self, weights: dict[str, torch.Tensor]):
         """Set network weights."""
         if self.network is None:
             return
-        for name, param in self.network.named_parameters():
-            if name in weights:
-                param.data = weights[name].clone()
+        with torch.no_grad():
+            for name, param in self.network.named_parameters():
+                if name in weights:
+                    param.copy_(weights[name])
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -133,4 +136,3 @@ class AtariBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x / 255.0)
-

@@ -1,17 +1,18 @@
 """Evaluate trained Atari agents (single-task or continual)."""
-import sys
-import json
+
 import argparse
+import json
+import sys
 from pathlib import Path
 from typing import Optional
 
-import torch
 import matplotlib.pyplot as plt
+import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
 from environments import AtariEnv
-from algorithms import DQNAgent, PPOAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent
 from utils import VideoRecorder
 
 EVAL_DIR = None
@@ -116,39 +117,26 @@ def _plot_multitask_results(result: dict) -> Path:
     return plot_path
 
 
-def _record_example_video(agent, game: str, algorithm: str, output_path: Path, max_steps: int = 10000):
+def _record_example_video(
+    agent, game: str, algorithm: str, output_path: Path, max_steps: int = 10000
+):
     """Record a single-episode gameplay video."""
-    env = AtariEnv(game, render_mode="rgb_array", use_skip=False)
+    env = AtariEnv(game, render_mode="rgb_array", training=False)
     video_recorder = VideoRecorder(str(output_path), fps=30)
 
     if hasattr(agent, "set_task"):
-        try:
-            agent.set_task(game)
-        except Exception:
-            pass
-
-    # Find EpisodicLifeEnv wrapper to check was_real_done
-    episodic_life_wrapper = None
-    wrapper = env.env
-    while wrapper is not None:
-        if hasattr(wrapper, 'was_real_done'):
-            episodic_life_wrapper = wrapper
-            break
-        if hasattr(wrapper, 'env'):
-            wrapper = wrapper.env
-        else:
-            break
+        agent.set_task(game)
 
     with torch.no_grad():
         state = env.reset()
-        for step in range(max_steps):
+        for _ in range(max_steps):
             frame = None
             try:
-                if hasattr(env.env, 'render'):
+                if hasattr(env.env, "render"):
                     frame = env.env.render()
-                if frame is None and hasattr(env.env, 'unwrapped'):
+                if frame is None and hasattr(env.env, "unwrapped"):
                     unwrapped = env.env.unwrapped
-                    if hasattr(unwrapped, 'render'):
+                    if hasattr(unwrapped, "render"):
                         frame = unwrapped.render()
                 if frame is None:
                     if isinstance(state, torch.Tensor):
@@ -160,27 +148,14 @@ def _record_example_video(agent, game: str, algorithm: str, output_path: Path, m
                     frame = state[0].cpu().numpy()
                 else:
                     frame = state[0] if len(state.shape) > 2 else state
-            
+
             if frame is not None:
                 video_recorder.add_frame(frame)
 
-            action = agent.select_action(state)
+            action = agent.select_action(state, deterministic=True)
             state, _, done = env.step(action)
-            
-            # Check if this is a real game over (not just loss of life)
-            # If EpisodicLifeEnv wrapper exists, check was_real_done
-            # Otherwise, check if lives are exhausted
-            real_done = done
-            if episodic_life_wrapper is not None:
-                real_done = episodic_life_wrapper.was_real_done
-            elif hasattr(env.env, 'unwrapped') and hasattr(env.env.unwrapped, 'ale'):
-                try:
-                    lives = env.env.unwrapped.ale.lives()
-                    real_done = done and lives == 0
-                except:
-                    real_done = done
-            
-            if real_done:
+
+            if done:
                 break
 
     video_recorder.save(format="mp4")
@@ -189,7 +164,7 @@ def _record_example_video(agent, game: str, algorithm: str, output_path: Path, m
 
 def evaluate_single(model_path: str, game: str, algorithm: str, episodes: int, max_steps: int):
     """Evaluate a single-task agent checkpoint on one game."""
-    env = AtariEnv(game, render_mode=None)
+    env = AtariEnv(game, render_mode=None, training=False)
 
     if algorithm == "dqn":
         agent = DQNAgent(state_dim=4, action_dim=env.action_space)
@@ -197,11 +172,11 @@ def evaluate_single(model_path: str, game: str, algorithm: str, episodes: int, m
         agent = PPOAgent(state_dim=4, action_dim=env.action_space)
 
     agent.load(model_path)
-    if hasattr(agent, 'network'):
+    if hasattr(agent, "network"):
         agent.network.eval()
-    if hasattr(agent, 'actor'):
+    if hasattr(agent, "actor"):
         agent.actor.eval()
-    if hasattr(agent, 'critic'):
+    if hasattr(agent, "critic"):
         agent.critic.eval()
 
     episode_rewards = []
@@ -212,7 +187,7 @@ def evaluate_single(model_path: str, game: str, algorithm: str, episodes: int, m
             ep_r = 0.0
             steps = 0
             while not done and steps < max_steps:
-                action = agent.select_action(state)
+                action = agent.select_action(state, deterministic=True)
                 state, reward, done = env.step(action)
                 ep_r += reward
                 steps += 1
@@ -222,7 +197,9 @@ def evaluate_single(model_path: str, game: str, algorithm: str, episodes: int, m
 
     avg_r = sum(episode_rewards) / len(episode_rewards)
     print(f"[Single] {game} ({algorithm}) - Episodes: {episodes}")
-    print(f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}")
+    print(
+        f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}"
+    )
 
     result = {
         "mode": "single",
@@ -248,13 +225,13 @@ def _build_continual_agent(algorithm: str, games: list, use_ewc: bool, ewc_lambd
     if algorithm == "dqn":
         base_agent = MultiHeadDQNAgent(state_dim=4)
         for game in games:
-            env = AtariEnv(game, render_mode=None)
+            env = AtariEnv(game, render_mode=None, training=False)
             base_agent.register_task(game, env.action_space)
             env.close()
     else:  # ppo
         base_agent = MultiHeadPPOAgent(state_dim=4)
         for game in games:
-            env = AtariEnv(game, render_mode=None)
+            env = AtariEnv(game, render_mode=None, training=False)
             base_agent.register_task(game, env.action_space)
             env.close()
 
@@ -266,7 +243,15 @@ def _build_continual_agent(algorithm: str, games: list, use_ewc: bool, ewc_lambd
     return agent
 
 
-def evaluate_continual(model_path: str, games: list, algorithm: str, episodes: int, max_steps: int, use_ewc: bool, ewc_lambda: float):
+def evaluate_continual(
+    model_path: str,
+    games: list,
+    algorithm: str,
+    episodes: int,
+    max_steps: int,
+    use_ewc: bool,
+    ewc_lambda: float,
+):
     """Evaluate a continual-learning agent on a list of games.
 
     In addition to printing statistics (and optional JSON via CLI), this will:
@@ -281,29 +266,29 @@ def evaluate_continual(model_path: str, games: list, algorithm: str, episodes: i
         inner_agent = agent.agent
     else:
         inner_agent = agent
-    
+
     if hasattr(inner_agent, "network") and inner_agent.network is not None:
         inner_agent.network.eval()
-    if hasattr(inner_agent, 'backbone') and inner_agent.backbone is not None:
+    if hasattr(inner_agent, "backbone") and inner_agent.backbone is not None:
         inner_agent.backbone.eval()
-    if hasattr(inner_agent, 'target_network') and inner_agent.target_network is not None:
+    if hasattr(inner_agent, "target_network") and inner_agent.target_network is not None:
         inner_agent.target_network.eval()
-    if hasattr(inner_agent, 'target_backbone') and inner_agent.target_backbone is not None:
+    if hasattr(inner_agent, "target_backbone") and inner_agent.target_backbone is not None:
         inner_agent.target_backbone.eval()
-    if hasattr(inner_agent, 'actor'):
+    if hasattr(inner_agent, "actor"):
         inner_agent.actor.eval()
-    if hasattr(inner_agent, 'critic'):
+    if hasattr(inner_agent, "critic"):
         inner_agent.critic.eval()
-    if hasattr(inner_agent, 'heads'):
+    if hasattr(inner_agent, "heads"):
         for head in inner_agent.heads.values():
             head.eval()
-    if hasattr(inner_agent, 'target_heads'):
+    if hasattr(inner_agent, "target_heads"):
         for head in inner_agent.target_heads.values():
             head.eval()
-    if hasattr(inner_agent, 'actors'):
+    if hasattr(inner_agent, "actors"):
         for actor in inner_agent.actors.values():
             actor.eval()
-    if hasattr(inner_agent, 'critics'):
+    if hasattr(inner_agent, "critics"):
         for critic in inner_agent.critics.values():
             critic.eval()
 
@@ -312,14 +297,11 @@ def evaluate_continual(model_path: str, games: list, algorithm: str, episodes: i
     with torch.no_grad():
         for game in games:
             print(f"\n[Continual] Evaluating on {game} ...")
-            env = AtariEnv(game, render_mode=None)
+            env = AtariEnv(game, render_mode=None, training=False)
 
             # For MultiHeadDQN, select the appropriate head
             if hasattr(agent, "set_task"):
-                try:
-                    agent.set_task(game)
-                except Exception:
-                    pass
+                agent.set_task(game)
 
             episode_rewards = []
             for _ in range(episodes):
@@ -328,7 +310,7 @@ def evaluate_continual(model_path: str, games: list, algorithm: str, episodes: i
                 ep_r = 0.0
                 steps = 0
                 while not done and steps < max_steps:
-                    action = agent.select_action(state)
+                    action = agent.select_action(state, deterministic=True)
                     state, reward, done = env.step(action)
                     ep_r += reward
                     steps += 1
@@ -337,7 +319,9 @@ def evaluate_continual(model_path: str, games: list, algorithm: str, episodes: i
             env.close()
 
             avg_r = sum(episode_rewards) / len(episode_rewards)
-            print(f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}")
+            print(
+                f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}"
+            )
 
             results["games"][game] = {
                 "rewards": episode_rewards,
@@ -370,29 +354,29 @@ def evaluate_multitask(model_path: str, games: list, algorithm: str, episodes: i
         inner_agent = agent.agent
     else:
         inner_agent = agent
-    
+
     if hasattr(inner_agent, "network") and inner_agent.network is not None:
         inner_agent.network.eval()
-    if hasattr(inner_agent, 'backbone') and inner_agent.backbone is not None:
+    if hasattr(inner_agent, "backbone") and inner_agent.backbone is not None:
         inner_agent.backbone.eval()
-    if hasattr(inner_agent, 'target_network') and inner_agent.target_network is not None:
+    if hasattr(inner_agent, "target_network") and inner_agent.target_network is not None:
         inner_agent.target_network.eval()
-    if hasattr(inner_agent, 'target_backbone') and inner_agent.target_backbone is not None:
+    if hasattr(inner_agent, "target_backbone") and inner_agent.target_backbone is not None:
         inner_agent.target_backbone.eval()
-    if hasattr(inner_agent, 'actor'):
+    if hasattr(inner_agent, "actor"):
         inner_agent.actor.eval()
-    if hasattr(inner_agent, 'critic'):
+    if hasattr(inner_agent, "critic"):
         inner_agent.critic.eval()
-    if hasattr(inner_agent, 'heads'):
+    if hasattr(inner_agent, "heads"):
         for head in inner_agent.heads.values():
             head.eval()
-    if hasattr(inner_agent, 'target_heads'):
+    if hasattr(inner_agent, "target_heads"):
         for head in inner_agent.target_heads.values():
             head.eval()
-    if hasattr(inner_agent, 'actors'):
+    if hasattr(inner_agent, "actors"):
         for actor in inner_agent.actors.values():
             actor.eval()
-    if hasattr(inner_agent, 'critics'):
+    if hasattr(inner_agent, "critics"):
         for critic in inner_agent.critics.values():
             critic.eval()
 
@@ -401,14 +385,11 @@ def evaluate_multitask(model_path: str, games: list, algorithm: str, episodes: i
     with torch.no_grad():
         for game in games:
             print(f"\n[Multi-task] Evaluating on {game} ...")
-            env = AtariEnv(game, render_mode=None)
+            env = AtariEnv(game, render_mode=None, training=False)
 
             # For MultiHeadDQN, select the appropriate head
             if hasattr(agent, "set_task"):
-                try:
-                    agent.set_task(game)
-                except Exception:
-                    pass
+                agent.set_task(game)
 
             episode_rewards = []
             for _ in range(episodes):
@@ -417,7 +398,7 @@ def evaluate_multitask(model_path: str, games: list, algorithm: str, episodes: i
                 ep_r = 0.0
                 steps = 0
                 while not done and steps < max_steps:
-                    action = agent.select_action(state)
+                    action = agent.select_action(state, deterministic=True)
                     state, reward, done = env.step(action)
                     ep_r += reward
                     steps += 1
@@ -426,7 +407,9 @@ def evaluate_multitask(model_path: str, games: list, algorithm: str, episodes: i
             env.close()
 
             avg_r = sum(episode_rewards) / len(episode_rewards)
-            print(f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}")
+            print(
+                f"  Avg reward: {avg_r:.2f}, Min: {min(episode_rewards):.2f}, Max: {max(episode_rewards):.2f}"
+            )
 
             results["games"][game] = {
                 "rewards": episode_rewards,
@@ -501,4 +484,3 @@ if __name__ == "__main__":
         with open(args.json_out, "w") as f:
             json.dump(result, f, indent=2)
         print(f"Results written to {args.json_out}")
-

@@ -1,18 +1,19 @@
 """Multi-task joint training on multiple Atari games."""
-import sys
-import torch
+
 import argparse
-from pathlib import Path
-from tqdm import tqdm
-import numpy as np
-import matplotlib.pyplot as plt
+import sys
 from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import torch
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms import MultiHeadDQNAgent, MultiHeadPPOAgent
+from algorithms import DEFAULT_DQN_LEARNING_STARTS, MultiHeadDQNAgent, MultiHeadPPOAgent
 from environments import AtariEnv
-from utils import ReplayBuffer, RolloutBuffer, VideoRecorder, MetricsPlotter
+from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder
 
 
 def train_multitask(
@@ -44,7 +45,7 @@ def train_multitask(
             lr=1e-4,
             gamma=0.99,
         )
-        learning_starts = 80000
+        learning_starts = DEFAULT_DQN_LEARNING_STARTS
         train_frequency = 4
         buffers = {game: ReplayBuffer(capacity=100000) for game in games}
     else:  # ppo
@@ -78,14 +79,11 @@ def train_multitask(
         for game_name in games:
             game_dir = exp_dir / game_name
             game_dir.mkdir(parents=True, exist_ok=True)
-            video_recorders[game_name] = VideoRecorder(
-                str(game_dir / "training.mp4"),
-                fps=30
-            )
+            video_recorders[game_name] = VideoRecorder(str(game_dir / "training.mp4"), fps=30)
 
     metrics_plotter = MetricsPlotter()
     episode_rewards = defaultdict(list)
-    
+
     # Initialize states for all environments
     states = {game: envs[game].reset() for game in games}
     episode_reward = {game: 0.0 for game in games}
@@ -124,13 +122,15 @@ def train_multitask(
 
             if done:
                 episode_rewards[current_game].append(episode_reward[current_game])
-                metrics_plotter.add_metric(f"{current_game}_episode_reward", episode_reward[current_game])
+                metrics_plotter.add_metric(
+                    f"{current_game}_episode_reward", episode_reward[current_game]
+                )
                 episode_reward[current_game] = 0.0
                 states[current_game] = env.reset()
                 episode_count[current_game] += 1
 
             # Training step
-            if step > learning_starts and step % train_frequency == 0:
+            if step >= learning_starts and step % train_frequency == 0:
                 if buffer.is_ready(batch_size):
                     batch = buffer.sample(batch_size)
                     metrics = agent.update(batch)
@@ -182,7 +182,9 @@ def train_multitask(
 
                 if done:
                     episode_rewards[current_game].append(episode_reward[current_game])
-                    metrics_plotter.add_metric(f"{current_game}_episode_reward", episode_reward[current_game])
+                    metrics_plotter.add_metric(
+                        f"{current_game}_episode_reward", episode_reward[current_game]
+                    )
                     episode_reward[current_game] = 0.0
                     states[current_game] = env.reset()
                     episode_count[current_game] += 1
@@ -195,10 +197,14 @@ def train_multitask(
 
                 rollout_data = buffer.get_batch()
                 metrics = agent.update(rollout_data, next_value, update_epochs, minibatch_size)
-                pbar.set_postfix({**metrics, "game": current_game[:8], "episodes": episode_count[current_game]})
+                pbar.set_postfix(
+                    {**metrics, "game": current_game[:8], "episodes": episode_count[current_game]}
+                )
 
                 if "policy_loss" in metrics:
-                    metrics_plotter.add_metric(f"{current_game}_policy_loss", metrics["policy_loss"])
+                    metrics_plotter.add_metric(
+                        f"{current_game}_policy_loss", metrics["policy_loss"]
+                    )
                 if "value_loss" in metrics:
                     metrics_plotter.add_metric(f"{current_game}_value_loss", metrics["value_loss"])
                 if "entropy" in metrics:
@@ -215,9 +221,9 @@ def train_multitask(
             print(f"Video saved: {exp_dir / game_name / 'training.mp4'}")
 
     # Print training summary
-    print(f"\n{'='*60}")
-    print(f"Multi-task Training Summary")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("Multi-task Training Summary")
+    print(f"{'=' * 60}")
     for game_name in games:
         if episode_rewards[game_name]:
             avg_reward = sum(episode_rewards[game_name]) / len(episode_rewards[game_name])
@@ -247,11 +253,17 @@ def train_multitask(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--games", nargs="+", default=["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"])
+    parser.add_argument(
+        "--games", nargs="+", default=["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
+    )
     parser.add_argument("--algorithm", default="dqn", choices=["dqn", "ppo"])
-    parser.add_argument("--steps", type=int, default=150000, help="Total training steps across all games")
+    parser.add_argument(
+        "--steps", type=int, default=150000, help="Total training steps across all games"
+    )
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--save-video", action="store_true", help="Enable video recording (disabled by default)")
+    parser.add_argument(
+        "--save-video", action="store_true", help="Enable video recording (disabled by default)"
+    )
 
     args = parser.parse_args()
 

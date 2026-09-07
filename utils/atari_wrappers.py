@@ -11,15 +11,11 @@ from __future__ import annotations
 
 from typing import SupportsFloat
 
+import cv2
 import gymnasium as gym
 import numpy as np
-from gymnasium import spaces
 
-try:
-    import cv2
-    cv2.ocl.setUseOpenCL(False)
-except ImportError:
-    cv2 = None  # type: ignore[assignment]
+cv2.ocl.setUseOpenCL(False)
 
 
 class NoopResetEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
@@ -39,18 +35,16 @@ class NoopResetEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
         assert env.unwrapped.get_action_meanings()[0] == "NOOP"  # type: ignore[attr-defined]
 
     def reset(self, **kwargs):
-        self.env.reset(**kwargs)
+        obs, info = self.env.reset(**kwargs)
         if self.override_num_noops is not None:
             noops = self.override_num_noops
         else:
             noops = self.unwrapped.np_random.integers(1, self.noop_max + 1)
         assert noops > 0
-        obs = np.zeros(0)
-        info: dict = {}
         for _ in range(noops):
             obs, _, terminated, truncated, info = self.env.step(self.noop_action)
             if terminated or truncated:
-                obs, info = self.env.reset(**kwargs)
+                obs, info = self.env.reset()
         return obs, info
 
 
@@ -67,14 +61,14 @@ class FireResetEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
         assert len(env.unwrapped.get_action_meanings()) >= 3  # type: ignore[attr-defined]
 
     def reset(self, **kwargs):
-        self.env.reset(**kwargs)
-        obs, _, terminated, truncated, _ = self.env.step(1)
+        _, info = self.env.reset(**kwargs)
+        obs, _, terminated, truncated, info = self.env.step(1)
         if terminated or truncated:
-            self.env.reset(**kwargs)
-        obs, _, terminated, truncated, _ = self.env.step(2)
+            obs, info = self.env.reset()
+        obs, _, terminated, truncated, info = self.env.step(2)
         if terminated or truncated:
-            self.env.reset(**kwargs)
-        return obs, {}
+            obs, info = self.env.reset()
+        return obs, info
 
 
 class EpisodicLifeEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
@@ -141,9 +135,13 @@ class MaxAndSkipEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
     def __init__(self, env: gym.Env, skip: int = 4) -> None:
         super().__init__(env)
         # most recent raw observations (for max pooling across time steps)
-        assert env.observation_space.dtype is not None, "No dtype specified for the observation space"
+        assert env.observation_space.dtype is not None, (
+            "No dtype specified for the observation space"
+        )
         assert env.observation_space.shape is not None, "No shape defined for the observation space"
-        self._obs_buffer = np.zeros((2, *env.observation_space.shape), dtype=env.observation_space.dtype)
+        self._obs_buffer = np.zeros(
+            (2, *env.observation_space.shape), dtype=env.observation_space.dtype
+        )
         self._skip = skip
 
     def step(self, action: int):
@@ -156,13 +154,11 @@ class MaxAndSkipEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
         """
         total_reward = 0.0
         terminated = truncated = False
+        self._obs_buffer.fill(0)
         for i in range(self._skip):
             obs, reward, terminated, truncated, info = self.env.step(action)
+            self._obs_buffer[i % 2] = obs
             done = terminated or truncated
-            if i == self._skip - 2:
-                self._obs_buffer[0] = obs
-            if i == self._skip - 1:
-                self._obs_buffer[1] = obs
             total_reward += float(reward)
             if done:
                 break
@@ -189,4 +185,3 @@ class ClipRewardEnv(gym.RewardWrapper):
         :return:
         """
         return np.sign(float(reward))
-

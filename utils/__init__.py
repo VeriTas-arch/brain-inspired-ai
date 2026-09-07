@@ -1,7 +1,8 @@
 """Utilities module."""
+
 from .replay_buffer import ReplayBuffer
 from .rollout_buffer import RolloutBuffer
-from .visualization import VideoRecorder, MetricsPlotter
+from .visualization import MetricsPlotter, VideoRecorder
 
 __all__ = [
     "ReplayBuffer",
@@ -9,4 +10,3 @@ __all__ = [
     "VideoRecorder",
     "MetricsPlotter",
 ]
-

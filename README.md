@@ -1,447 +1,173 @@
 # Atari RL Playground
 
-A comprehensive PyTorch-based reinforcement learning framework for Atari games, designed for educational purposes and research on continual learning.
+一个面向课程教学的 Atari 强化学习与持续学习仓库。仓库保留可读的 PyTorch 手工实现，便于学生检查 DQN、PPO、多任务头和 EWC 的关键步骤；TorchRL 作为后续逐步迁移与对照验证的唯一新增强化学习框架依赖。
 
-## Features
+当前没有引入 Stable-Baselines3，也没有引入 EnvPool 等外部加速框架。
 
-- **Algorithms**: DQN, PPO, and EWC (Elastic Weight Consolidation)
-- **Environment**: Gymnasium-based Atari environment with frame preprocessing and stacking
-- **Training**: Single-game and multi-game continual learning support
-- **Visualization**: Automatic MP4 video generation during training
-- **GPU Support**: CUDA acceleration with CPU fallback
+## 当前范围
 
-## Complete Setup Guide
+- DQN 与 PPO 的单任务训练
+- 共享视觉骨干、按游戏划分输出头的联合训练和顺序训练
+- 基于逐样本平方梯度估计对角 Fisher 的 EWC
+- 每个训练阶段完成后，对所有已见任务进行确定性评估
+- 完整保存网络、任务头、优化器以及 EWC 状态
+- pytest 回归测试与 Ruff 静态检查
 
-### Step 1: Create Conda Environment
+TorchRL 目前只建立了依赖和导入测试。现有教学算法尚未整体改写为 TorchRL trainer；后续可以分别评估其 TensorDict、replay buffer、collector 和 objective 组件，避免一次性替换后失去可读的课程基线。
 
-```bash
-conda create -n atari_rl python=3.12 -y
-conda activate atari_rl
-```
+## 安装
 
-### Step 2: Install Dependencies
+项目要求 Python 3.12 或更高版本。`pyproject.toml` 只声明经过验证的最低版本，不设置依赖上界。安装项目及开发工具：
 
 ```bash
-# Default (direct from PyPI)
-pip install -r requirements.txt
-
-# If pip is very slow in China, you can temporarily use Tsinghua mirror:
-# pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m pip install -e ".[dev]"
 ```
 
-This installs:
+兼容旧的安装命令：
 
-- PyTorch 2.0+ (with CUDA support)
-- Gymnasium with Atari support
-- NumPy, Matplotlib, OpenCV, imageio
-- tqdm for progress bars
+```bash
+python -m pip install -r requirements.txt
+```
 
-### Step 3: Verify Installation
+`requirements.txt` 只是指向 `pyproject.toml` 的兼容入口，不再维护第二份版本列表。
+
+## 验证
+
+```bash
+pytest
+ruff check .
+python scripts/demo.py
+```
+
+`test_framework.py` 仍可作为旧课程材料的兼容入口：
 
 ```bash
 python test_framework.py
 ```
 
-Expected output: All tests should pass (environment test may fail without ROMs, which is normal)
+## 环境契约
 
-### Step 4: Test Framework
+训练与评估共享相同的视觉与时间预处理：
+
+- ALE 内建 `frameskip=1`
+- 项目中的 `MaxAndSkipEnv` 执行一次 `frame_skip=4`
+- 观测缩放到 84×84、灰度化并堆叠 4 帧
+- 像素在环境和 replay buffer 中保持 `uint8`，采样后才转为浮点
+
+训练环境额外使用 episodic-life 和符号奖励裁剪。评估环境不使用这两项训练技巧，因此报告的是完整游戏上的原始奖励。DQN 和 PPO 的评估动作都是确定性的。
+
+## 训练
+
+单任务：
 
 ```bash
-python scripts/demo.py
+python scripts/train_single.py \
+  --game Pong-v5 \
+  --algorithm dqn \
+  --steps 500000
 ```
 
-This demonstrates all algorithms without needing ROMs.
-
-## Training Guide
-
-### Single Game Training
+顺序持续学习：
 
 ```bash
-# Train DQN on Pong for 500,000 steps (recommended for good performance)
-python scripts/train_single.py --game Pong-v5 --algorithm dqn --steps 500000
-
-# Train PPO on Breakout for 500,000 steps
-python scripts/train_single.py --game Breakout-v5 --algorithm ppo --steps 500000
-
-# Quick test with fewer steps (for faster iteration)
-python scripts/train_single.py --game Pong-v5 --algorithm dqn --steps 100000
-
-# Enable video recording (disabled by default to save memory)
-python scripts/train_single.py --game Pong-v5 --algorithm dqn --steps 100000 --save-video
+python scripts/train_continual.py \
+  --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
+  --algorithm ppo \
+  --steps-per-game 50000
 ```
 
-**Output (per experiment folder):**
-
-- MP4 video: `outputs/single/{game}_{algorithm}/training.mp4` (only if `--save-video` is used)
-- Metrics plot: `outputs/single/{game}_{algorithm}/metrics.png`
-- Model checkpoint: `checkpoints/single/{game}_{algorithm}.pt`
-
-### Continual Learning (Multiple Games)
+加入 EWC：
 
 ```bash
-# Train DQN on 3 games sequentially WITHOUT EWC (shows catastrophic forgetting)
-python scripts/train_continual.py --algorithm dqn --steps-per-game 50000
-
-# Train DQN on 3 games sequentially WITH EWC (mitigates forgetting)
-python scripts/train_continual.py --algorithm dqn --use-ewc --ewc-lambda 0.4 --steps-per-game 50000
-
-# Train PPO on 3 games sequentially WITHOUT EWC
-python scripts/train_continual.py --algorithm ppo --steps-per-game 50000
-
-# Train PPO on 3 games sequentially WITH EWC
-python scripts/train_continual.py --algorithm ppo --use-ewc --ewc-lambda 0.4 --steps-per-game 50000
+python scripts/train_continual.py \
+  --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
+  --algorithm ppo \
+  --use-ewc \
+  --ewc-lambda 0.4 \
+  --steps-per-game 50000
 ```
 
-**Note:** Both DQN and PPO support continual learning with different action spaces. The framework automatically uses multi-head architectures (MultiHeadDQNAgent and MultiHeadPPOAgent) to handle games with different action dimensions.
-
-**Output (per experiment + per game folders):**
-
-- Per-game training videos: `outputs/continual/{algorithm}_ewc{True/False}/{game}/training.mp4` (only if `--save-video` is used)
-- Aggregated training metrics: `outputs/continual/{algorithm}_ewc{True/False}/training_metrics.png`
-- Forgetting curves: `outputs/continual/{algorithm}_ewc{True/False}/forgetting_eval.png`
-- Model checkpoint: `checkpoints/continual/{algorithm}_ewc{True/False}.pt`
-
-### Multi-task Joint Training (Multiple Games)
+联合多任务训练：
 
 ```bash
-# Train DQN on 3 games jointly (random task sampling per iteration)
-python scripts/train_multitask.py --algorithm dqn --steps 150000
-
-# Train PPO on 3 games jointly (random task sampling per iteration)
-python scripts/train_multitask.py --algorithm ppo --steps 150000
-
-# Custom games list
-python scripts/train_multitask.py --algorithm dqn --games Pong-v5 Breakout-v5 --steps 100000
+python scripts/train_multitask.py \
+  --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
+  --algorithm dqn \
+  --steps 150000
 ```
 
-**Note:** Multi-task training uses random task sampling - each iteration randomly selects one game to collect data and update. Each game maintains its own buffer. This is different from continual learning which trains games sequentially.
+训练视频默认关闭，可通过 `--save-video` 开启。DQN 默认在 10,000 个 agent steps 后开始更新，使每任务 50,000 步的课程配置能够实际发生学习。持续学习入口会把阶段×任务矩阵和逐任务遗忘量写入 `outputs/continual/.../continual_evaluation.json`；评估次数可用 `--eval-episodes` 调整。
 
-**Output (per experiment + per game folders):**
+## 评估
 
-- Per-game training videos: `outputs/multitask/{algorithm}/{game}/training.mp4` (only if `--save-video` is used)
-- Aggregated training metrics: `outputs/multitask/{algorithm}/training_metrics.png`
-- Model checkpoint: `checkpoints/multitask/{algorithm}.pt`
-
-### Available Games
-
-The framework supports 108 Atari games. Common ones:
-
-- Pong-v5 (6 actions)
-- Breakout-v5 (4 actions)
-- SpaceInvaders-v5 (6 actions)
-- Atari-v5 (18 actions)
-- And 104 more...
-
-### Training Script Parameters
-
-**Single-game training (`scripts/train_single.py`):**
+单任务 checkpoint：
 
 ```bash
---game GAME_NAME        # Game to train on (default: Pong-v5)
---algorithm {dqn,ppo}   # Algorithm to use (default: dqn)
---steps STEPS           # Total training steps (default: 500000)
---batch-size BATCH_SIZE # Batch size for training (default: 32)
---save-video            # Enable video recording (disabled by default)
-```
-
-**Continual learning training (`scripts/train_continual.py`):**
-
-```bash
---games GAME1 GAME2 ... # List of games (default: Pong-v5 Breakout-v5 SpaceInvaders-v5)
---algorithm {dqn,ppo}   # Algorithm to use (default: dqn)
---steps-per-game STEPS  # Steps per game (default: 50000)
---batch-size BATCH_SIZE # Batch size for training (default: 32, used for DQN updates)
---save-video            # Enable video recording (disabled by default)
-
---use-ewc               # (Optional) Enable EWC for continual learning
---ewc-lambda LAMBDA     # EWC regularization strength (default: 0.4)
-```
-
-**Multi-task joint training (`scripts/train_multitask.py`):**
-
-```bash
---games GAME1 GAME2 ... # List of games (default: Pong-v5 Breakout-v5 SpaceInvaders-v5)
---algorithm {dqn,ppo}   # Algorithm to use (default: dqn)
---steps STEPS           # Total training steps across all games (default: 150000)
---batch-size BATCH_SIZE # Batch size for training (default: 32, used for DQN updates)
---save-video            # Enable video recording (disabled by default)
-```
-
-**Default Hyperparameters (optimized for Atari games):**
-
-*DQN:*
-
-- Learning rate: `1e-4`
-- Batch size: `32`
-- Gamma (discount factor): `0.99`
-- Epsilon: `1.0` → `0.01` (linear decay over 10% of total steps)
-- Learning starts: `80000` steps
-- Target network update frequency: `1000` steps
-- Train frequency: Every `4` steps
-- Replay buffer size: `100,000`
-
-*PPO:*
-
-- Learning rate: `2.5e-4`
-- Batch size: `32` (minibatch)
-- Gamma (discount factor): `0.99`
-- GAE lambda: `0.95`
-- Clip coefficient: `0.1`
-- Entropy coefficient: `0.01`
-- Value function coefficient: `0.5`
-- Max gradient norm: `0.5`
-- Rollout length: `128` steps
-- Update epochs: `4`
-
-## Evaluation Guide
-
-### Single Game Evaluation
-
-```bash
-# Evaluate a trained single-task model (e.g., Pong DQN)
 python scripts/evaluate.py \
   --mode single \
   --model checkpoints/single/Pong-v5_dqn.pt \
   --algorithm dqn \
   --game Pong-v5 \
   --episodes 10 \
-  --max-steps 10000 \
   --json-out outputs/single/Pong-v5_dqn/eval/metrics.json
 ```
 
-**Output (per experiment folder):**
-
-- JSON metrics: `outputs/single/{game}_{algorithm}/eval/metrics.json`
-- Evaluation curve: `outputs/single/{game}_{algorithm}/eval/{game}_{algorithm}_eval_rewards.png`
-- Example gameplay video: `outputs/single/{game}_{algorithm}/eval/{game}_{algorithm}_eval_gameplay.mp4`
-
-You can also run all four default single-game evaluations via:
+持续学习 checkpoint：
 
 ```bash
-bash run_evaluate_single.sh
-```
-
-### Continual Learning Evaluation
-
-```bash
-# Evaluate a trained continual model (e.g., DQN without EWC)
-python scripts/evaluate.py \
-  --mode continual \
-  --model checkpoints/continual/dqn_ewcFalse.pt \
-  --algorithm dqn \
-  --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
-  --episodes 5 \
-  --max-steps 10000 \
-  --json-out outputs/continual/dqn_ewcFalse/eval/metrics.json
-
-# Evaluate a PPO continual model with EWC
 python scripts/evaluate.py \
   --mode continual \
   --model checkpoints/continual/ppo_ewcTrue.pt \
   --algorithm ppo \
   --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
-  --episodes 5 \
-  --max-steps 10000 \
   --ewc \
-  --ewc-lambda 0.4 \
+  --episodes 5 \
   --json-out outputs/continual/ppo_ewcTrue/eval/metrics.json
 ```
 
-**Output (per continual experiment folder):**
+批处理脚本同时提供 GPU 默认版和 `_cpu.sh` 版本。
 
-- JSON metrics: `outputs/continual/{algorithm}_ewc{True/False}/eval/metrics.json`
-- Avg reward per game bar plot: `outputs/continual/{algorithm}_ewc{True/False}/eval/continual_{algorithm}_avg_rewards.png`
-- One gameplay video per game: `outputs/continual/{algorithm}_ewc{True/False}/eval/continual_{algorithm}_{game}_eval_gameplay.mp4`
+## 如何解释 EWC 结果
 
-You can also run all four default continual evaluations via:
+EWC 是稳定性正则项，不是任务冲突求解器。它可以限制对旧任务重要参数的漂移，因此可能减缓遗忘；当新旧任务在共享骨干上需要相反的更新方向时，提高 EWC 强度通常只会把问题转化为“旧任务保留更多、但新任务学得更慢”。多头输出解决了动作空间不同的问题，但没有消除共享表征中的梯度冲突。
 
-```bash
-bash run_evaluate_continual.sh
+持续学习实验应保存阶段×任务得分矩阵 `R[i, j]`，并至少分开报告：
+
+- 旧任务保持：任务 `j` 的历史最佳得分与最终得分之差
+- 新任务可塑性：首次完成任务 `j` 训练后的 `R[j, j]`
+- 联合折中：同一方法的保持与可塑性，而不是只看最终平均分
+
+不同 Atari 游戏的原始奖励尺度不同，不应直接把它们相加后解释为单一性能指标。随机数据上的训练损失也不能证明发生了遗忘。下一阶段应先固定 seeds、评估预算和得分矩阵，再比较 EWC 与能够处理冲突的候选方法，例如小型 episodic replay；只有在基线协议稳定后再考虑更复杂的梯度投影或蒸馏方法。
+
+## 代码结构
+
+```text
+algorithms/               DQN、PPO、多头模型与 EWC
+environments/             Atari 环境及训练/评估预处理
+utils/                    replay/rollout buffer 与可视化
+scripts/train_single.py   单任务训练
+scripts/train_continual.py 顺序持续学习
+scripts/train_multitask.py 联合多任务训练
+scripts/evaluate.py       checkpoint 评估
+tests/                    正确性与兼容性回归测试
+pyproject.toml            唯一依赖与工具配置源
 ```
 
-### Multi-task Joint Training Evaluation
+## 当前已知边界
 
-```bash
-# Evaluate a trained multi-task model (e.g., DQN)
-python scripts/evaluate.py \
-  --mode multitask \
-  --model checkpoints/multitask/dqn.pt \
-  --algorithm dqn \
-  --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
-  --episodes 5 \
-  --max-steps 10000 \
-  --json-out outputs/multitask/dqn/eval/metrics.json
+- 训练循环仍是教学用途的同步、单环境实现；尚未开始性能优化。
+- replay buffer 仍按 transition 保存 `state` 和 `next_state`，后续可在不引入额外加速库的前提下优化布局。
+- 简化的环境接口目前将 Gymnasium 的 `terminated` 与 `truncated` 合并为 `done`；在开展时间限制敏感的实验前应进一步拆分。
+- 现有 EWC 使用对角经验 Fisher，它不能表达参数之间的相关性，也不保证解决正向迁移或任务冲突。
 
-# Evaluate a PPO multi-task model
-python scripts/evaluate.py \
-  --mode multitask \
-  --model checkpoints/multitask/ppo.pt \
-  --algorithm ppo \
-  --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
-  --episodes 5 \
-  --max-steps 10000 \
-  --json-out outputs/multitask/ppo/eval/metrics.json
-```
+## 参考资料
 
-**Output (per multi-task experiment folder):**
-
-- JSON metrics: `outputs/multitask/{algorithm}/eval/metrics.json`
-- Avg reward per game bar plot: `outputs/multitask/{algorithm}/eval/multitask_{algorithm}_avg_rewards.png`
-- One gameplay video per game: `outputs/multitask/{algorithm}/eval/multitask_{algorithm}_{game}_eval_gameplay.mp4`
-
-You can also run all default multi-task evaluations via:
-
-```bash
-bash run_evaluate_multitask.sh
-```
-
-## Project Structure
-
-```bash
-Atari_Playground/
-├── algorithms/              # Algorithm implementations
-│   ├── base.py             # BaseAgent and SimpleNet CNN
-│   ├── dqn.py              # DQN algorithm (includes MultiHeadDQNAgent for continual learning)
-│   ├── ppo.py              # PPO algorithm (includes MultiHeadPPOAgent for continual learning)
-│   └── ewc.py              # EWC wrapper (supports multi-task continual learning)
-├── environments/            # Game environments
-│   └── atari_env.py        # Atari environment wrapper
-├── utils/                  # Utility functions
-│   ├── replay_buffer.py    # Experience replay buffer (for DQN-style algorithms)
-│   ├── rollout_buffer.py   # Rollout buffer (for PPO/on-policy algorithms)
-│   ├── atari_wrappers.py   # Atari-specific preprocessing wrappers (NoopResetEnv, etc.)
-│   └── visualization.py    # Video recording & metrics plotting utilities
-├── scripts/                # Training scripts
-│   ├── train_single.py     # Single game training
-│   ├── train_continual.py  # Multi-game continual learning
-│   ├── train_multitask.py  # Multi-game joint training
-│   ├── evaluate.py         # Model evaluation script
-│   ├── demo.py             # Framework demo
-│   ├── full_demo.py        # Comprehensive demo
-│   └── visualize_results.py # Results visualization
-├── configs/                # Configuration files
-├── outputs/                # Training outputs (MP4 videos)
-├── checkpoints/            # Model checkpoints
-├── logs/                   # Training logs
-├── run_four_experiments.sh # Run 4 single-game experiments in parallel (Pong/Breakout x DQN/PPO)
-├── run_continual_experiments.sh # Run 4 continual learning experiments in parallel (DQN/PPO x no-EWC/EWC)
-├── run_multitask.sh        # Run 2 multi-task joint training experiments in parallel (DQN/PPO)
-├── run_evaluate_single.sh  # Evaluate all 4 single-game trained models
-├── run_evaluate_continual.sh # Evaluate all 4 continual learning trained models
-├── run_evaluate_multitask.sh # Evaluate all 2 multi-task trained models
-├── README.md               # English documentation
-├── README_CN.md            # Chinese tutorial
-├── test_framework.py       # Test suite
-├── requirements.txt        # Dependencies
-└── LICENSE
-```
-
-## Algorithms
-
-### DQN (Deep Q-Network)
-
-- **Goal**: Learn optimal action-value function Q(s,a)
-- **Method**: Use neural network to approximate Q function
-- **Key Techniques**: Experience replay, target networks, ε-greedy exploration
-- **Pros**: Stable, reliable
-- **Cons**: Slower convergence
-- **Continual Learning**: Uses MultiHeadDQNAgent with shared backbone and per-task output heads
-
-### PPO (Proximal Policy Optimization)
-
-- **Goal**: Learn optimal policy π(a|s)
-- **Method**: Direct policy optimization
-- **Key Techniques**: Advantage estimation, policy clipping, entropy regularization
-- **Pros**: Fast learning, stable
-- **Cons**: Requires more samples
-- **Continual Learning**: Uses MultiHeadPPOAgent with shared backbone and per-task actor/critic heads
-
-### EWC (Elastic Weight Consolidation)
-
-- **Goal**: Retain knowledge of old tasks while learning new ones
-- **Method**: Use Fisher Information Matrix (computed from gradient squares) to protect important weights
-- **Effect**: Mitigate catastrophic forgetting
-- **Application**: Continual learning, lifelong learning
-- **Features**: Supports multi-task EWC by storing weights and Fisher Information for each previous task
-
-### Multi-task Joint Training
-
-- **Goal**: Learn multiple tasks simultaneously with random task sampling
-- **Method**: Each iteration randomly samples one task, collects data, and updates the network
-- **Architecture**: Uses MultiHeadDQNAgent or MultiHeadPPOAgent with shared backbone and per-task heads
-- **Difference from Continual**: Tasks are trained jointly (random sampling) rather than sequentially
-- **Features**: Each task maintains its own buffer (ReplayBuffer for DQN, RolloutBuffer for PPO)
-
-## Understanding Catastrophic Forgetting
-
-Imagine learning English for a month, then learning French. After a month of French, you realize your English has degraded. This is **catastrophic forgetting**.
-
-AI faces the same problem:
-
-1. Learn Game 1 → Performs well ✓
-2. Learn Game 2 → Performs well, but Game 1 performance drops ✗
-
-**EWC Solution**: Like taking notes while learning French to review English, EWC protects important knowledge when learning new games.
-
-## FAQ
-
-**Q: How long does training take?**
-A: Depends on steps and hardware:
-
-- Demo: seconds
-- 10k steps: 1-2 minutes
-- 100k steps: 10-20 minutes on GPU
-- Continual learning (3 games, 50k each): 1-2 hours
-
-**Q: Can I use CPU?**
-A: Yes, but it will be slower. The framework auto-detects GPU.
-
-**Q: What games are supported?**
-A: 108 Atari games including Pong, Breakout, SpaceInvaders, and more.
-
-**Q: How do I visualize results?**
-A: PNG metric plots are automatically generated in `outputs/` during training. Videos are only generated if you use the `--save-video` flag (disabled by default to save memory during long training runs).
-
-**Q: Can I modify parameters?**
-A: Yes! See the "Training Parameters" section above for all available options.
-
-**Q: How do I know if GPU is being used?**
-A: Check the console output. You should see "CUDA" or "GPU" messages if GPU is available.
-
-## Troubleshooting
-
-### ImportError: No module named 'gymnasium'
-
-**Solution**: Run `pip install -r requirements.txt`
-
-### CUDA out of memory
-
-**Solution**: Reduce batch size with `--batch-size 16` or use CPU
-
-### Training is very slow
-
-**Solution**:
-
-- Check if GPU is being used
-- Reduce training steps
-- Use smaller batch size
-
-### Environment test fails
-
-**Solution**: This is normal without ROM files. Training scripts use built-in ROMs.
-
-## References
-
-- [DQN Paper](https://www.nature.com/articles/nature14236)
-- [PPO Paper](https://arxiv.org/abs/1707.06347)
-- [EWC Paper](https://arxiv.org/abs/1612.00796)
-- [Gymnasium Documentation](https://gymnasium.farama.org/)
-- [CleanRL](https://github.com/vwxyzjn/cleanrl)
+- [DQN](https://www.nature.com/articles/nature14236)
+- [PPO](https://arxiv.org/abs/1707.06347)
+- [EWC](https://arxiv.org/abs/1612.00796)
+- [Gymnasium](https://gymnasium.farama.org/)
+- [TorchRL](https://docs.pytorch.org/rl/)
 
 ## License
 
-MIT License - Free to use and modify
-
-## Contributing
-
-Issues and Pull Requests are welcome!
+MIT

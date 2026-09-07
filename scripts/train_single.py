@@ -1,16 +1,17 @@
 """Train a single agent on a single Atari game."""
-import sys
-import torch
+
 import argparse
+import sys
 from pathlib import Path
+
+import torch
 from tqdm import tqdm
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms import DQNAgent, PPOAgent
+from algorithms import DEFAULT_DQN_LEARNING_STARTS, DQNAgent, PPOAgent
 from environments import AtariEnv
-from utils import ReplayBuffer, RolloutBuffer, VideoRecorder, MetricsPlotter
+from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder
 
 
 def train_single_game(
@@ -38,7 +39,7 @@ def train_single_game(
             target_update_freq=1000,
             tau=1.0,
         )
-        learning_starts = 80000
+        learning_starts = DEFAULT_DQN_LEARNING_STARTS
         train_frequency = 4
         buffer = ReplayBuffer(capacity=100000)
     else:
@@ -80,11 +81,11 @@ def train_single_game(
 
     pbar = tqdm(total=num_steps, desc="Training")
     step = 0
-    
+
     while step < num_steps:
         if algorithm == "dqn":
             agent.global_step = step
-            action = agent.select_action(state, training=True)
+            action = agent.select_action(state)
             next_state, reward, done = env.step(action)
             episode_reward += reward
             buffer.add(state, action, reward, next_state, done)
@@ -93,7 +94,7 @@ def train_single_game(
                 frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
                 video_recorder.add_frame(frame)
 
-            if step > learning_starts and step % train_frequency == 0:
+            if step >= learning_starts and step % train_frequency == 0:
                 if buffer.is_ready(batch_size):
                     batch = buffer.sample(batch_size)
                     metrics = agent.update(batch)
@@ -115,12 +116,13 @@ def train_single_game(
                 metrics_plotter.add_metric("episode_reward", episode_reward)
                 episode_reward = 0
                 state = env.reset()
-        
+
         else:
+            collected_steps = 0
             for rollout_step in range(rollout_length):
                 if step >= num_steps:
                     break
-                
+
                 with torch.no_grad():
                     state_tensor = state.unsqueeze(0).to(agent.device)
                     action_tensor, log_prob, _, value = agent.get_action_and_value(state_tensor)
@@ -138,6 +140,7 @@ def train_single_game(
 
                 state = next_state
                 step += 1
+                collected_steps += 1
 
                 if done:
                     episode_rewards.append(episode_reward)
@@ -163,8 +166,8 @@ def train_single_game(
                     metrics_plotter.add_metric("entropy", metrics["entropy"])
 
                 buffer.reset()
-            
-            pbar.update(min(rollout_length, num_steps - step))
+
+            pbar.update(collected_steps)
 
     if video_recorder is not None:
         video_recorder.save(format="mp4")
@@ -174,33 +177,33 @@ def train_single_game(
         avg_reward = sum(episode_rewards) / len(episode_rewards)
         last_n = min(20, len(episode_rewards))
         avg_last_n = sum(episode_rewards[-last_n:]) / last_n
-        print(f"\n{'='*60}")
-        print(f"Training Summary")
-        print(f"{'='*60}")
+        print(f"\n{'=' * 60}")
+        print("Training Summary")
+        print(f"{'=' * 60}")
         print(f"Total episodes: {len(episode_rewards)}")
         print(f"Average episode reward: {avg_reward:.2f}")
         print(f"Average reward over last {last_n} episodes: {avg_last_n:.2f}")
-        
+
         if len(episode_rewards) >= 20:
             first_10 = sum(episode_rewards[:10]) / 10
             last_10 = sum(episode_rewards[-10:]) / 10
-            print(f"\nReward Progression:")
+            print("\nReward Progression:")
             print(f"  First 10 episodes: {first_10:.2f}")
             print(f"  Last 10 episodes: {last_10:.2f}")
             improvement = last_10 - first_10
             print(f"  Improvement: {improvement:+.2f}")
             if improvement > 0:
-                print(f"  ✓ Agent is learning!")
+                print("  ✓ Agent is learning!")
             elif improvement < -1:
-                print(f"  ⚠ Agent performance decreased")
+                print("  ⚠ Agent performance decreased")
             else:
-                print(f"  → Agent performance stable")
-        
+                print("  → Agent performance stable")
+
         best_ep = max(episode_rewards)
         worst_ep = min(episode_rewards)
         print(f"\nBest episode reward: {best_ep:.2f}")
         print(f"Worst episode reward: {worst_ep:.2f}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
     metrics_output_path = exp_dir / "metrics.png"
     metrics_plotter.plot(str(metrics_output_path))
@@ -221,7 +224,9 @@ if __name__ == "__main__":
     parser.add_argument("--algorithm", default="dqn", choices=["dqn", "ppo"])
     parser.add_argument("--steps", type=int, default=500000)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--save-video", action="store_true", help="Enable video recording (disabled by default)")
+    parser.add_argument(
+        "--save-video", action="store_true", help="Enable video recording (disabled by default)"
+    )
 
     args = parser.parse_args()
 
