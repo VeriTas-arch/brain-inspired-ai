@@ -48,3 +48,8 @@ def test_optimized_runtime_options_are_ppo_only(train) -> None:
         train(algorithm="dqn", env_backend="async")
     with pytest.raises(ValueError, match="only for PPO"):
         train(algorithm="dqn", compile_ppo=True)
+
+
+def test_continual_training_rejects_invalid_evaluation_step_limit() -> None:
+    with pytest.raises(ValueError, match="eval_max_steps must be positive"):
+        train_continual(eval_max_steps=0)

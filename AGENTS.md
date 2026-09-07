@@ -50,6 +50,8 @@
   environment axis. Do not change the minibatch size when claiming a code-level speedup.
 - Extract repeated evaluation, serialization, and plotting behavior when semantics are identical;
   avoid generic wrappers that only hide protocol differences.
+- Keep complete deterministic episode execution in `training/evaluation.py` so in-training and
+  standalone evaluation enforce the same raw-reward and maximum-step contract.
 - Use `scripts/run_experiments.py` for experiment matrices. Add Python options or job definitions
   there instead of introducing CPU/GPU or parallel/sequential shell-script variants.
 - Evaluation must use deterministic actions and raw evaluation rewards. Do not average raw scores

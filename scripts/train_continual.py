@@ -16,10 +16,12 @@ from algorithms import (
 )
 from environments import AtariEnv, make_vector_atari_env
 from training import (
+    DEFAULT_MAX_EPISODE_STEPS,
     PPOCollector,
     PPOLearner,
     configure_ppo_runtime,
     flatten_rollout_data,
+    run_evaluation_episodes,
 )
 from utils import MetricsPlotter, ReplayBuffer, VideoRecorder, seed_everything
 
@@ -104,6 +106,7 @@ def train_continual(
     env_backend: str = "sync",
     compile_ppo: bool = False,
     eval_episodes: int = 5,
+    eval_max_steps: int = DEFAULT_MAX_EPISODE_STEPS,
     save_video: bool = False,
     seed: int = 0,
 ):
@@ -124,6 +127,8 @@ def train_continual(
         raise ValueError("PPO steps_per_game must be divisible by num_envs")
     if eval_episodes <= 0:
         raise ValueError("eval_episodes must be positive")
+    if eval_max_steps <= 0:
+        raise ValueError("eval_max_steps must be positive")
     configure_ppo_runtime(env_backend)
     seed_everything(seed)
     game_seeds = {game: seed + index for index, game in enumerate(games)}
@@ -316,19 +321,13 @@ def train_continual(
             elif hasattr(agent, "set_task"):
                 agent.set_task(eval_task_id)
 
-            total_eval_reward = 0.0
-            for _ in range(eval_episodes):
-                s = eval_env.reset()
-                done_eval = False
-                ep_r = 0.0
-                while not done_eval:
-                    with torch.no_grad():
-                        a = agent.select_action(s, deterministic=True)
-                    s, r, terminated_eval, truncated_eval = eval_env.step(a)
-                    done_eval = terminated_eval or truncated_eval
-                    ep_r += r
-                total_eval_reward += ep_r
-            avg_eval_reward = total_eval_reward / eval_episodes
+            episode_eval_rewards = run_evaluation_episodes(
+                agent,
+                eval_env,
+                eval_episodes,
+                eval_max_steps,
+            )
+            avg_eval_reward = sum(episode_eval_rewards) / len(episode_eval_rewards)
             eval_env.close()
 
             eval_history[eval_game].append((game_idx + 1, avg_eval_reward))
@@ -375,6 +374,7 @@ def train_continual(
         "env_backend": env_backend if algorithm == "ppo" else None,
         "compile_ppo": compile_ppo if algorithm == "ppo" else None,
         "eval_episodes": eval_episodes,
+        "eval_max_steps": eval_max_steps,
         "seed": seed,
         "ewc_diagnostics": ewc_diagnostics if use_ewc else None,
         **build_evaluation_report(eval_history, games),
@@ -407,6 +407,7 @@ if __name__ == "__main__":
     parser.add_argument("--env-backend", choices=("sync", "async"), default="sync")
     parser.add_argument("--compile-ppo", action="store_true")
     parser.add_argument("--eval-episodes", type=int, default=5)
+    parser.add_argument("--eval-max-steps", type=int, default=DEFAULT_MAX_EPISODE_STEPS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
@@ -425,6 +426,7 @@ if __name__ == "__main__":
         env_backend=args.env_backend,
         compile_ppo=args.compile_ppo,
         eval_episodes=args.eval_episodes,
+        eval_max_steps=args.eval_max_steps,
         save_video=args.save_video,
         seed=args.seed,
     )

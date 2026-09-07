@@ -9,9 +9,8 @@ import torch
 
 from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
 from environments import AtariEnv
+from training import DEFAULT_MAX_EPISODE_STEPS, run_evaluation_episodes
 from utils import VideoRecorder, seed_everything
-
-DEFAULT_MAX_EPISODE_STEPS = 30_000
 
 
 def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:
@@ -51,35 +50,6 @@ def _set_agent_eval(agent) -> None:
         module = getattr(inner_agent, name, None)
         if isinstance(module, torch.nn.Module):
             module.eval()
-
-
-def _run_episodes(agent, env: AtariEnv, episodes: int, max_steps: int) -> list[float]:
-    """Run deterministic evaluation episodes in an existing environment."""
-    if episodes <= 0:
-        raise ValueError("episodes must be positive")
-    if max_steps <= 0:
-        raise ValueError("max_steps must be positive")
-
-    rewards = []
-    with torch.no_grad():
-        for episode_index in range(episodes):
-            state = env.reset()
-            done = False
-            episode_reward = 0.0
-            steps = 0
-            while not done and steps < max_steps:
-                action = agent.select_action(state, deterministic=True)
-                state, reward, terminated, truncated = env.step(action)
-                done = terminated or truncated
-                episode_reward += reward
-                steps += 1
-            if not done:
-                raise RuntimeError(
-                    f"Evaluation episode {episode_index + 1} did not finish within "
-                    f"{max_steps} steps; increase --max-steps instead of recording a partial score"
-                )
-            rewards.append(episode_reward)
-    return rewards
 
 
 def _plot_single_results(result: dict, output_dir: Path) -> Path:
@@ -169,7 +139,7 @@ def evaluate_single(
             agent = PPOAgent(state_dim=4, action_dim=env.action_space)
         agent.load(model_path)
         _set_agent_eval(agent)
-        episode_rewards = _run_episodes(agent, env, episodes, max_steps)
+        episode_rewards = run_evaluation_episodes(agent, env, episodes, max_steps)
     finally:
         env.close()
 
@@ -240,7 +210,7 @@ def _evaluate_games(
         env = AtariEnv(game, render_mode=None, training=False, seed=seed + game_index)
         try:
             agent.set_task(game)
-            episode_rewards = _run_episodes(agent, env, episodes, max_steps)
+            episode_rewards = run_evaluation_episodes(agent, env, episodes, max_steps)
         finally:
             env.close()
 

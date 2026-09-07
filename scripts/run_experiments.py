@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from training import DEFAULT_MAX_EPISODE_STEPS
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GAMES = {
     "single": ("Pong-v5", "Breakout-v5"),
@@ -22,7 +24,6 @@ DEFAULT_TRAINING_STEPS = {
     "continual": 500_000,
     "multitask": 50_000,
 }
-DEFAULT_MAX_EPISODE_STEPS = 30_000
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,8 @@ def build_jobs(
     """Build the process matrix formerly encoded in the shell scripts."""
     if episodes <= 0:
         raise ValueError("episodes must be positive")
+    if max_steps <= 0:
+        raise ValueError("max_steps must be positive")
     if not 0 <= seed < 2**32:
         raise ValueError("seed must be between 0 and 2**32 - 1")
     if num_envs <= 0:
@@ -90,6 +93,7 @@ def build_jobs(
             algorithms,
             training_steps,
             episodes,
+            max_steps,
             ewc_lambda,
             ewc_mode,
             seed,
@@ -98,8 +102,6 @@ def build_jobs(
             compile_ppo,
         )
 
-    if max_steps <= 0:
-        raise ValueError("max_steps must be positive")
     return _build_evaluation_jobs(
         suite, games, algorithms, episodes, max_steps, ewc_lambda, ewc_mode, seed
     )
@@ -111,6 +113,7 @@ def _build_training_jobs(
     algorithms: Sequence[str],
     steps: int,
     eval_episodes: int,
+    eval_max_steps: int,
     ewc_lambda: float,
     ewc_mode: str,
     seed: int,
@@ -163,6 +166,8 @@ def _build_training_jobs(
                     str(steps),
                     "--eval-episodes",
                     str(eval_episodes),
+                    "--eval-max-steps",
+                    str(eval_max_steps),
                 ]
                 variant = "ewc" if use_ewc else "no_ewc"
                 if use_ewc:

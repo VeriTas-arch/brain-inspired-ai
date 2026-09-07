@@ -151,6 +151,20 @@ def test_optimized_ppo_runtime_options_are_forwarded() -> None:
         assert "--compile-ppo" in job.arguments
 
 
+def test_continual_training_forwards_complete_episode_step_limit() -> None:
+    jobs = build_jobs(
+        "train",
+        "continual",
+        games=DEFAULT_GAMES["continual"],
+        algorithms=("ppo",),
+        max_steps=12_345,
+    )
+
+    for job in jobs:
+        limit_index = job.arguments.index("--eval-max-steps")
+        assert job.arguments[limit_index + 1] == "12345"
+
+
 def test_optimized_ppo_runtime_rejects_mixed_algorithm_matrix() -> None:
     try:
         build_jobs(

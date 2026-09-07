@@ -132,8 +132,9 @@ Training videos are disabled by default and can be enabled with `--save-video`. 
 updating after 10,000 agent steps so the 50,000-step-per-task course configuration performs actual
 optimization. Continual training writes the stage-by-task score matrix and per-task forgetting to
 `outputs/continual/.../continual_evaluation.json`; configure the evaluation budget with
-`--eval-episodes`. Multi-head DQN maintains a separate exploration rate for each task, so a new task
-does not inherit the minimum epsilon reached by an earlier task. PPO uses `--batch-size` as its
+`--eval-episodes` and the complete-episode safety limit with `--eval-max-steps`. Multi-head DQN
+maintains a separate exploration rate for each task, so a new task does not inherit the minimum
+epsilon reached by an earlier task. PPO uses `--batch-size` as its
 minibatch size as well as DQN's replay-sample size. PPO single-task and continual training share
 one tested collector and learner. The synchronous/eager teaching path remains the default:
 
@@ -302,7 +303,7 @@ the baseline protocol is stable.
 ```text
 algorithms/                DQN, PPO, multi-head agents, and EWC
 environments/              Atari environments and train/evaluation preprocessing
-training/                  shared PPO collector and eager/compiled learner runtime
+training/                  shared PPO runtime and deterministic evaluation boundaries
 utils/                     replay/rollout buffers and visualization utilities
 scripts/benchmark_ppo_runtime.py  maintained PPO throughput benchmark
 scripts/train_single.py    single-task training
