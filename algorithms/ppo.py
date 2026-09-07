@@ -115,16 +115,26 @@ class PPOAgent(BaseAgent):
         """Get value estimate."""
         return self.critic(self.network(x / 255.0))
 
+    def _distribution_and_value(self, x: torch.Tensor) -> tuple[Categorical, torch.Tensor]:
+        hidden = self.network(x / 255.0)
+        return Categorical(logits=self.actor(hidden)), self.critic(hidden)
+
+    def sample_action_and_value(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample rollout data without computing the unused policy entropy."""
+        distribution, value = self._distribution_and_value(x)
+        action = distribution.sample()
+        return action, distribution.log_prob(action), value
+
     def get_action_and_value(
         self, x: torch.Tensor, action: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Get action, log_prob, entropy, and value."""
-        hidden = self.network(x / 255.0)
-        logits = self.actor(hidden)
-        probs = Categorical(logits=logits)
+        probs, value = self._distribution_and_value(x)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
+        return action, probs.log_prob(action), probs.entropy(), value
 
     def select_action(self, state: torch.Tensor, deterministic: bool = False) -> int:
         """Select action using policy network."""
@@ -133,7 +143,7 @@ class PPOAgent(BaseAgent):
             if deterministic:
                 hidden = self.network(state / 255.0)
                 return self.actor(hidden).argmax(dim=1).item()
-            action, _, _, _ = self.get_action_and_value(state)
+            action, _, _ = self.sample_action_and_value(state)
             return action.item()
 
     def compute_gae(
@@ -180,7 +190,7 @@ class PPOAgent(BaseAgent):
             advantages, returns = self.compute_gae(rewards, old_values, dones, next_value)
             advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
-        b_obs = states
+        b_obs = states.flatten(0, 1) if states.ndim == 5 else states
         b_actions = actions.flatten()
         b_log_probs = old_log_probs.flatten()
         b_advantages = advantages.flatten()
@@ -358,19 +368,29 @@ class MultiHeadPPOAgent(BaseAgent):
         _, critic = self._current_heads()
         return critic(hidden)
 
+    def _distribution_and_value(self, x: torch.Tensor) -> tuple[Categorical, torch.Tensor]:
+        if self.current_task is None:
+            raise RuntimeError("Current task is not set before policy evaluation.")
+        hidden = self.backbone(x / 255.0)
+        actor, critic = self._current_heads()
+        return Categorical(logits=actor(hidden)), critic(hidden)
+
+    def sample_action_and_value(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample rollout data without computing the unused policy entropy."""
+        distribution, value = self._distribution_and_value(x)
+        action = distribution.sample()
+        return action, distribution.log_prob(action), value
+
     def get_action_and_value(
         self, x: torch.Tensor, action: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Get action, log_prob, entropy, and value for current task."""
-        if self.current_task is None:
-            raise RuntimeError("Current task is not set before get_action_and_value().")
-        hidden = self.backbone(x / 255.0)
-        actor, critic = self._current_heads()
-        logits = actor(hidden)
-        probs = Categorical(logits=logits)
+        probs, value = self._distribution_and_value(x)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), critic(hidden)
+        return action, probs.log_prob(action), probs.entropy(), value
 
     def select_action(self, state: torch.Tensor, deterministic: bool = False) -> int:
         """Select action using policy network for current task."""
@@ -382,7 +402,7 @@ class MultiHeadPPOAgent(BaseAgent):
                 actor, _ = self._current_heads()
                 hidden = self.backbone(state / 255.0)
                 return actor(hidden).argmax(dim=1).item()
-            action, _, _, _ = self.get_action_and_value(state)
+            action, _, _ = self.sample_action_and_value(state)
             return action.item()
 
     def compute_gae(
@@ -433,7 +453,7 @@ class MultiHeadPPOAgent(BaseAgent):
             advantages, returns = self.compute_gae(rewards, old_values, dones, next_value)
             advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
-        b_obs = states
+        b_obs = states.flatten(0, 1) if states.ndim == 5 else states
         b_actions = actions.flatten()
         b_log_probs = old_log_probs.flatten()
         b_advantages = advantages.flatten()

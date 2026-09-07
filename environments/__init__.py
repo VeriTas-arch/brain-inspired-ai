@@ -1,5 +1,5 @@
 """Environments module."""
 
-from .atari_env import AtariEnv
+from .atari_env import AtariEnv, SyncVectorAtariEnv
 
-__all__ = ["AtariEnv"]
+__all__ = ["AtariEnv", "SyncVectorAtariEnv"]

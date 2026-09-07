@@ -169,7 +169,7 @@ def train_multitask(
                 # Collect one step
                 with torch.no_grad():
                     state_tensor = state.unsqueeze(0).to(agent.device)
-                    action_tensor, log_prob, _, value = agent.get_action_and_value(state_tensor)
+                    action_tensor, log_prob, value = agent.sample_action_and_value(state_tensor)
                     action = action_tensor.item()
                     log_prob_val = log_prob.item()
                     value_val = value.item()

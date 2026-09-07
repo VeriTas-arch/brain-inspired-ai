@@ -104,3 +104,69 @@ class AtariEnv:
     def close(self) -> None:
         """Close environment."""
         self.env.close()
+
+
+class SyncVectorAtariEnv:
+    """Step independent Atari environments synchronously for batched policies."""
+
+    def __init__(
+        self,
+        game_name: str,
+        num_envs: int,
+        *,
+        render_mode: str | None = None,
+        seed: int | None = None,
+        training: bool = True,
+    ) -> None:
+        if num_envs <= 0:
+            raise ValueError("num_envs must be positive")
+        self.envs = [
+            AtariEnv(
+                game_name,
+                render_mode=render_mode,
+                seed=None if seed is None else seed + index,
+                training=training,
+            )
+            for index in range(num_envs)
+        ]
+        self.num_envs = num_envs
+        self.action_space = self.envs[0].action_space
+
+    def reset(self) -> torch.Tensor:
+        """Reset every environment and stack observations on the leading axis."""
+        return torch.stack([env.reset() for env in self.envs])
+
+    def step(
+        self, actions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Step every environment once without automatically resetting finished ones."""
+        actions = torch.as_tensor(actions, dtype=torch.long).flatten().cpu()
+        if actions.numel() != self.num_envs:
+            raise ValueError(f"Expected {self.num_envs} actions, received {actions.numel()}")
+
+        transitions = [env.step(action.item()) for env, action in zip(self.envs, actions)]
+        states, rewards, terminated, truncated = zip(*transitions)
+        return (
+            torch.stack(states),
+            torch.tensor(rewards, dtype=torch.float32),
+            torch.tensor(terminated, dtype=torch.bool),
+            torch.tensor(truncated, dtype=torch.bool),
+        )
+
+    def reset_done(self, states: torch.Tensor, done: torch.Tensor) -> torch.Tensor:
+        """Reset only completed environments while preserving other next states."""
+        done = torch.as_tensor(done, dtype=torch.bool).flatten().cpu()
+        if states.shape[0] != self.num_envs or done.numel() != self.num_envs:
+            raise ValueError("State and done batches must match num_envs")
+        if not done.any():
+            return states
+
+        states = states.clone()
+        for index in done.nonzero().flatten().tolist():
+            states[index] = self.envs[index].reset()
+        return states
+
+    def close(self) -> None:
+        """Close every underlying environment."""
+        for env in self.envs:
+            env.close()

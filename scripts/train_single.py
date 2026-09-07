@@ -10,9 +10,8 @@ from algorithms import (
     DEFAULT_DQN_LEARNING_STARTS,
     DQNAgent,
     PPOAgent,
-    bootstrap_truncated_reward,
 )
-from environments import AtariEnv
+from environments import AtariEnv, SyncVectorAtariEnv
 from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
 
 
@@ -21,16 +20,27 @@ def train_single_game(
     algorithm: str = "dqn",
     num_steps: int = 500000,
     batch_size: int = 32,
+    num_envs: int = 1,
     save_video: bool = False,
     seed: int = 0,
 ):
     """Train agent on a single game."""
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if num_envs <= 0:
+        raise ValueError("num_envs must be positive")
+    if algorithm != "ppo" and num_envs != 1:
+        raise ValueError("num_envs greater than one is currently supported only for PPO")
+    if algorithm == "ppo" and num_steps % num_envs != 0:
+        raise ValueError("PPO steps must be divisible by num_envs")
     seed_everything(seed)
     print(f"Training {algorithm.upper()} on {game_name}")
 
-    env = AtariEnv(game_name, render_mode=None, seed=seed)
+    env = (
+        SyncVectorAtariEnv(game_name, num_envs, render_mode=None, seed=seed)
+        if algorithm == "ppo"
+        else AtariEnv(game_name, render_mode=None, seed=seed)
+    )
 
     if algorithm == "dqn":
         agent = DQNAgent(
@@ -65,7 +75,7 @@ def train_single_game(
         rollout_length = 128
         update_epochs = 4
         minibatch_size = batch_size
-        buffer = RolloutBuffer(capacity=rollout_length)
+        buffer = RolloutBuffer(capacity=rollout_length, num_envs=num_envs)
 
     run_name = f"{game_name}_{algorithm}"
     exp_dir = Path("outputs") / "single" / run_name / f"seed-{seed}"
@@ -83,7 +93,7 @@ def train_single_game(
     episode_rewards = []
 
     state = env.reset()
-    episode_reward = 0
+    episode_reward = [0.0] * num_envs if algorithm == "ppo" else 0.0
     episode_count = 0
 
     pbar = tqdm(total=num_steps, desc="Training")
@@ -131,57 +141,61 @@ def train_single_game(
                 if step >= num_steps:
                     break
 
-                with torch.no_grad():
-                    state_tensor = state.unsqueeze(0).to(agent.device)
-                    action_tensor, log_prob, _, value = agent.get_action_and_value(state_tensor)
-                    action = action_tensor.item()
-                    log_prob_val = log_prob.item()
-                    value_val = value.item()
+                with torch.inference_mode():
+                    state_tensor = state.to(agent.device)
+                    action_tensor, log_prob, value = agent.sample_action_and_value(state_tensor)
+                actions = action_tensor.cpu()
 
-                next_state, reward, terminated, truncated = env.step(action)
-                episode_done = terminated or truncated
-                episode_reward += reward
-                training_reward = reward
-                if truncated and not terminated:
-                    with torch.no_grad():
-                        truncated_value = agent.get_value(
-                            next_state.unsqueeze(0).to(agent.device)
-                        ).item()
-                    training_reward = bootstrap_truncated_reward(
-                        reward,
-                        truncated_value,
-                        terminated=terminated,
-                        truncated=truncated,
-                        gamma=agent.gamma,
+                next_state, rewards, terminated, truncated = env.step(actions)
+                episode_done = terminated | truncated
+                training_rewards = rewards.clone()
+                bootstrap_mask = truncated & ~terminated
+                if bootstrap_mask.any():
+                    with torch.inference_mode():
+                        truncated_values = agent.get_value(
+                            next_state[bootstrap_mask].to(agent.device)
+                        ).flatten()
+                    training_rewards[bootstrap_mask] += agent.gamma * truncated_values.cpu()
+
+                if num_envs == 1:
+                    buffer.add(
+                        state[0],
+                        actions.item(),
+                        training_rewards.item(),
+                        episode_done.item(),
+                        log_prob.item(),
+                        value.item(),
                     )
-                buffer.add(
-                    state,
-                    action,
-                    training_reward,
-                    episode_done,
-                    log_prob_val,
-                    value_val,
-                )
+                else:
+                    buffer.add(
+                        state,
+                        actions,
+                        training_rewards,
+                        episode_done,
+                        log_prob.cpu(),
+                        value.flatten().cpu(),
+                    )
 
                 if video_recorder is not None and step % 2 == 0:
-                    frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
+                    frame = state[0, 0].cpu().numpy()
                     video_recorder.add_frame(frame)
 
-                state = next_state
-                step += 1
-                collected_steps += 1
+                for env_index in range(num_envs):
+                    episode_reward[env_index] += rewards[env_index].item()
+                    if episode_done[env_index]:
+                        reward_value = episode_reward[env_index]
+                        episode_rewards.append(reward_value)
+                        metrics_plotter.add_metric("episode_reward", reward_value)
+                        episode_reward[env_index] = 0.0
+                        episode_count += 1
 
-                if episode_done:
-                    episode_rewards.append(episode_reward)
-                    metrics_plotter.add_metric("episode_reward", episode_reward)
-                    episode_reward = 0
-                    state = env.reset()
-                    episode_count += 1
+                state = env.reset_done(next_state, episode_done)
+                step += num_envs
+                collected_steps += num_envs
 
             if buffer.ready_for_update(final=step >= num_steps):
-                with torch.no_grad():
-                    next_state_tensor = state.unsqueeze(0).to(agent.device)
-                    next_value = agent.get_value(next_state_tensor).flatten()
+                with torch.inference_mode():
+                    next_value = agent.get_value(state.to(agent.device)).flatten()
 
                 rollout_data = buffer.get_batch()
                 metrics = agent.update(rollout_data, next_value, update_epochs, minibatch_size)
@@ -253,6 +267,7 @@ if __name__ == "__main__":
     parser.add_argument("--algorithm", default="dqn", choices=["dqn", "ppo"])
     parser.add_argument("--steps", type=int, default=500000)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
@@ -265,6 +280,7 @@ if __name__ == "__main__":
         algorithm=args.algorithm,
         num_steps=args.steps,
         batch_size=args.batch_size,
+        num_envs=args.num_envs,
         save_video=args.save_video,
         seed=args.seed,
     )

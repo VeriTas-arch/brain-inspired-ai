@@ -134,7 +134,16 @@ optimization. Continual training writes the stage-by-task score matrix and per-t
 `outputs/continual/.../continual_evaluation.json`; configure the evaluation budget with
 `--eval-episodes`. Multi-head DQN maintains a separate exploration rate for each task, so a new task
 does not inherit the minimum epsilon reached by an earlier task. PPO uses `--batch-size` as its
-minibatch size as well as DQN's replay-sample size.
+minibatch size as well as DQN's replay-sample size. PPO single-task and continual training can
+batch policy inference across synchronous environments without an additional acceleration
+framework:
+
+```bash
+python scripts/train_continual.py --algorithm ppo --num-envs 8
+```
+
+`--steps-per-game` remains the total transition budget across all environments. The step budget
+must be divisible by `--num-envs`; each environment receives a distinct deterministic seed.
 
 ## Evaluation
 
@@ -204,10 +213,11 @@ python scripts/run_experiments.py train continual --parallel --dry-run
 ```
 
 The runner also accepts `--games`, `--algorithms`, `--steps`, `--episodes`, `--max-steps`,
-`--ewc-mode`, `--ewc-lambda`, and `--seed`; run it with `--help` for the complete interface. Training
-and evaluation default to seed 0 and jointly seed Python, NumPy, PyTorch, and each Atari environment.
-Use `--seeds 0 1 2` to expand a matrix over independent, seed-specific output, checkpoint, and log
-paths.
+`--ewc-mode`, `--ewc-lambda`, `--num-envs`, and `--seed`; run it with `--help` for the complete
+interface. `--num-envs` greater than one is limited to PPO single-task or continual training.
+Training and evaluation default to seed 0 and jointly seed Python, NumPy, PyTorch, and each Atari
+environment. Use `--seeds 0 1 2` to expand a matrix over independent, seed-specific output,
+checkpoint, and log paths.
 
 ## Interpreting EWC Results
 
@@ -257,9 +267,8 @@ pyproject.toml             single source of dependency and tool configuration
 
 ## Known Limitations
 
-- Training loops remain synchronous, single-environment teaching implementations. The first data
-  path optimizations preserve `uint8` pixels through transfer and reuse preallocated rollout
-  storage; environment parallelism has not started.
+- PPO can batch policy inference over synchronous environments, but Atari emulation still steps
+  those environments serially. Process-level environment parallelism has not started.
 - The replay buffer stores both `state` and `next_state` per transition. Its layout can later be
   optimized without introducing another acceleration framework.
 - Training handles Gymnasium `terminated` and `truncated` separately: DQN bootstraps time-limit

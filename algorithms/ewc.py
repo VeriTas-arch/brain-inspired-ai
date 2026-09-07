@@ -221,6 +221,10 @@ class EWCWrapper:
         """Delegate PPO action/value computation."""
         return self.agent.get_action_and_value(state, action)
 
+    def sample_action_and_value(self, state: torch.Tensor):
+        """Delegate rollout sampling without unnecessary policy statistics."""
+        return self.agent.sample_action_and_value(state)
+
     def get_value(self, state: torch.Tensor):
         """Delegate PPO value computation."""
         return self.agent.get_value(state)

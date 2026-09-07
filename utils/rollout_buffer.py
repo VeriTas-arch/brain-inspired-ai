@@ -6,22 +6,27 @@ import torch
 class RolloutBuffer:
     """Rollout buffer for on-policy algorithms like PPO."""
 
-    def __init__(self, capacity: int = 128) -> None:
+    def __init__(self, capacity: int = 128, num_envs: int = 1) -> None:
         """
         Initialize rollout buffer.
 
         Args:
-            capacity: Number of steps to collect before updating (rollout length)
+            capacity: Number of time steps to collect before updating
+            num_envs: Number of independent environments collected at each time step
         """
         if capacity <= 0:
             raise ValueError("capacity must be positive")
+        if num_envs <= 0:
+            raise ValueError("num_envs must be positive")
         self.capacity = capacity
+        self.num_envs = num_envs
         self.states: torch.Tensor | None = None
-        self.actions = torch.empty(capacity, dtype=torch.long)
-        self.rewards = torch.empty(capacity, dtype=torch.float32)
-        self.dones = torch.empty(capacity, dtype=torch.float32)
-        self.log_probs = torch.empty(capacity, dtype=torch.float32)
-        self.values = torch.empty(capacity, dtype=torch.float32)
+        scalar_shape = (capacity,) if num_envs == 1 else (capacity, num_envs)
+        self.actions = torch.empty(scalar_shape, dtype=torch.long)
+        self.rewards = torch.empty(scalar_shape, dtype=torch.float32)
+        self.dones = torch.empty(scalar_shape, dtype=torch.float32)
+        self.log_probs = torch.empty(scalar_shape, dtype=torch.float32)
+        self.values = torch.empty(scalar_shape, dtype=torch.float32)
         self.pos = 0
 
     def reset(self) -> None:
@@ -31,17 +36,19 @@ class RolloutBuffer:
     def add(
         self,
         state: torch.Tensor,
-        action: int,
-        reward: float,
-        done: bool,
-        log_prob: float,
-        value: float,
+        action: int | torch.Tensor,
+        reward: float | torch.Tensor,
+        done: bool | torch.Tensor,
+        log_prob: float | torch.Tensor,
+        value: float | torch.Tensor,
     ) -> None:
         """Add a transition to the buffer."""
         if self.is_full():
             raise RuntimeError("Cannot add to a full rollout buffer")
 
         state = state.detach().to("cpu")
+        if self.num_envs > 1 and (state.ndim == 0 or state.shape[0] != self.num_envs):
+            raise ValueError(f"Expected states from {self.num_envs} environments")
         if self.states is None:
             self.states = torch.empty(
                 (self.capacity, *state.shape),
@@ -51,11 +58,11 @@ class RolloutBuffer:
             raise ValueError("Rollout states must have a consistent shape and dtype")
 
         self.states[self.pos].copy_(state)
-        self.actions[self.pos] = action
-        self.rewards[self.pos] = reward
-        self.dones[self.pos] = done
-        self.log_probs[self.pos] = log_prob
-        self.values[self.pos] = value
+        self.actions[self.pos].copy_(torch.as_tensor(action, dtype=torch.long))
+        self.rewards[self.pos].copy_(torch.as_tensor(reward, dtype=torch.float32))
+        self.dones[self.pos].copy_(torch.as_tensor(done, dtype=torch.float32))
+        self.log_probs[self.pos].copy_(torch.as_tensor(log_prob, dtype=torch.float32))
+        self.values[self.pos].copy_(torch.as_tensor(value, dtype=torch.float32))
         self.pos += 1
 
     def is_full(self) -> bool:
@@ -83,3 +90,8 @@ class RolloutBuffer:
     def __len__(self) -> int:
         """Return current buffer size."""
         return self.pos
+
+    @property
+    def transition_count(self) -> int:
+        """Return the number of stored environment transitions."""
+        return self.pos * self.num_envs

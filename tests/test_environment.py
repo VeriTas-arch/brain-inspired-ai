@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from environments import AtariEnv
+from environments import AtariEnv, SyncVectorAtariEnv
 
 
 def wrapper_names(env: AtariEnv) -> list[str]:
@@ -73,3 +73,39 @@ def test_step_preserves_terminated_and_truncated_flags() -> None:
     assert reward == 1.0
     assert not terminated
     assert truncated
+
+
+def test_sync_vector_environment_resets_only_finished_instances() -> None:
+    class _FakeEnv:
+        action_space = 2
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+            self.reset_count = 0
+
+        def reset(self) -> torch.Tensor:
+            self.reset_count += 1
+            return torch.full((4, 84, 84), self.value + 10, dtype=torch.uint8)
+
+        def step(self, action: int):
+            return (
+                torch.full((4, 84, 84), self.value, dtype=torch.uint8),
+                float(action),
+                self.value == 0,
+                False,
+            )
+
+    env = SyncVectorAtariEnv.__new__(SyncVectorAtariEnv)
+    env.envs = [_FakeEnv(0), _FakeEnv(1)]
+    env.num_envs = 2
+    env.action_space = 2
+
+    states, rewards, terminated, truncated = env.step(torch.tensor([1, 0]))
+    reset_states = env.reset_done(states, terminated | truncated)
+
+    torch.testing.assert_close(rewards, torch.tensor([1.0, 0.0]))
+    torch.testing.assert_close(terminated, torch.tensor([True, False]))
+    torch.testing.assert_close(reset_states[0], torch.full_like(reset_states[0], 10))
+    torch.testing.assert_close(reset_states[1], states[1])
+    assert env.envs[0].reset_count == 1
+    assert env.envs[1].reset_count == 0

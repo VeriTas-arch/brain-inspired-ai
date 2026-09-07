@@ -102,3 +102,33 @@ def test_multi_seed_dry_run_expands_without_path_collisions(capsys) -> None:
     assert output.count("continual ppo ewc") == 2
     assert "--seed 7" in output
     assert "--seed 11" in output
+
+
+def test_vector_environment_count_is_forwarded_only_to_supported_ppo_training() -> None:
+    jobs = build_jobs(
+        "train",
+        "continual",
+        games=DEFAULT_GAMES["continual"],
+        algorithms=("ppo",),
+        num_envs=8,
+    )
+
+    for job in jobs:
+        env_index = job.arguments.index("--num-envs")
+        assert job.arguments[env_index + 1] == "8"
+
+
+def test_vector_environments_reject_unsupported_training_matrices() -> None:
+    for suite, algorithms in (("single", ("dqn",)), ("multitask", ("ppo",))):
+        try:
+            build_jobs(
+                "train",
+                suite,
+                games=DEFAULT_GAMES[suite],
+                algorithms=algorithms,
+                num_envs=8,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsupported vector environment matrix must be rejected")

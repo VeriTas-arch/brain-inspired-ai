@@ -27,3 +27,16 @@ def test_continual_training_has_a_reproducible_default_seed() -> None:
 def test_training_entry_points_reject_invalid_batch_size(train) -> None:
     with pytest.raises(ValueError, match="batch_size must be positive"):
         train(batch_size=0)
+
+
+@pytest.mark.parametrize("train", (train_single_game, train_continual))
+def test_ppo_vector_training_rejects_invalid_environment_counts(train) -> None:
+    with pytest.raises(ValueError, match="num_envs must be positive"):
+        train(algorithm="ppo", num_envs=0)
+
+
+def test_ppo_vector_training_requires_divisible_step_budgets() -> None:
+    with pytest.raises(ValueError, match="divisible"):
+        train_single_game(algorithm="ppo", num_steps=10, num_envs=8)
+    with pytest.raises(ValueError, match="divisible"):
+        train_continual(algorithm="ppo", steps_per_game=10, num_envs=8)

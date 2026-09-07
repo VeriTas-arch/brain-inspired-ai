@@ -61,12 +61,17 @@ def build_jobs(
     ewc_lambda: float = 0.4,
     ewc_mode: str = "both",
     seed: int = 0,
+    num_envs: int = 1,
 ) -> list[Job]:
     """Build the process matrix formerly encoded in the shell scripts."""
     if episodes <= 0:
         raise ValueError("episodes must be positive")
     if not 0 <= seed < 2**32:
         raise ValueError("seed must be between 0 and 2**32 - 1")
+    if num_envs <= 0:
+        raise ValueError("num_envs must be positive")
+    if num_envs > 1 and (phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)):
+        raise ValueError("num_envs greater than one supports PPO single/continual training only")
     if phase == "train":
         training_steps = steps if steps is not None else DEFAULT_TRAINING_STEPS[suite]
         if training_steps <= 0:
@@ -80,6 +85,7 @@ def build_jobs(
             ewc_lambda,
             ewc_mode,
             seed,
+            num_envs,
         )
 
     if max_steps <= 0:
@@ -98,26 +104,30 @@ def _build_training_jobs(
     ewc_lambda: float,
     ewc_mode: str,
     seed: int,
+    num_envs: int,
 ) -> list[Job]:
     jobs = []
     if suite == "single":
         for game in games:
             for algorithm in algorithms:
                 name = f"single {game} {algorithm}"
+                arguments = [
+                    "scripts/train_single.py",
+                    "--seed",
+                    str(seed),
+                    "--game",
+                    game,
+                    "--algorithm",
+                    algorithm,
+                    "--steps",
+                    str(steps),
+                ]
+                if num_envs > 1:
+                    arguments.extend(("--num-envs", str(num_envs)))
                 jobs.append(
                     Job(
                         name,
-                        (
-                            "scripts/train_single.py",
-                            "--seed",
-                            str(seed),
-                            "--game",
-                            game,
-                            "--algorithm",
-                            algorithm,
-                            "--steps",
-                            str(steps),
-                        ),
+                        tuple(arguments),
                         f"{_game_slug(game)}_{algorithm}_seed{seed}.log",
                         True,
                     )
@@ -141,6 +151,8 @@ def _build_training_jobs(
                 variant = "ewc" if use_ewc else "no_ewc"
                 if use_ewc:
                     arguments.extend(("--use-ewc", "--ewc-lambda", str(ewc_lambda)))
+                if num_envs > 1:
+                    arguments.extend(("--num-envs", str(num_envs)))
                 jobs.append(
                     Job(
                         f"continual {algorithm} {variant}",
@@ -409,6 +421,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Continual suite variants to run",
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument(
+        "--num-envs",
+        type=int,
+        default=1,
+        help="Synchronous environments for batched PPO policy inference",
+    )
     parser.add_argument("--parallel", action="store_true", help="Run all jobs concurrently")
     parser.add_argument("--log-dir", type=Path, default=Path("logs"))
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running")
@@ -436,6 +454,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     ewc_lambda=args.ewc_lambda,
                     ewc_mode=args.ewc_mode,
                     seed=seed,
+                    num_envs=args.num_envs,
                 )
             )
         if args.dry_run:
