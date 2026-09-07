@@ -26,11 +26,14 @@ class TinyDQN(BaseAgent):
     def update(self, batch, regularizer=None) -> dict[str, float]:
         predictions = self.network(batch["states"]).gather(1, batch["actions"][:, None]).flatten()
         loss = F.mse_loss(predictions, batch["rewards"])
-        penalty = regularizer() if regularizer is not None else torch.zeros(())
+        penalty = regularizer() if regularizer is not None else None
         self.optimizer.zero_grad()
-        (loss + penalty).backward()
+        (loss if penalty is None else loss + penalty).backward()
         self.optimizer.step()
-        return {"loss": loss.item(), "regularization_loss": penalty.detach().item()}
+        metrics = {"loss": loss.item()}
+        if penalty is not None:
+            metrics["regularization_loss"] = penalty.detach().item()
+        return metrics
 
     def checkpoint_state(self) -> dict:
         return {
@@ -190,6 +193,36 @@ def test_aggregated_ewc_penalty_matches_explicit_task_sum(monkeypatch) -> None:
             ).sum()
 
     torch.testing.assert_close(wrapper.compute_ewc_loss(), explicit_penalty)
+
+
+def test_runtime_regularizer_matches_dynamic_penalty(monkeypatch) -> None:
+    wrapper = EWCWrapper(TinyDQN(), ewc_lambda=1.5)
+    wrapper.consolidate_weights(dqn_batch())
+    with torch.no_grad():
+        wrapper.agent.network.weight.add_(0.25)
+
+    compile_calls = []
+
+    def fake_compile(function, **kwargs):
+        compile_calls.append(kwargs)
+        return function
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    wrapper.configure_regularizer(compile_regularizer=True)
+
+    assert compile_calls == [{"mode": "reduce-overhead"}]
+    torch.testing.assert_close(
+        wrapper._runtime_regularizer(),
+        wrapper.compute_ewc_loss(),
+    )
+
+
+def test_first_task_update_skips_empty_regularizer() -> None:
+    wrapper = EWCWrapper(TinyDQN())
+
+    metrics = wrapper.update(dqn_batch())
+
+    assert "ewc_loss" not in metrics
 
 
 def test_legacy_ewc_checkpoint_rebuilds_aggregates(tmp_path) -> None:

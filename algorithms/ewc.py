@@ -1,5 +1,7 @@
 """Elastic Weight Consolidation for the teaching implementations."""
 
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as F
 from torch.distributions import Categorical
@@ -51,6 +53,7 @@ class EWCWrapper:
         self.aggregated_mean: dict[str, torch.Tensor] = {}
         self.aggregated_correction: dict[str, torch.Tensor] = {}
         self.current_task_id = 0
+        self._runtime_regularizer: Callable[[], torch.Tensor] | None = None
 
     def _collect_regularized_params(self) -> dict[str, torch.Tensor]:
         """Collect unique online parameters relevant to the current task."""
@@ -191,6 +194,7 @@ class EWCWrapper:
         self.task_fisher_summary[task_id] = diagnostic
         self._accumulate_task(weights, fisher)
         self.current_task_id += 1
+        self._reset_runtime_regularizer()
         return diagnostic
 
     def _accumulate_task(
@@ -241,6 +245,38 @@ class EWCWrapper:
         for task_id in sorted(self.task_weights):
             self._accumulate_task(self.task_weights[task_id], self.task_fisher[task_id])
 
+    def _reset_runtime_regularizer(self) -> None:
+        self._runtime_regularizer = self.compute_ewc_loss if self.aggregated_fisher else None
+
+    def configure_regularizer(self, *, compile_regularizer: bool) -> None:
+        """Cache the current task's penalty terms and optionally compile them."""
+        current_params = self._collect_regularized_params()
+        terms = tuple(
+            (
+                parameter,
+                self.aggregated_fisher[name],
+                self.aggregated_mean[name],
+                self.aggregated_correction[name],
+            )
+            for name, parameter in current_params.items()
+            if name in self.aggregated_fisher
+        )
+        if not terms:
+            self._runtime_regularizer = None
+            return
+
+        def regularizer() -> torch.Tensor:
+            penalty = torch.zeros((), device=self.agent.device)
+            for parameter, importance, mean, correction in terms:
+                penalty = penalty + (importance * (parameter - mean).square()).sum() + correction
+            return 0.5 * self.ewc_lambda * penalty
+
+        self._runtime_regularizer = (
+            torch.compile(regularizer, mode="reduce-overhead")
+            if compile_regularizer
+            else regularizer
+        )
+
     def compute_ewc_loss(self) -> torch.Tensor:
         """Compute all consolidated penalties from task-independent sufficient statistics."""
         current_params = self._collect_regularized_params()
@@ -264,7 +300,7 @@ class EWCWrapper:
         metrics = self.agent.update(
             batch,
             *args,
-            regularizer=self.compute_ewc_loss,
+            regularizer=self._runtime_regularizer,
             **kwargs,
         )
         regularization_loss = metrics.pop("regularization_loss", None)
@@ -305,6 +341,7 @@ class EWCWrapper:
     def set_task(self, task_id: str) -> None:
         """Select a task on a multi-head agent."""
         self.agent.set_task(task_id)
+        self._reset_runtime_regularizer()
 
     def save(self, path: str) -> None:
         """Save both the wrapped agent and EWC consolidation state."""
@@ -343,3 +380,4 @@ class EWCWrapper:
             self.aggregated_correction = checkpoint["aggregated_correction"]
         else:
             self._rebuild_aggregates()
+        self._reset_runtime_regularizer()

@@ -85,6 +85,14 @@ class _FakeVectorEnvironment:
         return result
 
 
+class _ConfigurableFakeAgent(_FakeAgent):
+    def __init__(self) -> None:
+        self.compile_regularizer = None
+
+    def configure_regularizer(self, *, compile_regularizer: bool) -> None:
+        self.compile_regularizer = compile_regularizer
+
+
 def test_collector_preserves_vector_trajectories_and_time_limit_bootstrap() -> None:
     learner = PPOLearner(_FakeAgent(), update_epochs=3, minibatch_size=32)
     collector = PPOCollector(_FakeVectorEnvironment(), learner, rollout_length=8)
@@ -140,6 +148,14 @@ def test_compiled_learner_compiles_only_policy_hot_paths(monkeypatch) -> None:
     assert learner.compiled
     assert len(compiled_functions) == 2
     assert all(options == {"mode": "reduce-overhead"} for _, options in compiled_functions)
+
+
+def test_learner_configures_optional_regularizer_for_same_runtime() -> None:
+    agent = _ConfigurableFakeAgent()
+
+    PPOLearner(agent, compile_policy=True)
+
+    assert agent.compile_regularizer is True
 
 
 def test_flatten_rollout_data_keeps_time_before_environment_order() -> None:

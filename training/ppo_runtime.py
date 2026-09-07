@@ -108,6 +108,10 @@ class PPOLearner:
         self.minibatch_size = minibatch_size
         self.compiled = compile_policy
 
+        configure_regularizer = getattr(agent, "configure_regularizer", None)
+        if configure_regularizer is not None:
+            configure_regularizer(compile_regularizer=compile_policy)
+
         policy_agent = getattr(agent, "agent", agent)
         sampler = policy_agent.sample_action_and_value
 

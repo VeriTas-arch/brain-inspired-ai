@@ -295,7 +295,10 @@ protocol.
 The wrapper retains per-task snapshots for diagnostics and checkpoint provenance, but evaluates the
 sum of prior diagonal penalties from online sufficient statistics. Consequently, the regularizer's
 per-minibatch parameter traversal no longer grows linearly with the number of consolidated tasks.
-Version-1 EWC checkpoints remain loadable and rebuild these statistics on load.
+The optimized PPO path also caches the current task's matching penalty tensors and compiles that
+static penalty separately; before the first consolidation, the wrapper uses the ordinary PPO update
+path with no zero-valued regularizer. Version-1 EWC checkpoints remain loadable and rebuild these
+statistics on load.
 
 Raw rewards from different Atari games have different scales and should not be summed and
 interpreted as a single performance measure. Training loss on random data is also not evidence of
