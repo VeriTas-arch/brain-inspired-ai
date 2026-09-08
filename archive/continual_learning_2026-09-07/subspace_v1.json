@@ -1,0 +1,7 @@
+{
+  "anchor_dir": "outputs/policy_replay_v1/seed-61001",
+  "output_dir": "outputs/subspace_v1",
+  "threshold": 0.995,
+  "alpha": 25.0,
+  "patches_per_observation": 16
+}

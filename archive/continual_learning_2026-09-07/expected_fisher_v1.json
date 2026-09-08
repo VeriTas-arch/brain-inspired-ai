@@ -1,0 +1,10 @@
+{
+  "anchor_dir": "outputs/policy_replay_v1/seed-61001",
+  "output_dir": "outputs/expected_fisher_v1",
+  "seed": 61001,
+  "fisher_batch_size": 8,
+  "diagnostic_states": 256,
+  "random_directions": 8,
+  "relative_radii": [0.002, 0.005, 0.01],
+  "minimum_shape_error_reduction": 0.1
+}

@@ -97,6 +97,7 @@ class PPOLearner:
         update_epochs: int = 4,
         minibatch_size: int = 32,
         compile_policy: bool = False,
+        regularizer: Callable[[], torch.Tensor] | None = None,
     ) -> None:
         if update_epochs <= 0:
             raise ValueError("update_epochs must be positive")
@@ -107,8 +108,11 @@ class PPOLearner:
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
         self.compiled = compile_policy
+        self.regularizer = regularizer
 
         configure_regularizer = getattr(agent, "configure_regularizer", None)
+        if configure_regularizer is not None and regularizer is not None:
+            raise ValueError("Use only one PPO regularizer")
         if configure_regularizer is not None:
             configure_regularizer(compile_regularizer=compile_policy)
 
@@ -165,6 +169,7 @@ class PPOLearner:
 
     def update(self, rollout: CollectedRollout) -> dict[str, float]:
         """Optimize one collected rollout."""
+        extra = {} if self.regularizer is None else {"regularizer": self.regularizer}
         return self.agent.update(
             rollout.data,
             rollout.next_value,
@@ -172,6 +177,7 @@ class PPOLearner:
             self.minibatch_size,
             policy_evaluator=self._policy_evaluator,
             minibatch_loss=self._minibatch_loss,
+            **extra,
         )
 
 

@@ -44,6 +44,31 @@ def _game_slug(game: str) -> str:
     return game.removesuffix("-v5").replace("/", "_").lower()
 
 
+def build_gpm_jobs(config: Path, seeds: Sequence[int]) -> list[Job]:
+    """Run GPM from the frozen Pong boundary."""
+    return [
+        Job(
+            f"GPM study seed {seed}",
+            ("-m", "scripts.study_gpm", "--config", str(config), "--seed", str(seed)),
+            f"gpm_seed{seed}.log",
+            True,
+        )
+        for seed in seeds
+    ]
+
+
+def build_three_task_jobs(config: Path, seeds: Sequence[int]) -> list[Job]:
+    return [
+        Job(
+            f"Three-task study seed {seed}",
+            ("-m", "scripts.study_three_tasks", "--config", str(config), "--seed", str(seed)),
+            f"three_tasks_seed{seed}.log",
+            True,
+        )
+        for seed in seeds
+    ]
+
+
 def _ewc_variants(mode: str) -> tuple[bool, ...]:
     if mode == "both":
         return (False, True)
@@ -419,7 +444,17 @@ def run_jobs(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("train", "evaluate"))
-    parser.add_argument("suite", choices=("single", "continual", "multitask"))
+    parser.add_argument(
+        "suite",
+        choices=(
+            "single",
+            "continual",
+            "multitask",
+            "gpm",
+            "three-tasks",
+        ),
+    )
+    parser.add_argument("--study-config", type=Path, help="GPM study protocol")
     parser.add_argument("--games", nargs="+", help="Override the suite's default games")
     parser.add_argument(
         "--algorithms",
@@ -473,9 +508,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Parse the experiment matrix and launch its Python child processes."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-    games = args.games or DEFAULT_GAMES[args.suite]
     try:
         seeds = args.seeds or (args.seed,)
+        if args.suite in {"gpm", "three-tasks"}:
+            if args.phase != "train" or args.study_config is None:
+                raise ValueError(f"{args.suite} requires train and --study-config")
+            builder = build_gpm_jobs if args.suite == "gpm" else build_three_task_jobs
+            jobs = builder(args.study_config, seeds)
+            if args.dry_run:
+                for index, job in enumerate(jobs, start=1):
+                    _print_job(job, index, len(jobs), args.device)
+            else:
+                run_jobs(jobs, device=args.device, parallel=args.parallel, log_dir=args.log_dir)
+            return
+        games = args.games or DEFAULT_GAMES[args.suite]
         jobs = []
         for seed in seeds:
             jobs.extend(

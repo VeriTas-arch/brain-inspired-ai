@@ -1,0 +1,6 @@
+{
+  "anchor_dir": "outputs/policy_replay_v1/seed-61001",
+  "output_dir": "outputs/gpm_v1",
+  "threshold": 0.995,
+  "patches_per_observation": 16
+}

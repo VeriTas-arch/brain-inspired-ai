@@ -489,6 +489,10 @@ class MultiHeadPPOAgent(BaseAgent):
             raise RuntimeError("Current task is not set for MultiHeadPPOAgent.")
         return self.actors[self.current_task], self.critics[self.current_task]
 
+    def policy_logits(self, states: torch.Tensor, task_id: str) -> torch.Tensor:
+        """Evaluate an actor without changing the active PPO task or touching its critic."""
+        return self.actors[task_id](self.backbone(states / 255.0))
+
     def get_value(self, x: torch.Tensor) -> torch.Tensor:
         """Get value estimate for current task."""
         if self.current_task is None:

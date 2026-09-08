@@ -10,6 +10,10 @@ dependencies.
 
 ## Current Scope
 
+The maintained continual-learning candidates are the original EWC and hard-projection GPM.
+See the [active experiments](experiments/README.md) for their scope and results, and the
+[archive index](archive/continual_learning_2026-09-07/README.md) for retired explorations.
+
 - Single-task DQN and PPO training
 - Joint and sequential training with a shared visual backbone and game-specific output heads
 - Policy-only diagonal empirical EWC for PPO and squared TD-gradient importance for DQN

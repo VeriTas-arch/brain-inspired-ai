@@ -1,0 +1,23 @@
+{
+  "output_dir": "outputs/policy_replay_v1",
+  "old_steps": 1048576,
+  "new_steps": 524288,
+  "num_envs": 8,
+  "env_backend": "async",
+  "compile_ppo": true,
+  "rollout_length": 128,
+  "update_epochs": 4,
+  "minibatch_size": 32,
+  "eval_interval": 131072,
+  "eval_episodes": 10,
+  "eval_max_steps": 30000,
+  "memory_capacity": 2048,
+  "memory_collection_steps": 32768,
+  "probe_capacity": 1024,
+  "distillation_weight": 1.0,
+  "ewc_lambda": 0.4,
+  "anchor_min_score": 5.0,
+  "retention_margin": 3.0,
+  "new_score_margin": 3.0,
+  "new_min_score": 5.0
+}
