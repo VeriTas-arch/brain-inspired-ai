@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 
 from algorithms import DQNAgent, EWCWrapper, PPOAgent
-from utils import ReplayBuffer, RolloutBuffer
+from training import ReplayBuffer, RolloutBuffer
 
 
 def demo_basic_usage():

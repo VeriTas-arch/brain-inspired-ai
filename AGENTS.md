@@ -6,8 +6,7 @@
 - Run project commands through the active direnv environment when available, for example
   `direnv exec . pytest`.
 - Use `python -m pip` for installation. Do not use `uv` and do not add `uv.lock`.
-- Keep dependency declarations in `pyproject.toml`; `requirements.txt` is only a compatibility
-  entry point.
+- Keep all dependency declarations, including pytest and Ruff, in `pyproject.toml`.
 - Specify tested minimum versions such as `tqdm>=4.70`. Do not add upper bounds unless a concrete
   incompatibility has been demonstrated.
 - TorchRL is the only external reinforcement-learning framework dependency currently adopted.

@@ -15,16 +15,43 @@ from algorithms import (
     MultiHeadDQNAgent,
     MultiHeadPPOAgent,
 )
+from algorithms.subspace_projection import AdamSubspaceProjection, build_input_subspaces
 from environments import AtariEnv, make_vector_atari_env
 from training import (
     DEFAULT_MAX_EPISODE_STEPS,
+    MetricsPlotter,
     PPOCollector,
     PPOLearner,
+    ReplayBuffer,
+    VideoRecorder,
     configure_ppo_runtime,
     flatten_rollout_data,
     run_evaluation_episodes,
+    seed_everything,
 )
-from utils import MetricsPlotter, ReplayBuffer, VideoRecorder, seed_everything
+
+
+def collect_gpm_states(agent, *, num_envs, env_backend, seed, collection_steps, samples):
+    """Sample a completed task without PPO updates or changes to the training RNG."""
+    environment = make_vector_atari_env(
+        agent.current_task, num_envs, backend=env_backend, seed=seed, training=False
+    )
+    devices = [agent.device.index or 0] if agent.device.type == "cuda" else []
+    try:
+        with torch.random.fork_rng(devices=devices):
+            torch.manual_seed(seed)
+            collector = PPOCollector(environment, PPOLearner(agent), rollout_length=128)
+            chunks, completed = [], 0
+            while completed < collection_steps:
+                rollout = collector.collect(collection_steps - completed)
+                chunks.append(flatten_rollout_data(rollout.data)["states"].cpu().clone())
+                completed += rollout.transition_count
+            states = torch.cat(chunks)
+            generator = torch.Generator().manual_seed(seed)
+            indices = torch.randperm(len(states), generator=generator)[:samples]
+            return states[indices]
+    finally:
+        environment.close()
 
 
 def build_evaluation_report(eval_history: dict, games: list[str]) -> dict:
@@ -110,10 +137,26 @@ def train_continual(
     eval_max_steps: int = DEFAULT_MAX_EPISODE_STEPS,
     save_video: bool = False,
     seed: int = 0,
+    method: str | None = None,
+    task_steps: list[int] | None = None,
+    gpm_threshold: float = 0.995,
+    gpm_samples: int = 2048,
+    gpm_collection_steps: int = 32768,
 ):
-    """Train agent on multiple games sequentially."""
+    """Train every task from one fresh agent; no pretrained checkpoint is required."""
     if games is None:
         games = ["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
+    if not games or len(set(games)) != len(games):
+        raise ValueError("games must be a nonempty sequence of distinct tasks")
+    if method is None:
+        method = "ewc" if use_ewc else "finetune"
+    if method not in {"finetune", "ewc", "gpm"}:
+        raise ValueError("method must be 'finetune', 'ewc', or 'gpm'")
+    if use_ewc and method != "ewc":
+        raise ValueError("use_ewc cannot be combined with another method")
+    use_ewc = method == "ewc"
+    if method == "gpm" and algorithm != "ppo":
+        raise ValueError("GPM is supported only for PPO")
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
     if num_envs <= 0:
@@ -124,8 +167,18 @@ def train_continual(
         raise ValueError("env_backend must be 'sync' or 'async'")
     if algorithm != "ppo" and (env_backend != "sync" or compile_ppo):
         raise ValueError("env_backend and compile_ppo options are supported only for PPO")
-    if algorithm == "ppo" and steps_per_game % num_envs != 0:
-        raise ValueError("PPO steps_per_game must be divisible by num_envs")
+    budgets = list(task_steps) if task_steps is not None else [steps_per_game] * len(games)
+    if len(budgets) != len(games) or any(steps <= 0 for steps in budgets):
+        raise ValueError("task_steps must provide one positive transition budget per game")
+    if algorithm == "ppo" and any(steps % num_envs != 0 for steps in budgets):
+        raise ValueError("PPO task budgets must be divisible by num_envs")
+    if method == "gpm":
+        if not 0 < gpm_threshold <= 1:
+            raise ValueError("gpm_threshold must be in (0, 1]")
+        if not 0 < gpm_samples <= gpm_collection_steps:
+            raise ValueError("Require 0 < gpm_samples <= gpm_collection_steps")
+        if gpm_collection_steps % num_envs != 0:
+            raise ValueError("gpm_collection_steps must be divisible by num_envs")
     if eval_episodes <= 0:
         raise ValueError("eval_episodes must be positive")
     if eval_max_steps <= 0:
@@ -133,19 +186,22 @@ def train_continual(
     configure_ppo_runtime(env_backend)
     seed_everything(seed)
     game_seeds = {game: seed + index for index, game in enumerate(games)}
-    run_name = f"{algorithm}_ewc{use_ewc}"
+    run_name = f"{algorithm}_gpm" if method == "gpm" else f"{algorithm}_ewc{use_ewc}"
     exp_root = Path("outputs") / "continual" / run_name / f"seed-{seed}"
 
     print(f"Continual Learning: {algorithm.upper()} on {games}")
-    print(f"EWC: {use_ewc}")
+    print(f"Method: {method}; task transition budgets: {budgets}")
     if use_ewc:
         print(f"EWC Lambda: {ewc_lambda}")
 
     continual_metrics = {}
     eval_history = {game: [] for game in games}
     ewc_diagnostics = {}
+    gpm_diagnostics = {}
+    subspaces = None
     agent = None
     for game_idx, game_name in enumerate(games):
+        stage_steps = budgets[game_idx]
         print(f"\n=== Task {game_idx + 1}/{len(games)}: {game_name} ===")
 
         env = (
@@ -240,71 +296,83 @@ def train_continual(
         step = 0
         last_rollout_data = None
 
-        pbar = tqdm(total=steps_per_game, desc=f"Training on {game_name}")
+        projection = (
+            AdamSubspaceProjection(agent.optimizer, agent.backbone, subspaces)
+            if method == "gpm" and subspaces is not None
+            else None
+        )
+        pbar = tqdm(total=stage_steps, desc=f"Training on {game_name}")
 
-        while step < steps_per_game:
-            if algorithm == "dqn":
-                action = agent.select_action(state)
+        try:
+            while step < stage_steps:
+                if algorithm == "dqn":
+                    action = agent.select_action(state)
 
-                next_state, reward, terminated, truncated = env.step(action)
-                episode_done = terminated or truncated
-                episode_reward += reward
-                buffer.add(state, action, reward, next_state, terminated)
+                    next_state, reward, terminated, truncated = env.step(action)
+                    episode_done = terminated or truncated
+                    episode_reward += reward
+                    buffer.add(state, action, reward, next_state, terminated)
 
-                if video_recorder is not None and step % 2 == 0:
-                    frame = state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
-                    video_recorder.add_frame(frame)
-
-                if step >= learning_starts and step % train_frequency == 0:
-                    if buffer.is_ready(batch_size):
-                        batch = buffer.sample(batch_size)
-                        metrics = agent.update(batch)
-                        pbar.set_postfix(metrics)
-
-                        if "loss" in metrics:
-                            continual_metrics.setdefault(game_name + "_loss", []).append(
-                                metrics["loss"]
-                            )
-                        if "epsilon" in metrics:
-                            continual_metrics.setdefault(game_name + "_epsilon", []).append(
-                                metrics["epsilon"]
-                            )
-                        if "q_value" in metrics:
-                            continual_metrics.setdefault(game_name + "_q_value", []).append(
-                                metrics["q_value"]
-                            )
-                        if "ewc_loss" in metrics:
-                            continual_metrics.setdefault(game_name + "_ewc_loss", []).append(
-                                metrics["ewc_loss"]
-                            )
-
-                state = next_state
-                step += 1
-                pbar.update(1)
-
-                if episode_done:
-                    episode_rewards.append(episode_reward)
-                    episode_reward = 0
-                    state = env.reset()
-
-            else:  # ppo
-                rollout = collector.collect(steps_per_game - step)
-                metrics = learner.update(rollout)
-                step += rollout.transition_count
-                episode_count = collector.episode_count
-                episode_rewards.extend(rollout.episode_returns)
-                if step == steps_per_game:
-                    last_rollout_data = flatten_rollout_data(rollout.data, clone=True)
-
-                pbar.set_postfix({**metrics, "episodes": episode_count})
-                for metric_name in ("policy_loss", "value_loss", "entropy", "ewc_loss"):
-                    if metric_name in metrics:
-                        continual_metrics.setdefault(game_name + f"_{metric_name}", []).append(
-                            metrics[metric_name]
+                    if video_recorder is not None and step % 2 == 0:
+                        frame = (
+                            state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
                         )
-                pbar.update(rollout.transition_count)
+                        video_recorder.add_frame(frame)
 
-        pbar.close()
+                    if step >= learning_starts and step % train_frequency == 0:
+                        if buffer.is_ready(batch_size):
+                            batch = buffer.sample(batch_size)
+                            metrics = agent.update(batch)
+                            pbar.set_postfix(metrics)
+
+                            if "loss" in metrics:
+                                continual_metrics.setdefault(game_name + "_loss", []).append(
+                                    metrics["loss"]
+                                )
+                            if "epsilon" in metrics:
+                                continual_metrics.setdefault(game_name + "_epsilon", []).append(
+                                    metrics["epsilon"]
+                                )
+                            if "q_value" in metrics:
+                                continual_metrics.setdefault(game_name + "_q_value", []).append(
+                                    metrics["q_value"]
+                                )
+                            if "ewc_loss" in metrics:
+                                continual_metrics.setdefault(game_name + "_ewc_loss", []).append(
+                                    metrics["ewc_loss"]
+                                )
+
+                    state = next_state
+                    step += 1
+                    pbar.update(1)
+
+                    if episode_done:
+                        episode_rewards.append(episode_reward)
+                        episode_reward = 0
+                        state = env.reset()
+
+                else:  # ppo
+                    rollout = collector.collect(stage_steps - step)
+                    metrics = learner.update(rollout)
+                    step += rollout.transition_count
+                    episode_count = collector.episode_count
+                    episode_rewards.extend(rollout.episode_returns)
+                    if step == stage_steps:
+                        last_rollout_data = flatten_rollout_data(rollout.data, clone=True)
+
+                    pbar.set_postfix({**metrics, "episodes": episode_count})
+                    for metric_name in ("policy_loss", "value_loss", "entropy", "ewc_loss"):
+                        if metric_name in metrics:
+                            continual_metrics.setdefault(game_name + f"_{metric_name}", []).append(
+                                metrics[metric_name]
+                            )
+                    pbar.update(rollout.transition_count)
+
+        finally:
+            pbar.close()
+            if projection is not None:
+                projection.close()
+            env.close()
 
         if episode_rewards:
             continual_metrics.setdefault(game_name + "_episode_reward", []).extend(episode_rewards)
@@ -351,7 +419,34 @@ def train_continual(
             ewc_diagnostics[game_name] = agent.consolidate_weights(sample_batch)
             print(f"Weights consolidated for EWC: {ewc_diagnostics[game_name]}")
 
-        env.close()
+        if method == "gpm":
+            agent.set_task(task_id)
+            states = collect_gpm_states(
+                agent,
+                num_envs=num_envs,
+                env_backend=env_backend,
+                seed=seed + 20000 + game_idx * 1000,
+                collection_steps=gpm_collection_steps,
+                samples=gpm_samples,
+            )
+            subspaces = build_input_subspaces(
+                agent.backbone,
+                states,
+                threshold=gpm_threshold,
+                seed=seed + 40000 + game_idx * 1000,
+                batch_size=batch_size,
+                previous=subspaces,
+            )
+            gpm_diagnostics[game_name] = {
+                "boundary_collection_transitions": gpm_collection_steps,
+                "sample_count": len(states),
+                "projection": projection.metrics() if projection is not None else None,
+                "layers": {
+                    name: {key: value for key, value in entry.items() if not torch.is_tensor(value)}
+                    for name, entry in subspaces.items()
+                },
+            }
+            del states
 
     metrics_plotter = MetricsPlotter()
     for name, values in continual_metrics.items():
@@ -369,10 +464,13 @@ def train_continual(
 
     evaluation_report = {
         "algorithm": algorithm,
+        "method": method,
+        "initialization": "random",
         "games": games,
         "use_ewc": use_ewc,
         "ewc_lambda": ewc_lambda if use_ewc else None,
-        "steps_per_game": steps_per_game,
+        "steps_per_game": steps_per_game if task_steps is None else None,
+        "task_steps": dict(zip(games, budgets, strict=True)),
         "batch_size": batch_size,
         "num_envs": num_envs,
         "env_backend": env_backend if algorithm == "ppo" else None,
@@ -382,6 +480,7 @@ def train_continual(
         "seed": seed,
         "task_seeds": game_seeds,
         "ewc_diagnostics": ewc_diagnostics if use_ewc else None,
+        "gpm_diagnostics": gpm_diagnostics if method == "gpm" else None,
         **build_evaluation_report(eval_history, games),
     }
     evaluation_path = exp_root / "continual_evaluation.json"
@@ -394,7 +493,18 @@ def train_continual(
     ckpt_root.mkdir(parents=True, exist_ok=True)
     checkpoint_path = ckpt_root / run_name / f"seed-{seed}.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    agent.save(str(checkpoint_path))
+    if method == "gpm":
+        checkpoint = agent.checkpoint_state()
+        checkpoint["gpm"] = {
+            "subspaces": subspaces,
+            "completed_tasks": list(games),
+            "threshold": gpm_threshold,
+            "samples": gpm_samples,
+            "collection_steps": gpm_collection_steps,
+        }
+        torch.save(checkpoint, checkpoint_path)
+    else:
+        agent.save(str(checkpoint_path))
     print(f"\nAgent saved: {checkpoint_path}")
 
 
@@ -404,9 +514,19 @@ if __name__ == "__main__":
         "--games", nargs="+", default=["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
     )
     parser.add_argument("--algorithm", default="dqn", choices=["dqn", "ppo"])
-    parser.add_argument("--use-ewc", action="store_true")
+    methods = parser.add_mutually_exclusive_group()
+    methods.add_argument("--method", choices=("finetune", "ewc", "gpm"))
+    methods.add_argument(
+        "--use-ewc", action="store_true", help="Compatibility alias for --method ewc"
+    )
     parser.add_argument("--ewc-lambda", type=float, default=0.4, help="EWC regularization strength")
     parser.add_argument("--steps-per-game", type=int, default=50000)
+    parser.add_argument(
+        "--task-steps", type=int, nargs="+", help="Per-game budgets, overriding --steps-per-game"
+    )
+    parser.add_argument("--gpm-threshold", type=float, default=0.995)
+    parser.add_argument("--gpm-samples", type=int, default=2048)
+    parser.add_argument("--gpm-collection-steps", type=int, default=32768)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--env-backend", choices=("sync", "async"), default="sync")
@@ -434,4 +554,9 @@ if __name__ == "__main__":
         eval_max_steps=args.eval_max_steps,
         save_video=args.save_video,
         seed=args.seed,
+        method=args.method,
+        task_steps=args.task_steps,
+        gpm_threshold=args.gpm_threshold,
+        gpm_samples=args.gpm_samples,
+        gpm_collection_steps=args.gpm_collection_steps,
     )

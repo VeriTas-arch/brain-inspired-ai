@@ -12,8 +12,15 @@ from algorithms import (
     PPOAgent,
 )
 from environments import AtariEnv, make_vector_atari_env
-from training import PPOCollector, PPOLearner, configure_ppo_runtime
-from utils import MetricsPlotter, ReplayBuffer, VideoRecorder, seed_everything
+from training import (
+    MetricsPlotter,
+    PPOCollector,
+    PPOLearner,
+    ReplayBuffer,
+    VideoRecorder,
+    configure_ppo_runtime,
+    seed_everything,
+)
 
 
 def train_single_game(

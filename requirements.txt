@@ -1,4 +1,0 @@
-# Compatibility entry point for users who still run
-# `python -m pip install -r requirements.txt`.
-# The dependency authority is pyproject.toml.
--e .

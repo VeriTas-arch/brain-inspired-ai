@@ -14,7 +14,8 @@ import torch
 
 from algorithms.ppo import ppo_minibatch_loss
 from environments import VectorStep
-from utils import RolloutBuffer
+
+from .buffers import RolloutBuffer
 
 
 class VectorEnvironment(Protocol):

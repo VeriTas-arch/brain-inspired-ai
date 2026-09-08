@@ -44,31 +44,6 @@ def _game_slug(game: str) -> str:
     return game.removesuffix("-v5").replace("/", "_").lower()
 
 
-def build_gpm_jobs(config: Path, seeds: Sequence[int]) -> list[Job]:
-    """Run GPM from the frozen Pong boundary."""
-    return [
-        Job(
-            f"GPM study seed {seed}",
-            ("-m", "scripts.study_gpm", "--config", str(config), "--seed", str(seed)),
-            f"gpm_seed{seed}.log",
-            True,
-        )
-        for seed in seeds
-    ]
-
-
-def build_three_task_jobs(config: Path, seeds: Sequence[int]) -> list[Job]:
-    return [
-        Job(
-            f"Three-task study seed {seed}",
-            ("-m", "scripts.study_three_tasks", "--config", str(config), "--seed", str(seed)),
-            f"three_tasks_seed{seed}.log",
-            True,
-        )
-        for seed in seeds
-    ]
-
-
 def _ewc_variants(mode: str) -> tuple[bool, ...]:
     if mode == "both":
         return (False, True)
@@ -90,6 +65,8 @@ def build_jobs(
     num_envs: int = 1,
     env_backend: str = "sync",
     compile_ppo: bool = False,
+    method: str | None = None,
+    task_steps: Sequence[int] | None = None,
 ) -> list[Job]:
     """Build the process matrix formerly encoded in the shell scripts."""
     if episodes <= 0:
@@ -102,6 +79,24 @@ def build_jobs(
         raise ValueError("num_envs must be positive")
     if env_backend not in {"sync", "async"}:
         raise ValueError("env_backend must be 'sync' or 'async'")
+    if method is not None and (suite != "continual" or method not in {"finetune", "ewc", "gpm"}):
+        raise ValueError("method selects finetune, ewc, or gpm in the continual suite")
+    if method is not None and ewc_mode != "both":
+        raise ValueError("Use either method or ewc_mode")
+    if method == "gpm" and tuple(algorithms) != ("ppo",):
+        raise ValueError("GPM requires --algorithms ppo")
+    if task_steps is not None:
+        if phase != "train" or suite != "continual":
+            raise ValueError("task_steps is supported only for continual training")
+        if len(task_steps) != len(games) or any(value <= 0 for value in task_steps):
+            raise ValueError("task_steps must provide one positive transition budget per game")
+        if steps is not None:
+            raise ValueError("Use either steps or task_steps")
+    methods = (
+        (method,)
+        if method
+        else tuple("ewc" if flag else "finetune" for flag in _ewc_variants(ewc_mode))
+    )
     if num_envs > 1 and (phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)):
         raise ValueError("num_envs greater than one supports PPO single/continual training only")
     if (env_backend != "sync" or compile_ppo) and (
@@ -112,6 +107,10 @@ def build_jobs(
         training_steps = steps if steps is not None else DEFAULT_TRAINING_STEPS[suite]
         if training_steps <= 0:
             raise ValueError("steps must be positive")
+        budgets = task_steps if task_steps is not None else (training_steps,)
+        if suite in {"single", "continual"} and "ppo" in algorithms:
+            if any(value % num_envs for value in budgets):
+                raise ValueError("PPO task budgets must be divisible by num_envs")
         return _build_training_jobs(
             suite,
             games,
@@ -120,15 +119,16 @@ def build_jobs(
             episodes,
             max_steps,
             ewc_lambda,
-            ewc_mode,
+            methods,
             seed,
             num_envs,
             env_backend,
             compile_ppo,
+            task_steps,
         )
 
     return _build_evaluation_jobs(
-        suite, games, algorithms, episodes, max_steps, ewc_lambda, ewc_mode, seed
+        suite, games, algorithms, episodes, max_steps, ewc_lambda, methods, seed
     )
 
 
@@ -140,11 +140,12 @@ def _build_training_jobs(
     eval_episodes: int,
     eval_max_steps: int,
     ewc_lambda: float,
-    ewc_mode: str,
+    methods: Sequence[str],
     seed: int,
     num_envs: int,
     env_backend: str,
     compile_ppo: bool,
+    task_steps: Sequence[int] | None,
 ) -> list[Job]:
     jobs = []
     if suite == "single":
@@ -178,7 +179,7 @@ def _build_training_jobs(
                 )
     elif suite == "continual":
         for algorithm in algorithms:
-            for use_ewc in _ewc_variants(ewc_mode):
+            for method in methods:
                 arguments = [
                     "scripts/train_continual.py",
                     "--seed",
@@ -194,9 +195,13 @@ def _build_training_jobs(
                     "--eval-max-steps",
                     str(eval_max_steps),
                 ]
-                variant = "ewc" if use_ewc else "no_ewc"
-                if use_ewc:
+                variant = "no_ewc" if method == "finetune" else method
+                if method == "ewc":
                     arguments.extend(("--use-ewc", "--ewc-lambda", str(ewc_lambda)))
+                elif method == "gpm":
+                    arguments.extend(("--method", "gpm"))
+                if task_steps is not None:
+                    arguments.extend(("--task-steps", *(str(value) for value in task_steps)))
                 if num_envs > 1:
                     arguments.extend(("--num-envs", str(num_envs)))
                 if algorithm == "ppo" and env_backend != "sync":
@@ -241,7 +246,7 @@ def _build_evaluation_jobs(
     episodes: int,
     max_steps: int,
     ewc_lambda: float,
-    ewc_mode: str,
+    methods: Sequence[str],
     seed: int,
 ) -> list[Job]:
     jobs = []
@@ -277,8 +282,9 @@ def _build_evaluation_jobs(
                 )
     elif suite == "continual":
         for algorithm in algorithms:
-            for use_ewc in _ewc_variants(ewc_mode):
-                variant = f"{algorithm}_ewc{use_ewc}"
+            for method in methods:
+                use_ewc = method == "ewc"
+                variant = f"{algorithm}_gpm" if method == "gpm" else f"{algorithm}_ewc{use_ewc}"
                 arguments = [
                     "scripts/evaluate.py",
                     "--seed",
@@ -302,7 +308,7 @@ def _build_evaluation_jobs(
                     arguments.extend(("--ewc", "--ewc-lambda", str(ewc_lambda)))
                 jobs.append(
                     Job(
-                        f"evaluate continual {algorithm} ewc={use_ewc}",
+                        f"evaluate continual {algorithm} {method}",
                         tuple(arguments),
                         f"evaluate_continual_{variant}_seed{seed}.log",
                         False,
@@ -444,17 +450,7 @@ def run_jobs(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("train", "evaluate"))
-    parser.add_argument(
-        "suite",
-        choices=(
-            "single",
-            "continual",
-            "multitask",
-            "gpm",
-            "three-tasks",
-        ),
-    )
-    parser.add_argument("--study-config", type=Path, help="GPM study protocol")
+    parser.add_argument("suite", choices=("single", "continual", "multitask"))
     parser.add_argument("--games", nargs="+", help="Override the suite's default games")
     parser.add_argument(
         "--algorithms",
@@ -463,6 +459,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=("dqn", "ppo"),
     )
     parser.add_argument("--steps", type=int, help="Training steps or steps per game")
+    parser.add_argument("--task-steps", type=int, nargs="+", help="One budget per sequential task")
     parser.add_argument("--episodes", type=int, default=10, help="Evaluation episodes per game")
     parser.add_argument(
         "--max-steps",
@@ -474,7 +471,11 @@ def _build_parser() -> argparse.ArgumentParser:
     seed_group.add_argument("--seed", type=int, default=0)
     seed_group.add_argument("--seeds", type=int, nargs="+", help="Expand the matrix over seeds")
     parser.add_argument("--ewc-lambda", type=float, default=0.4)
-    parser.add_argument(
+    methods = parser.add_mutually_exclusive_group()
+    methods.add_argument(
+        "--method", choices=("finetune", "ewc", "gpm"), help="Continual-learning method"
+    )
+    methods.add_argument(
         "--ewc-mode",
         choices=("both", "on", "off"),
         default="both",
@@ -510,17 +511,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         seeds = args.seeds or (args.seed,)
-        if args.suite in {"gpm", "three-tasks"}:
-            if args.phase != "train" or args.study_config is None:
-                raise ValueError(f"{args.suite} requires train and --study-config")
-            builder = build_gpm_jobs if args.suite == "gpm" else build_three_task_jobs
-            jobs = builder(args.study_config, seeds)
-            if args.dry_run:
-                for index, job in enumerate(jobs, start=1):
-                    _print_job(job, index, len(jobs), args.device)
-            else:
-                run_jobs(jobs, device=args.device, parallel=args.parallel, log_dir=args.log_dir)
-            return
         games = args.games or DEFAULT_GAMES[args.suite]
         jobs = []
         for seed in seeds:
@@ -539,6 +529,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                     num_envs=args.num_envs,
                     env_backend=args.env_backend,
                     compile_ppo=args.compile_ppo,
+                    method=args.method,
+                    task_steps=args.task_steps,
                 )
             )
         if args.dry_run:

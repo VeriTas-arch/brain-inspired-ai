@@ -10,9 +10,8 @@ dependencies.
 
 ## Current Scope
 
-The maintained continual-learning candidates are the original EWC and hard-projection GPM.
-See the [active experiments](experiments/README.md) for their scope and results, and the
-[archive index](archive/continual_learning_2026-09-07/README.md) for retired explorations.
+The teaching continual-learning methods are plain sequential training, EWC, and hard-projection
+GPM. Every teaching training entry point starts from initialization, including GPM.
 
 - Single-task DQN and PPO training
 - Joint and sequential training with a shared visual backbone and game-specific output heads
@@ -26,13 +25,37 @@ not been replaced by a TorchRL trainer. Its TensorDict, replay buffer, collector
 components can be evaluated independently later without removing the readable baseline all at
 once.
 
+## Teaching Cases
+
+One [teaching notebook](Atari_RL_Complete_Tutorial.ipynb) organizes five cases around three Python
+training scripts. Its training and evaluation calls use `--dry-run` to preview commands. Training
+budgets, seeds, and the recording plan should be selected before running a comparison.
+
+| Case | Algorithms | Python entry point |
+| --- | --- | --- |
+| Single-task learning | DQN, PPO | `scripts/train_single.py` |
+| Joint multi-task learning | DQN, PPO | `scripts/train_multitask.py` |
+| Plain sequential learning | DQN, PPO | `scripts/train_continual.py --method finetune` |
+| Sequential learning with EWC | PPO; DQN is an extension awaiting an outcome comparison | `scripts/train_continual.py --method ewc` |
+| Sequential learning with GPM | PPO | `scripts/train_continual.py --method gpm` |
+
+These are nine supported configurations, with PPO/finetune, PPO/EWC, and PPO/GPM forming the main
+continual-learning comparison. DQN/EWC has implementation tests but no saved full training
+comparison in this repository; its importance estimator is a squared TD-loss-gradient surrogate.
+
+Joint training can revisit all games throughout optimization. Sequential training visits Pong,
+Breakout, then SpaceInvaders and uses only the current task's data for RL updates. Both protocols
+share a visual backbone and use game-specific heads. Compare per-game transition budgets and raw
+evaluation scores; joint training is a reference with different data access, not a guaranteed upper
+bound. `--steps` is a total budget for joint training and a per-game budget for the continual runner.
+
 ## Installation
 
 Python 3.12 or newer is required. `pyproject.toml` declares tested minimum versions without upper
-bounds. Install the project and development tools with pip:
+bounds. Install the project, including pytest and Ruff, with pip:
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install -e .
 ```
 
 The current development baseline is PyTorch 2.14 with TorchRL 0.13.3 and TensorDict 0.13. It is not
@@ -40,14 +63,7 @@ compatible with the teaching server's current NVIDIA 550 driver. Upgrade that se
 supported by the selected PyTorch wheel before deploying this development version; the previous
 PyTorch 2.6 CUDA 12.4 stack is no longer a compatibility target.
 
-The legacy installation command remains available:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-`requirements.txt` is only a compatibility entry point to `pyproject.toml`; it does not maintain a
-second dependency list. This project does not use `uv`.
+All dependencies are declared in `pyproject.toml`. This project does not use `uv`.
 
 ## Validation
 
@@ -118,10 +134,39 @@ Continual learning with EWC:
 python scripts/train_continual.py \
   --games Pong-v5 Breakout-v5 SpaceInvaders-v5 \
   --algorithm ppo \
-  --use-ewc \
+  --method ewc \
   --ewc-lambda 0.4 \
   --steps-per-game 50000
 ```
+
+Continual learning with GPM, including initial Pong training:
+
+```bash
+python scripts/run_experiments.py train continual \
+  --algorithms ppo --method gpm --dry-run
+```
+
+This uses `scripts/train_continual.py` and requires no existing checkpoint, manifest, or historical
+anchor. Select `--method finetune`, `ewc`, or `gpm`; the runner's older `--ewc-mode` and the direct
+training script's `--use-ewc` remain available for existing course commands. GPM currently supports
+PPO only. The default synchronous/eager PPO path is also supported by GPM.
+
+Uniform budgets retain `--steps` in the runner or `--steps-per-game` in the direct script. To give
+each sequential task a different budget, use `--task-steps` in game order, for example
+`--task-steps 1048576 524288 524288`.
+
+GPM collects 32,768 additional transitions with a frozen policy after each completed task and
+samples 2,048 states for the input bases, with an energy threshold of 0.995. Boundary sampling does
+not update PPO or advance its training random stream. Bases accumulate across tasks; the next
+task projects shared-layer Adam displacements, including biases, onto the protected bases'
+orthogonal complement. Direct-script options `--gpm-threshold`, `--gpm-samples`, and
+`--gpm-collection-steps` expose these settings. Boundary sampling is reported separately from the
+training budget in `continual_evaluation.json`.
+
+GPM writes to `outputs/continual/ppo_gpm/seed-<seed>/` and
+`checkpoints/continual/ppo_gpm/seed-<seed>.pt`. The checkpoint includes the normal PPO agent and
+optimizer state plus a `gpm` field containing the final cumulative bases and boundary settings.
+The ordinary PPO evaluation loader accepts it; resume orchestration is not part of this entry point.
 
 Joint multi-task training:
 
@@ -246,6 +291,7 @@ CPU/GPU and parallel/sequential shell scripts. Runs are sequential by default:
 python scripts/run_experiments.py train single
 python scripts/run_experiments.py train continual --device cpu
 python scripts/run_experiments.py evaluate multitask
+python scripts/run_experiments.py evaluate continual --algorithms ppo --method gpm --dry-run
 ```
 
 Use `--parallel` to launch every job in the selected matrix concurrently. In automatic or CUDA
@@ -259,7 +305,7 @@ Inspect a matrix without starting any training or evaluation:
 python scripts/run_experiments.py train continual --parallel --dry-run
 ```
 
-The runner also accepts `--games`, `--algorithms`, `--steps`, `--episodes`, `--max-steps`,
+The runner also accepts `--games`, `--algorithms`, `--steps`, `--task-steps`, `--method`, `--episodes`, `--max-steps`,
 `--ewc-mode`, `--ewc-lambda`, `--num-envs`, `--env-backend`, `--compile-ppo`, and `--seed`; run it
 with `--help` for the complete interface. PPO runtime options are limited to single-task or
 continual training.
@@ -306,18 +352,17 @@ statistics on load.
 
 Raw rewards from different Atari games have different scales and should not be summed and
 interpreted as a single performance measure. Training loss on random data is also not evidence of
-forgetting. The next experimental phase should first freeze seeds, evaluation budgets, and the
-score matrix, then compare EWC with a conflict-aware candidate such as a small episodic replay
-baseline. More complex gradient projection or distillation methods should be considered only after
-the baseline protocol is stable.
+forgetting. The teaching comparison uses plain sequential PPO, EWC, and GPM with the same tasks,
+training budgets, and evaluation contract. Report old-task retention and new-task learning curves
+separately; final scores alone do not establish a general solution to task conflict.
 
 ## Repository Layout
 
 ```text
-algorithms/                DQN, PPO, multi-head agents, and EWC
+Atari_RL_Complete_Tutorial.ipynb  one teaching interface for all five cases
+algorithms/                DQN, PPO, multi-head agents, EWC, and GPM
 environments/              Atari environments and train/evaluation preprocessing
-training/                  shared PPO runtime and deterministic evaluation boundaries
-utils/                     replay/rollout buffers and visualization utilities
+training/                  buffers, PPO runtime, evaluation, reproducibility, and visualization
 scripts/benchmark_ppo_runtime.py  maintained PPO throughput benchmark
 scripts/train_single.py    single-task training
 scripts/train_continual.py sequential continual learning
@@ -329,6 +374,12 @@ tests/                     correctness and compatibility regression tests
 pyproject.toml             single source of dependency and tool configuration
 ```
 
+Training creates `outputs/`, `checkpoints/`, and `logs/` as needed. These generated directories are
+ignored by Git. Historical outputs, checkpoints, logs, experiment documents, and retired study
+scripts are kept locally under `archive/`, which is also ignored by Git. The local
+`archive/README.md` records their locations and the source snapshot. Teaching entry points do not
+depend on this archive, and a fresh clone does not include it.
+
 ## Known Limitations
 
 - The optimized PPO path parallelizes Atari emulation with local Gymnasium processes. It has not
@@ -336,6 +387,8 @@ pyproject.toml             single source of dependency and tool configuration
 - Unit tests, a one-minibatch eager/compiled CUDA parity check, and the short runtime benchmark do
   not replace a full fixed-seed learning-curve comparison. That validation should precede using the
   optimized path for course results.
+- The complete GPM teaching path has protocol integration tests, but no new full Atari training
+  result yet. DQN/EWC also awaits a full outcome comparison.
 - The replay buffer stores both `state` and `next_state` per transition. Its layout can later be
   optimized without introducing another acceleration framework.
 - Training handles Gymnasium `terminated` and `truncated` separately: DQN bootstraps time-limit

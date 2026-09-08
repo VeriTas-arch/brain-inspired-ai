@@ -9,8 +9,12 @@ import torch
 
 from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
 from environments import AtariEnv
-from training import DEFAULT_MAX_EPISODE_STEPS, run_evaluation_episodes
-from utils import VideoRecorder, seed_everything
+from training import (
+    DEFAULT_MAX_EPISODE_STEPS,
+    VideoRecorder,
+    run_evaluation_episodes,
+    seed_everything,
+)
 
 
 def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:

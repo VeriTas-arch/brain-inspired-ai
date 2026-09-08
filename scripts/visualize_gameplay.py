@@ -6,7 +6,7 @@ import torch
 
 from algorithms import DQNAgent, PPOAgent
 from environments import AtariEnv
-from utils import VideoRecorder
+from training import VideoRecorder
 
 
 def visualize_agent(

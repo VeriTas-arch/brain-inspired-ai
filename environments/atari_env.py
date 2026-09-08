@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from gymnasium.vector import AutoresetMode
 
-from utils.atari_wrappers import (
+from .atari_wrappers import (
     ClipRewardEnv,
     EpisodicLifeEnv,
     FireResetEnv,

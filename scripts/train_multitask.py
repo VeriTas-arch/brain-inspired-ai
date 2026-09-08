@@ -15,7 +15,7 @@ from algorithms import (
     bootstrap_truncated_reward,
 )
 from environments import AtariEnv
-from utils import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
+from training import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
 
 
 def train_multitask(

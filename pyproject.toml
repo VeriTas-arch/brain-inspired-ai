@@ -17,20 +17,16 @@ dependencies = [
     "matplotlib>=3.11",
     "numpy>=2.5",
     "opencv-python>=5",
+    "pytest>=9.1.1",
+    "ruff>=0.16.6",
     "torch>=2.14",
     "torchrl>=0.13.3",
     "tensordict>=0.13",
     "tqdm>=4.70",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=9.1.1",
-    "ruff>=0.16.6",
-]
-
 [tool.setuptools.packages.find]
-include = ["algorithms*", "environments*", "training*", "utils*"]
+include = ["algorithms*", "environments*", "training*"]
 
 [tool.pytest.ini_options]
 addopts = ["-ra", "--strict-config", "--strict-markers"]

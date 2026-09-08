@@ -1,5 +1,13 @@
-"""Tests for the unified Python experiment runner."""
+"""Training commands, defaults, validation, and reproducibility."""
 
+import random
+from inspect import signature
+
+import numpy as np
+import pytest
+import torch
+
+from algorithms import DEFAULT_DQN_LEARNING_STARTS
 from scripts.evaluate import DEFAULT_MAX_EPISODE_STEPS as EVALUATE_MAX_EPISODE_STEPS
 from scripts.run_experiments import (
     DEFAULT_GAMES,
@@ -8,6 +16,10 @@ from scripts.run_experiments import (
     build_jobs,
     main,
 )
+from scripts.train_continual import train_continual
+from scripts.train_multitask import train_multitask
+from scripts.train_single import train_single_game
+from training import seed_everything
 
 
 def _default_jobs(phase: str, suite: str):
@@ -178,3 +190,104 @@ def test_optimized_ppo_runtime_rejects_mixed_algorithm_matrix() -> None:
         assert "optimized PPO runtime" in str(error)
     else:
         raise AssertionError("optimized PPO options must not leak into DQN jobs")
+
+
+@pytest.mark.parametrize("method", ("finetune", "ewc", "gpm"))
+def test_teaching_method_selects_one_matching_training_and_evaluation_job(method):
+    options = dict(games=DEFAULT_GAMES["continual"], algorithms=("ppo",), method=method)
+    training = build_jobs("train", "continual", task_steps=(1048576, 524288, 524288), **options)
+    evaluation = build_jobs("evaluate", "continual", **options)
+    assert len(training) == len(evaluation) == 1
+    assert "scripts/train_continual.py" in training[0].arguments
+    index = training[0].arguments.index("--task-steps")
+    assert training[0].arguments[index + 1 : index + 4] == ("1048576", "524288", "524288")
+    variant = "ppo_gpm" if method == "gpm" else f"ppo_ewc{method == 'ewc'}"
+    assert f"checkpoints/continual/{variant}/seed-0.pt" in evaluation[0].arguments
+    assert ("--ewc" in evaluation[0].arguments) == (method == "ewc")
+
+
+def test_gpm_dry_run_uses_complete_teaching_entry_point(capsys):
+    main(("train", "continual", "--algorithms", "ppo", "--method", "gpm", "--dry-run"))
+    output = capsys.readouterr().out
+    assert "scripts/train_continual.py" in output
+    assert "--method gpm" in output
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"algorithms": ("dqn",), "method": "gpm"},
+        {"method": "gpm", "ewc_mode": "on"},
+        {"task_steps": (8, 8)},
+        {"task_steps": (8, 0, 8)},
+        {"task_steps": (8, 10, 8), "num_envs": 8},
+        {"task_steps": (8, 8, 8), "steps": 8},
+    ],
+)
+def test_runner_rejects_unsupported_method_and_task_budgets(options):
+    with pytest.raises(ValueError):
+        build_jobs(
+            "train",
+            "continual",
+            **{"games": DEFAULT_GAMES["continual"], "algorithms": ("ppo",), **options},
+        )
+
+
+def test_continual_dqn_starts_learning_before_default_task_ends() -> None:
+    default_task_steps = signature(train_continual).parameters["steps_per_game"].default
+
+    assert DEFAULT_DQN_LEARNING_STARTS < default_task_steps
+
+
+def test_continual_training_has_a_reproducible_default_seed() -> None:
+    assert signature(train_continual).parameters["seed"].default == 0
+
+
+@pytest.mark.parametrize(
+    "train",
+    (train_single_game, train_continual, train_multitask),
+)
+def test_training_entry_points_reject_invalid_batch_size(train) -> None:
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        train(batch_size=0)
+
+
+@pytest.mark.parametrize("train", (train_single_game, train_continual))
+def test_ppo_vector_training_rejects_invalid_environment_counts(train) -> None:
+    with pytest.raises(ValueError, match="num_envs must be positive"):
+        train(algorithm="ppo", num_envs=0)
+
+
+def test_ppo_vector_training_requires_divisible_step_budgets() -> None:
+    with pytest.raises(ValueError, match="divisible"):
+        train_single_game(algorithm="ppo", num_steps=10, num_envs=8)
+    with pytest.raises(ValueError, match="divisible"):
+        train_continual(algorithm="ppo", steps_per_game=10, num_envs=8)
+
+
+@pytest.mark.parametrize("train", (train_single_game, train_continual))
+def test_optimized_runtime_options_are_ppo_only(train) -> None:
+    with pytest.raises(ValueError, match="only for PPO"):
+        train(algorithm="dqn", env_backend="async")
+    with pytest.raises(ValueError, match="only for PPO"):
+        train(algorithm="dqn", compile_ppo=True)
+
+
+def test_continual_training_rejects_invalid_evaluation_step_limit() -> None:
+    with pytest.raises(ValueError, match="eval_max_steps must be positive"):
+        train_continual(eval_max_steps=0)
+
+
+def test_seed_everything_reproduces_python_numpy_and_torch() -> None:
+    seed_everything(7)
+    first = (random.random(), np.random.random(), torch.rand(1))
+    seed_everything(7)
+    second = (random.random(), np.random.random(), torch.rand(1))
+
+    assert first[:2] == second[:2]
+    torch.testing.assert_close(first[2], second[2])
+
+
+def test_seed_everything_rejects_numpy_incompatible_seed() -> None:
+    with pytest.raises(ValueError, match="seed"):
+        seed_everything(2**32)

@@ -12,8 +12,7 @@ import torch
 
 from algorithms import PPOAgent
 from environments import make_vector_atari_env
-from training import PPOCollector, PPOLearner
-from utils import seed_everything
+from training import PPOCollector, PPOLearner, seed_everything
 
 
 @dataclass(frozen=True)
