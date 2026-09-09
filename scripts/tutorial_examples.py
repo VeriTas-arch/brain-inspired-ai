@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import platform
 from importlib.metadata import version
+from pathlib import Path
 
 import torch
 
@@ -115,42 +117,66 @@ if __name__ == "__main__":
     main()
 
 
-def teaching_results(case: str) -> str:
-    """Render the committed evaluation snapshot, without requiring local training outputs."""
-    import json
-    from pathlib import Path
+TEACHING_RESULTS = Path(__file__).resolve().parents[1] / "results"
 
-    path = Path(__file__).resolve().parents[1] / "results" / "teaching.json"
-    snapshot = json.loads(path.read_text(encoding="utf-8"))
-    records = [record for record in snapshot["records"] if record["case"] == case]
-    if not records:
+
+def load_teaching_results(results_dir: Path = TEACHING_RESULTS) -> dict:
+    """Read case records without requiring local models or source copies."""
+    results_dir = Path(results_dir)
+    result = {
+        "runs": {},
+        "models": [],
+        "continual": {},
+        "learning_curves": {},
+    }
+    for config_path in sorted(results_dir.glob("*/config.json")):
+        directory = config_path.parent
+        case = directory.name
+        if case.startswith(".") or case in {"smoke", "performance"}:
+            continue
+        config = json.loads(config_path.read_text())
+        result["runs"][case] = json.loads((directory / "run.json").read_text())
+        summary = json.loads((directory / "training_summary.json").read_text())
+        metrics = json.loads((directory / "evaluation/evaluation.json").read_text())
+        result["models"].append(
+            {
+                "name": case,
+                "checkpoint": f"{case}/checkpoints/final.pt",
+                "sha256": summary["checkpoint_sha256"],
+                "metrics_path": f"{case}/evaluation/evaluation.json",
+                "metrics": metrics,
+            }
+        )
+        if config["protocol"] == "continual":
+            result["continual"][case] = summary
+        learning = directory / "learning.json"
+        if learning.is_file():
+            result["learning_curves"][f"{case}/learning.json"] = json.loads(learning.read_text())
+    return result
+
+
+def teaching_results(case: str) -> str:
+    """Render final means or stage trajectories from the current teaching cases."""
+    data = load_teaching_results()
+    lines = ["| 算法 | 游戏 | 评估均分／阶段轨迹 |", "|---|---|---|"]
+    if case in {"single", "multitask"}:
+        for record in data["models"]:
+            metrics = record["metrics"]
+            if metrics["mode"] != case:
+                continue
+            games = metrics["games"] if case == "multitask" else {metrics["game"]: metrics}
+            for game, scores in games.items():
+                lines.append(
+                    f"| {metrics['algorithm'].upper()} | {game} | {scores['avg_reward']:g} |"
+                )
+    elif case in {"finetune", "ewc", "gpm"}:
+        for summary in data["continual"].values():
+            if summary["method"] != case:
+                continue
+            for game in summary["games"]:
+                values = [row["scores"][game] for row in summary["score_matrix"]]
+                trajectory = " → ".join(f"{value:g}" for value in values if value is not None)
+                lines.append(f"| {summary['algorithm'].upper()} | {game} | {trajectory} |")
+    else:
         raise ValueError(f"Unknown teaching case: {case}")
-    lines = [
-        "| 算法 | 游戏 | 评估均分／阶段轨迹 | 证据状态 |",
-        "|---|---|---|---|",
-    ]
-    for record in records:
-        data = record["data"]
-        if case == "single":
-            scores = {
-                record["game"]: [e["mean_raw_reward"] for e in data["evaluations"]]
-                if "evaluations" in data
-                else [data["avg_reward"]]
-            }
-        elif case == "multitask":
-            scores = {game: [entry["avg_reward"]] for game, entry in data["games"].items()}
-        else:
-            scores = {
-                game: [
-                    stage["scores"][game]
-                    for stage in data["score_matrix"]
-                    if stage["scores"][game] is not None
-                ]
-                for game in data["games"]
-            }
-        for game, values in scores.items():
-            trajectory = " → ".join(f"{value:g}" for value in values)
-            lines.append(
-                f"| {record['algorithm'].upper()} | {game} | {trajectory} | {record['status']} |"
-            )
     return "\n".join(lines)

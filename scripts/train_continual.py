@@ -29,9 +29,17 @@ from training import (
     VideoRecorder,
     configure_ppo_runtime,
     dqn_updates_due,
+    evaluation_schedule,
     flatten_rollout_data,
     run_evaluation_episodes,
     seed_everything,
+)
+from training.results import (
+    case_name,
+    file_digest,
+    parameter_digest,
+    prepare_case,
+    result_directory,
 )
 
 
@@ -169,11 +177,13 @@ def train_continual(
     seed: int = 0,
     deterministic: bool = False,
     eval_interval: int = 0,
+    eval_points: int = 0,
     method: str | None = None,
     task_steps: list[int] | None = None,
     gpm_threshold: float = 0.995,
     gpm_samples: int = 2048,
     gpm_collection_steps: int = 32768,
+    output_dir: Path | None = None,
 ):
     """Train every task from one fresh agent; no pretrained checkpoint is required."""
     if games is None:
@@ -215,12 +225,45 @@ def train_continual(
         raise ValueError("eval_max_steps must be positive")
     if compile_dqn and algorithm != "dqn":
         raise ValueError("compile_dqn requires DQN")
+    evaluation_steps = {
+        game: evaluation_schedule(
+            budget,
+            points=eval_points,
+            interval=eval_interval,
+            step_size=num_envs * (128 if algorithm == "ppo" else 1),
+        )
+        for game, budget in zip(games, budgets, strict=True)
+    }
+    exp_root = prepare_case(
+        output_dir,
+        protocol="continual",
+        algorithm=algorithm,
+        method=method,
+        games=games,
+        seed=seed,
+        task_steps=budgets,
+        batch_size=batch_size,
+        num_envs=num_envs,
+        env_backend=env_backend,
+        env_threads=env_threads,
+        compile_ppo=compile_ppo,
+        compile_dqn=compile_dqn,
+        save_video=save_video,
+        deterministic=deterministic,
+        eval_interval=eval_interval,
+        eval_points=eval_points,
+        eval_episodes=eval_episodes,
+        eval_max_steps=eval_max_steps,
+        ewc_lambda=ewc_lambda if use_ewc else None,
+        gpm_threshold=gpm_threshold if method == "gpm" else None,
+        gpm_samples=gpm_samples if method == "gpm" else None,
+        gpm_collection_steps=gpm_collection_steps if method == "gpm" else None,
+        environment_protocol=observation_protocol(env_backend),
+    )
     started_at = time.perf_counter()
     configure_ppo_runtime(env_backend)
     seed_everything(seed, deterministic=deterministic)
     game_seeds = {game: seed + index for index, game in enumerate(games)}
-    run_name = f"{algorithm}_gpm" if method == "gpm" else f"{algorithm}_ewc{use_ewc}"
-    exp_root = Path("outputs") / "continual" / run_name / f"seed-{seed}"
 
     print(f"Continual Learning: {algorithm.upper()} on {games}")
     print(f"Method: {method}; task transition budgets: {budgets}")
@@ -234,8 +277,9 @@ def train_continual(
     ewc_diagnostics = {}
     gpm_diagnostics = {}
     boundary_checkpoints = []
-    checkpoint_dir = Path("checkpoints") / "continual" / run_name / f"seed-{seed}"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = exp_root / "checkpoints"
+    initialization = {}
+    learning_history = {}
     subspaces = None
     agent = None
     for game_idx, game_name in enumerate(games):
@@ -289,10 +333,17 @@ def train_continual(
                 torch.manual_seed(head_seeds[game_name])
                 agent.register_task(task_id, action_dim)
             agent.set_task(task_id)
-            agent.save(str(checkpoint_dir / f"stage-{game_idx + 1:02d}-initial.pt"))
 
-        if game_idx == 0:
-            agent.save(str(checkpoint_dir / "initial.pt"))
+        modules = {"backbone": base_agent.backbone} if game_idx == 0 else {}
+        modules.update(
+            {"head": base_agent.heads[task_id]}
+            if algorithm == "dqn"
+            else {"actor": base_agent.actors[task_id], "critic": base_agent.critics[task_id]}
+        )
+        initialization[game_name] = {
+            name: parameter_digest(module) for name, module in modules.items()
+        }
+        (exp_root / "initialization.json").write_text(json.dumps(initialization, indent=2) + "\n")
 
         # Initialize buffers and training parameters based on algorithm
         if algorithm == "dqn":
@@ -307,12 +358,14 @@ def train_continual(
             update_epochs = 4
             minibatch_size = batch_size
 
-        exp_dir = exp_root / game_name
+        exp_dir = exp_root / "figures" / game_name
         exp_dir.mkdir(parents=True, exist_ok=True)
 
         video_recorder = None
         if save_video:
-            video_recorder = VideoRecorder(str(exp_dir / "training.mp4"), fps=30)
+            video_recorder = VideoRecorder(
+                str(exp_root / "videos" / f"{game_name}_training.mp4"), fps=30
+            )
 
         if algorithm == "ppo":
             agent.configure_runtime(compile_enabled=compile_ppo)
@@ -342,7 +395,8 @@ def train_continual(
         step = 0
         last_rollout_data = None
         learning_evaluations = []
-        next_evaluation = eval_interval
+        evaluation_targets = iter(evaluation_steps[game_name])
+        next_evaluation = next(evaluation_targets, None)
 
         # DQN normalizes inside its backbone; the GPM builder normalizes before forwarding.
         if method == "gpm":
@@ -404,7 +458,7 @@ def train_continual(
                             )
                     pbar.update(rollout.transition_count)
 
-                if eval_interval and (step >= next_evaluation or step == stage_steps):
+                if next_evaluation is not None and step >= next_evaluation:
                     if dqn_metrics is not None:
                         dqn_metrics.flush()
                     evaluation_env = AtariEnv(
@@ -416,35 +470,24 @@ def train_continual(
                         )
                     finally:
                         evaluation_env.close()
-                    periodic_path = checkpoint_dir / f"stage-{game_idx + 1:02d}-step-{step}.pt"
-                    agent.save(str(periodic_path))
                     learning_evaluations.append(
                         {
                             "step": step,
                             "elapsed_seconds": time.perf_counter() - started_at,
                             "rewards": rewards,
                             "mean_raw_reward": sum(rewards) / len(rewards),
-                            "checkpoint": str(periodic_path),
                         }
                     )
-                    (exp_dir / "learning_evaluation.json").write_text(
-                        json.dumps(
-                            {
-                                "task": game_name,
-                                "stage": game_idx + 1,
-                                "seed": seed,
-                                "deterministic": deterministic,
-                                "evaluations": learning_evaluations,
-                            },
-                            indent=2,
-                        ),
-                        encoding="utf-8",
+                    learning_history[game_name] = {
+                        "task": game_name,
+                        "stage": game_idx + 1,
+                        "evaluation_steps": evaluation_steps[game_name],
+                        "evaluations": learning_evaluations,
+                    }
+                    (exp_root / "learning.json").write_text(
+                        json.dumps(learning_history, indent=2) + "\n", encoding="utf-8"
                     )
-                    print(
-                        f"[Learning eval] task={game_name}, step={step}, "
-                        f"mean raw reward={learning_evaluations[-1]['mean_raw_reward']}"
-                    )
-                    next_evaluation = (step // eval_interval + 1) * eval_interval
+                    next_evaluation = next(evaluation_targets, None)
 
         finally:
             if dqn_metrics is not None:
@@ -563,9 +606,11 @@ def train_continual(
                 "samples": gpm_samples,
                 "collection_steps": gpm_collection_steps,
             }
-        boundary_path = checkpoint_dir / f"stage-{game_idx + 1:02d}.pt"
+        boundary_path = checkpoint_dir / (
+            "final.pt" if game_idx == len(games) - 1 else f"stage-{game_idx + 1:02d}.pt"
+        )
         torch.save(checkpoint, boundary_path)
-        boundary_checkpoints.append(str(boundary_path))
+        boundary_checkpoints.append(str(boundary_path.relative_to(exp_root)))
         (exp_root / "stage_evaluation.json").write_text(
             json.dumps(checkpoint["training_stage"], indent=2), encoding="utf-8"
         )
@@ -577,14 +622,15 @@ def train_continual(
 
     exp_root.mkdir(parents=True, exist_ok=True)
 
-    metrics_output_path = exp_root / "training_metrics.png"
+    metrics_output_path = exp_root / "figures" / "training_metrics.png"
     metrics_plotter.plot(str(metrics_output_path))
     print(f"Continual metrics plot saved: {metrics_output_path}")
 
-    eval_metrics_path = exp_root / "forgetting_eval.png"
+    eval_metrics_path = exp_root / "figures" / "forgetting_eval.png"
     plot_forgetting_curves(eval_history, eval_metrics_path)
 
     evaluation_report = {
+        "checkpoint_sha256": file_digest(checkpoint_dir / "final.pt"),
         "algorithm": algorithm,
         "method": method,
         "initialization": "random",
@@ -606,6 +652,8 @@ def train_continual(
         "compile_dqn": compile_dqn if algorithm == "dqn" else None,
         "eval_episodes": eval_episodes,
         "eval_interval": eval_interval,
+        "eval_points": eval_points,
+        "evaluation_steps": evaluation_steps,
         "eval_max_steps": eval_max_steps,
         "seed": seed,
         "deterministic": deterministic,
@@ -617,18 +665,10 @@ def train_continual(
         "gpm_diagnostics": gpm_diagnostics if method == "gpm" else None,
         **build_evaluation_report(eval_history, games),
     }
-    evaluation_path = exp_root / "continual_evaluation.json"
+    evaluation_path = exp_root / "training_summary.json"
     with evaluation_path.open("w", encoding="utf-8") as output_file:
         json.dump(evaluation_report, output_file, indent=2)
     print(f"Continual evaluation data saved: {evaluation_path}")
-
-    # Save final agent checkpoint in a structured location
-    ckpt_root = Path("checkpoints") / "continual"
-    ckpt_root.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = ckpt_root / run_name / f"seed-{seed}.pt"
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(checkpoint, checkpoint_path)
-    print(f"\nAgent saved: {checkpoint_path}")
 
 
 if __name__ == "__main__":
@@ -662,32 +702,52 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--eval-interval", type=int, default=0)
     parser.add_argument(
+        "--eval-points",
+        type=int,
+        default=0,
+        help="Evaluation points per task budget; exclusive with --eval-interval",
+    )
+    parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
 
+    parser.add_argument("--output-dir", type=Path, help="Case directory; default: results/<case>")
+    parser.add_argument(
+        "--force", action="store_true", help="Replace existing results after success"
+    )
     args = parser.parse_args()
 
-    train_continual(
-        games=args.games,
-        algorithm=args.algorithm,
-        use_ewc=args.use_ewc,
-        ewc_lambda=args.ewc_lambda,
-        steps_per_game=args.steps_per_game,
-        batch_size=args.batch_size,
-        num_envs=args.num_envs,
-        env_backend=args.env_backend,
-        env_threads=args.env_threads,
-        compile_ppo=args.compile_ppo,
-        compile_dqn=args.compile_dqn,
-        eval_episodes=args.eval_episodes,
-        eval_max_steps=args.eval_max_steps,
-        save_video=args.save_video,
+    output_dir = args.output_dir or Path("results") / case_name(
+        "continual",
+        args.algorithm,
+        method=args.method or ("ewc" if args.use_ewc else "finetune"),
         seed=args.seed,
-        deterministic=args.deterministic,
-        eval_interval=args.eval_interval,
-        method=args.method,
-        task_steps=args.task_steps,
-        gpm_threshold=args.gpm_threshold,
-        gpm_samples=args.gpm_samples,
-        gpm_collection_steps=args.gpm_collection_steps,
     )
+    with result_directory(output_dir, force=args.force) as staging:
+        train_continual(
+            output_dir=staging,
+            games=args.games,
+            algorithm=args.algorithm,
+            use_ewc=args.use_ewc,
+            ewc_lambda=args.ewc_lambda,
+            steps_per_game=args.steps_per_game,
+            batch_size=args.batch_size,
+            num_envs=args.num_envs,
+            env_backend=args.env_backend,
+            env_threads=args.env_threads,
+            compile_ppo=args.compile_ppo,
+            compile_dqn=args.compile_dqn,
+            eval_episodes=args.eval_episodes,
+            eval_max_steps=args.eval_max_steps,
+            save_video=args.save_video,
+            seed=args.seed,
+            deterministic=args.deterministic,
+            eval_interval=args.eval_interval,
+            eval_points=args.eval_points,
+            method=args.method,
+            task_steps=args.task_steps,
+            gpm_threshold=args.gpm_threshold,
+            gpm_samples=args.gpm_samples,
+            gpm_collection_steps=args.gpm_collection_steps,
+        )
+    print(f"Results saved to {output_dir}")

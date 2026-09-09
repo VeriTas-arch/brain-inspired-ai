@@ -1,0 +1,371 @@
+{
+  "algorithm": "ppo",
+  "method": "gpm",
+  "initialization": "random",
+  "games": [
+    "Pong-v5",
+    "Breakout-v5",
+    "SpaceInvaders-v5"
+  ],
+  "use_ewc": false,
+  "ewc_lambda": null,
+  "steps_per_game": null,
+  "task_steps": {
+    "Pong-v5": 1000448,
+    "Breakout-v5": 500000,
+    "SpaceInvaders-v5": 500000
+  },
+  "batch_size": 32,
+  "num_envs": 8,
+  "env_backend": "async",
+  "env_threads": 4,
+  "environment_protocol": "gymnasium_wrappers_v1",
+  "replay_sampler": null,
+  "replay_seeds": null,
+  "compile_ppo": true,
+  "compile_dqn": null,
+  "eval_episodes": 10,
+  "eval_interval": 250000,
+  "eval_max_steps": 30000,
+  "seed": 0,
+  "deterministic": true,
+  "boundary_checkpoints": [
+    "checkpoints/stage-01.pt",
+    "checkpoints/stage-02.pt",
+    "checkpoints/final.pt"
+  ],
+  "task_seeds": {
+    "Pong-v5": 0,
+    "Breakout-v5": 1,
+    "SpaceInvaders-v5": 2
+  },
+  "head_initialization_seeds": {
+    "Breakout-v5": 60001,
+    "SpaceInvaders-v5": 60002
+  },
+  "stage_episode_rewards": [
+    {
+      "stage": 1,
+      "elapsed_seconds": 245.85767336195568,
+      "rewards": {
+        "Pong-v5": [
+          17.0,
+          13.0,
+          13.0,
+          14.0,
+          17.0,
+          13.0,
+          11.0,
+          13.0,
+          4.0,
+          11.0
+        ]
+      }
+    },
+    {
+      "stage": 2,
+      "elapsed_seconds": 600.1103341239505,
+      "rewards": {
+        "Pong-v5": [
+          14.0,
+          8.0,
+          7.0,
+          5.0,
+          9.0,
+          5.0,
+          16.0,
+          14.0,
+          5.0,
+          14.0
+        ],
+        "Breakout-v5": [
+          10.0,
+          9.0,
+          5.0,
+          8.0,
+          2.0,
+          8.0,
+          10.0,
+          1.0,
+          5.0,
+          2.0
+        ]
+      }
+    },
+    {
+      "stage": 3,
+      "elapsed_seconds": 862.6597717279801,
+      "rewards": {
+        "Pong-v5": [
+          14.0,
+          13.0,
+          18.0,
+          17.0,
+          10.0,
+          10.0,
+          6.0,
+          13.0,
+          -1.0,
+          18.0
+        ],
+        "Breakout-v5": [
+          15.0,
+          8.0,
+          12.0,
+          12.0,
+          7.0,
+          7.0,
+          5.0,
+          2.0,
+          7.0,
+          19.0
+        ],
+        "SpaceInvaders-v5": [
+          260.0,
+          195.0,
+          320.0,
+          290.0,
+          255.0,
+          135.0,
+          190.0,
+          320.0,
+          275.0,
+          385.0
+        ]
+      }
+    }
+  ],
+  "ewc_diagnostics": null,
+  "gpm_diagnostics": {
+    "Pong-v5": {
+      "boundary_collection_transitions": 32768,
+      "boundary_num_envs": 8,
+      "boundary_policy": "stochastic",
+      "sample_count": 2048,
+      "projection": null,
+      "layers": {
+        "0": {
+          "dimension": 257,
+          "rank": 3,
+          "previous_rank": 0,
+          "added_rank": 3,
+          "captured_energy_fraction": 0.995777427725366,
+          "sample_count": 32768
+        },
+        "2": {
+          "dimension": 513,
+          "rank": 68,
+          "previous_rank": 0,
+          "added_rank": 68,
+          "captured_energy_fraction": 0.9951573598886929,
+          "sample_count": 32768
+        },
+        "4": {
+          "dimension": 577,
+          "rank": 338,
+          "previous_rank": 0,
+          "added_rank": 338,
+          "captured_energy_fraction": 0.9950143072558324,
+          "sample_count": 32768
+        },
+        "7": {
+          "dimension": 3137,
+          "rank": 922,
+          "previous_rank": 0,
+          "added_rank": 922,
+          "captured_energy_fraction": 0.9950180567144306,
+          "sample_count": 2048
+        }
+      }
+    },
+    "Breakout-v5": {
+      "boundary_collection_transitions": 32768,
+      "boundary_num_envs": 8,
+      "boundary_policy": "stochastic",
+      "sample_count": 2048,
+      "projection": {
+        "optimizer_steps": 62500,
+        "layers": {
+          "0": {
+            "raw_update_energy": 1.7243933418876622,
+            "retained_update_energy_fraction": 0.4981005376685628,
+            "protected_update_energy_fraction": 3.417283089421812e-11,
+            "projection_relative_error": 5.845753235830103e-06
+          },
+          "2": {
+            "raw_update_energy": 5.6817924851420685,
+            "retained_update_energy_fraction": 0.7928914765983132,
+            "protected_update_energy_fraction": 3.985077647463548e-10,
+            "projection_relative_error": 1.9962659260388e-05
+          },
+          "4": {
+            "raw_update_energy": 6.053692446284458,
+            "retained_update_energy_fraction": 0.18846659282841427,
+            "protected_update_energy_fraction": 1.8867388813712603e-09,
+            "projection_relative_error": 4.3436607618128517e-05
+          },
+          "7": {
+            "raw_update_energy": 152.65151462013455,
+            "retained_update_energy_fraction": 0.44387985672752206,
+            "protected_update_energy_fraction": 7.214143582877593e-10,
+            "projection_relative_error": 2.6859157810470514e-05
+          }
+        }
+      },
+      "layers": {
+        "0": {
+          "dimension": 257,
+          "rank": 20,
+          "previous_rank": 3,
+          "added_rank": 17,
+          "captured_energy_fraction": 0.9953958915026059,
+          "sample_count": 32768
+        },
+        "2": {
+          "dimension": 513,
+          "rank": 196,
+          "previous_rank": 68,
+          "added_rank": 128,
+          "captured_energy_fraction": 0.9950495599272798,
+          "sample_count": 32768
+        },
+        "4": {
+          "dimension": 577,
+          "rank": 443,
+          "previous_rank": 338,
+          "added_rank": 105,
+          "captured_energy_fraction": 0.9950855334351139,
+          "sample_count": 32768
+        },
+        "7": {
+          "dimension": 3137,
+          "rank": 1624,
+          "previous_rank": 922,
+          "added_rank": 702,
+          "captured_energy_fraction": 0.9950170771560356,
+          "sample_count": 2048
+        }
+      }
+    },
+    "SpaceInvaders-v5": {
+      "boundary_collection_transitions": 32768,
+      "boundary_num_envs": 8,
+      "boundary_policy": "stochastic",
+      "sample_count": 2048,
+      "projection": {
+        "optimizer_steps": 62500,
+        "layers": {
+          "0": {
+            "raw_update_energy": 1.4827294703827363,
+            "retained_update_energy_fraction": 0.2872444692844558,
+            "protected_update_energy_fraction": 3.2415246251025225e-10,
+            "projection_relative_error": 1.8004234571629315e-05
+          },
+          "2": {
+            "raw_update_energy": 5.016058403318823,
+            "retained_update_energy_fraction": 0.44750589940684904,
+            "protected_update_energy_fraction": 1.3681238713188234e-09,
+            "projection_relative_error": 3.698815852835639e-05
+          },
+          "4": {
+            "raw_update_energy": 5.7196843090719085,
+            "retained_update_energy_fraction": 0.05657556819969647,
+            "protected_update_energy_fraction": 2.7682361330124643e-09,
+            "projection_relative_error": 5.261402981156703e-05
+          },
+          "7": {
+            "raw_update_energy": 70.09008554494721,
+            "retained_update_energy_fraction": 0.2467277583130965,
+            "protected_update_energy_fraction": 1.2043648352687023e-09,
+            "projection_relative_error": 3.4703959936420835e-05
+          }
+        }
+      },
+      "layers": {
+        "0": {
+          "dimension": 257,
+          "rank": 100,
+          "previous_rank": 20,
+          "added_rank": 80,
+          "captured_energy_fraction": 0.9950817553405936,
+          "sample_count": 32768
+        },
+        "2": {
+          "dimension": 513,
+          "rank": 402,
+          "previous_rank": 196,
+          "added_rank": 206,
+          "captured_energy_fraction": 0.9950471534348928,
+          "sample_count": 32768
+        },
+        "4": {
+          "dimension": 577,
+          "rank": 465,
+          "previous_rank": 443,
+          "added_rank": 22,
+          "captured_energy_fraction": 0.9952133359457904,
+          "sample_count": 32768
+        },
+        "7": {
+          "dimension": 3137,
+          "rank": 2042,
+          "previous_rank": 1624,
+          "added_rank": 418,
+          "captured_energy_fraction": 0.9950059802077952,
+          "sample_count": 2048
+        }
+      }
+    }
+  },
+  "score_units": "raw_environment_reward",
+  "score_matrix": [
+    {
+      "stage": 1,
+      "after_task": "Pong-v5",
+      "scores": {
+        "Pong-v5": 12.6,
+        "Breakout-v5": null,
+        "SpaceInvaders-v5": null
+      }
+    },
+    {
+      "stage": 2,
+      "after_task": "Breakout-v5",
+      "scores": {
+        "Pong-v5": 9.7,
+        "Breakout-v5": 6.0,
+        "SpaceInvaders-v5": null
+      }
+    },
+    {
+      "stage": 3,
+      "after_task": "SpaceInvaders-v5",
+      "scores": {
+        "Pong-v5": 11.8,
+        "Breakout-v5": 9.4,
+        "SpaceInvaders-v5": 262.5
+      }
+    }
+  ],
+  "per_task": {
+    "Pong-v5": {
+      "score_after_learning": 12.6,
+      "best_score": 12.6,
+      "final_score": 11.8,
+      "forgetting": 0.7999999999999989
+    },
+    "Breakout-v5": {
+      "score_after_learning": 6.0,
+      "best_score": 9.4,
+      "final_score": 9.4,
+      "forgetting": 0.0
+    },
+    "SpaceInvaders-v5": {
+      "score_after_learning": 262.5,
+      "best_score": 262.5,
+      "final_score": 262.5,
+      "forgetting": 0.0
+    }
+  },
+  "checkpoint_sha256": "af699a77d4fefb5ccc63664774d5bbc29b22aad0a6928d0a1e49f7d8741fcc47"
+}

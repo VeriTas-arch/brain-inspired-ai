@@ -28,6 +28,7 @@ from training import (
     dqn_updates_due,
     seed_everything,
 )
+from training.results import case_name, file_digest, prepare_case, result_directory
 
 
 def train_multitask(
@@ -43,6 +44,7 @@ def train_multitask(
     num_envs: int = 1,
     env_backend: str = "sync",
     env_threads: int = 4,
+    output_dir: Path | None = None,
 ):
     """Train agent on multiple games jointly (random task sampling per iteration)."""
     if compile_ppo and algorithm != "ppo":
@@ -59,6 +61,23 @@ def train_multitask(
         raise ValueError("Positive total_steps must be divisible by positive num_envs")
     if env_backend not in {"sync", "async", "ale"} or env_threads <= 0:
         raise ValueError("Require a supported environment backend and positive env_threads")
+    exp_dir = prepare_case(
+        output_dir,
+        protocol="multitask",
+        algorithm=algorithm,
+        games=games,
+        seed=seed,
+        total_steps=total_steps,
+        batch_size=batch_size,
+        num_envs=num_envs,
+        env_backend=env_backend,
+        env_threads=env_threads,
+        compile_ppo=compile_ppo,
+        compile_dqn=compile_dqn,
+        save_video=save_video,
+        deterministic=deterministic,
+        environment_protocol=observation_protocol(env_backend),
+    )
     started_at = time.perf_counter()
     configure_ppo_runtime(env_backend)
     seed_everything(seed, deterministic=deterministic)
@@ -131,14 +150,11 @@ def train_multitask(
             compile_policy=compile_ppo,
         )
 
-    exp_dir = Path("outputs") / "multitask" / algorithm / f"seed-{seed}"
-    exp_dir.mkdir(parents=True, exist_ok=True)
-
     # Per-game video recorders (optional)
     video_recorders = {}
     if save_video:
         for game_name in games:
-            game_dir = exp_dir / game_name
+            game_dir = exp_dir / "videos" / game_name
             game_dir.mkdir(parents=True, exist_ok=True)
             video_recorders[game_name] = VideoRecorder(str(game_dir / "training.mp4"), fps=30)
 
@@ -245,13 +261,18 @@ def train_multitask(
             print(f"  Average reward over last {last_n} episodes: {avg_last_n:.2f}")
 
     # Save metrics plot
-    metrics_output_path = exp_dir / "training_metrics.png"
+    metrics_output_path = exp_dir / "figures" / "training_metrics.png"
     metrics_plotter.plot(str(metrics_output_path))
     print(f"\nMetrics plot saved: {metrics_output_path}")
+
+    checkpoint_path = exp_dir / "checkpoints" / "final.pt"
+    agent.save(str(checkpoint_path))
+    print(f"Agent saved: {checkpoint_path}")
 
     (exp_dir / "training_summary.json").write_text(
         json.dumps(
             {
+                "checkpoint_sha256": file_digest(checkpoint_path),
                 "algorithm": algorithm,
                 "seed": seed,
                 "deterministic": deterministic,
@@ -279,12 +300,6 @@ def train_multitask(
     )
 
     # Save model checkpoint
-    ckpt_root = Path("checkpoints") / "multitask"
-    ckpt_root.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = ckpt_root / algorithm / f"seed-{seed}.pt"
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    agent.save(str(checkpoint_path))
-    print(f"Agent saved: {checkpoint_path}")
 
 
 if __name__ == "__main__":
@@ -308,19 +323,29 @@ if __name__ == "__main__":
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
 
+    parser.add_argument("--output-dir", type=Path, help="Case directory; default: results/<case>")
+    parser.add_argument(
+        "--force", action="store_true", help="Replace existing results after success"
+    )
     args = parser.parse_args()
 
-    train_multitask(
-        games=args.games,
-        algorithm=args.algorithm,
-        total_steps=args.steps,
-        batch_size=args.batch_size,
-        save_video=args.save_video,
-        seed=args.seed,
-        deterministic=args.deterministic,
-        compile_ppo=args.compile_ppo,
-        compile_dqn=args.compile_dqn,
-        num_envs=args.num_envs,
-        env_backend=args.env_backend,
-        env_threads=args.env_threads,
+    output_dir = args.output_dir or Path("results") / case_name(
+        "multitask", args.algorithm, seed=args.seed
     )
+    with result_directory(output_dir, force=args.force) as staging:
+        train_multitask(
+            output_dir=staging,
+            games=args.games,
+            algorithm=args.algorithm,
+            total_steps=args.steps,
+            batch_size=args.batch_size,
+            save_video=args.save_video,
+            seed=args.seed,
+            deterministic=args.deterministic,
+            compile_ppo=args.compile_ppo,
+            compile_dqn=args.compile_dqn,
+            num_envs=args.num_envs,
+            env_backend=args.env_backend,
+            env_threads=args.env_threads,
+        )
+    print(f"Results saved to {output_dir}")

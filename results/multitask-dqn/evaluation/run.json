@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-09-09T13:03:46.345753+00:00",
+  "commit": "38da831599096e871c983ccc921e81b141ddd478",
+  "dirty": false,
+  "versions": null,
+  "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+  "case": "multitask-dqn",
+  "jobs": [
+    {
+      "name": "evaluate multitask dqn",
+      "depends_on": [
+        "multitask_dqn_seed0.log"
+      ],
+      "state": "completed",
+      "started_at": "2026-09-09T13:03:46.345753+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-09-09T13:06:50.496296+00:00",
+      "case_id": "multitask-dqn",
+      "log": "evaluate.log"
+    }
+  ],
+  "checkpoint": "../checkpoints/final.pt",
+  "checkpoint_sha256": "3bac719cb913668f86ab50bdd9eda59e2e179ad0b39045f7e4320d512320c614"
+}

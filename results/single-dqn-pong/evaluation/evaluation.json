@@ -1,0 +1,24 @@
+{
+  "mode": "single",
+  "deterministic": true,
+  "compile_dqn": true,
+  "compile_ppo": null,
+  "environment_protocol": "gymnasium_wrappers_v1",
+  "game": "Pong-v5",
+  "algorithm": "dqn",
+  "episodes": 10,
+  "seed": 0,
+  "rewards": [
+    3.0,
+    5.0,
+    -1.0,
+    16.0,
+    4.0,
+    16.0,
+    2.0,
+    6.0,
+    18.0,
+    3.0
+  ],
+  "avg_reward": 7.2
+}

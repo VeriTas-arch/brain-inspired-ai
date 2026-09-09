@@ -1,0 +1,72 @@
+{
+  "seed": 0,
+  "start_seconds": 0,
+  "duration_seconds": 10,
+  "gif_fps": 12,
+  "source_fps": 30,
+  "playback": "same timeline as evaluation MP4, not simulator wall time",
+  "records": [
+    {
+      "gif": "continual-ppo-finetune/evaluation/videos/pong-stage1.gif",
+      "gif_sha256": "98dc989e8ab4c3102ae1a167d14493d26a65b5cdfa53290f7b7cb9249c2a832c",
+      "video": "continual-ppo-finetune/evaluation/videos/pong-stage1.mp4",
+      "video_sha256": "bce32e329f4a4e0e3bc4ddab87360a7d93d1c2a6a65f1894410a26581ba77d6b",
+      "checkpoint": "continual-ppo-finetune/checkpoints/stage-01.pt",
+      "checkpoint_sha256": "66bee79b493f0bcd71be2a7c5864c6d60546e8f5f8c21eed61a96a3ccda270eb"
+    },
+    {
+      "gif": "single-ppo-pong/evaluation/videos/pong.gif",
+      "gif_sha256": "ccbc5b159afedd32060f01022e1ef0bca7930d01222bc57e8d4e181f21a9ba31",
+      "video": "single-ppo-pong/evaluation/videos/Pong-v5_ppo_eval_gameplay.mp4",
+      "video_sha256": "0db07d01db3560744de0dcb0b186788734ec3b85a1fe478a25757821e26f9f87",
+      "checkpoint": "single-ppo-pong/checkpoints/final.pt",
+      "checkpoint_sha256": "dcf89195a6d015cff494ce3cbc7fdde5d90dbc0b8d96a863f4aaeb036289fd24"
+    },
+    {
+      "gif": "continual-ppo-finetune/evaluation/videos/pong.gif",
+      "gif_sha256": "1a353d9e1c95ad0e271497630ce467841536e78d9ada66389a4fc02173ab6bf5",
+      "video": "continual-ppo-finetune/evaluation/videos/continual_ppo_Pong-v5_eval_gameplay.mp4",
+      "video_sha256": "5fc1132f65356cd64c77f112a018b5df7f914559dacdbecaf14a6f066648fde2",
+      "checkpoint": "continual-ppo-finetune/checkpoints/final.pt",
+      "checkpoint_sha256": "82d09230342b84459152c0a5d958c8c51f78f5bfff5d97001946f109f0cfad65"
+    },
+    {
+      "gif": "continual-ppo-ewc/evaluation/videos/pong.gif",
+      "gif_sha256": "c56bb82e196f4bf2975973dffeb45299c457d2e907a6ce8f85d434245b9e303d",
+      "video": "continual-ppo-ewc/evaluation/videos/continual_ppo_Pong-v5_eval_gameplay.mp4",
+      "video_sha256": "695e324b9c6e97a4e42e5d66b005e5e1c71cb897e1efade00d9e27ac83a38aac",
+      "checkpoint": "continual-ppo-ewc/checkpoints/final.pt",
+      "checkpoint_sha256": "de7c4893a78244581265ab09ff8b50aa5be64f6935e2970d7a96cebffa610d7c"
+    },
+    {
+      "gif": "continual-ppo-gpm/evaluation/videos/pong.gif",
+      "gif_sha256": "7a49635dbaf613cddc72417e7b0e5220b42de2ddde71e964793e920cc982d72d",
+      "video": "continual-ppo-gpm/evaluation/videos/continual_ppo_Pong-v5_eval_gameplay.mp4",
+      "video_sha256": "b653e704d1d057d43cb36c6b35e1ddb93d40ea6a362e9396a1e732e3cd2a4810",
+      "checkpoint": "continual-ppo-gpm/checkpoints/final.pt",
+      "checkpoint_sha256": "af699a77d4fefb5ccc63664774d5bbc29b22aad0a6928d0a1e49f7d8741fcc47"
+    },
+    {
+      "gif": "single-dqn-pong/evaluation/videos/pong.gif",
+      "gif_sha256": "c1ac0f701ea50ed01c63b051a8c598b867513b638c6f4fd31a9e200e39a10480",
+      "video": "single-dqn-pong/evaluation/videos/Pong-v5_dqn_eval_gameplay.mp4",
+      "video_sha256": "55e32baf4ef381697cb16fbf890794816c2ec07a0a0c0def1b6046956b4f2aa5",
+      "checkpoint": "single-dqn-pong/checkpoints/final.pt",
+      "checkpoint_sha256": "af39e9b1a1cadbe00838bce536ea2055ee42172d9f95b301b13be3c9419b67a4"
+    }
+  ],
+  "training_commits": {
+    "continual-dqn-ewc": "38da831599096e871c983ccc921e81b141ddd478",
+    "continual-dqn-finetune": "38da831599096e871c983ccc921e81b141ddd478",
+    "continual-dqn-gpm": "38da831599096e871c983ccc921e81b141ddd478",
+    "continual-ppo-ewc": "38da831599096e871c983ccc921e81b141ddd478",
+    "continual-ppo-finetune": "38da831599096e871c983ccc921e81b141ddd478",
+    "continual-ppo-gpm": "38da831599096e871c983ccc921e81b141ddd478",
+    "multitask-dqn": "38da831599096e871c983ccc921e81b141ddd478",
+    "multitask-ppo": "38da831599096e871c983ccc921e81b141ddd478",
+    "single-dqn-breakout": "c53c80ae42782f9064a948638a12694f375e1729",
+    "single-dqn-pong": "38da831599096e871c983ccc921e81b141ddd478",
+    "single-ppo-breakout": "c53c80ae42782f9064a948638a12694f375e1729",
+    "single-ppo-pong": "38da831599096e871c983ccc921e81b141ddd478"
+  }
+}

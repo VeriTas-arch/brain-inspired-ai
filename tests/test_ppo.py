@@ -91,6 +91,11 @@ def test_policy_sampling_and_gradients_match_validated_distribution(device, mult
     torch.testing.assert_close(action, expected_action, rtol=0, atol=0)
     torch.testing.assert_close(log_prob, expected_log_prob, rtol=0, atol=0)
     torch.testing.assert_close(value, expected_value, rtol=0, atol=0)
+    torch.manual_seed(31)
+    full_action, full_log_prob, _, full_value = agent.get_action_and_value(states)
+    torch.testing.assert_close(full_action, expected_action, rtol=0, atol=0)
+    torch.testing.assert_close(full_log_prob, expected_log_prob, rtol=0, atol=0)
+    torch.testing.assert_close(full_value, expected_value, rtol=0, atol=0)
     _, log_prob, entropy, value = agent.get_action_and_value(states, action)
     gradients = torch.autograd.grad(log_prob.mean() + entropy.mean() + value.mean(), parameters)
     for expected, actual in zip(expected_gradients, gradients, strict=True):
@@ -110,10 +115,9 @@ def test_policy_sampling_and_gradients_match_validated_distribution(device, mult
         handle.remove()
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
-def test_cpu_and_device_rollouts_produce_matching_ppo_updates(device) -> None:
-    if device == "cuda" and not torch.cuda.is_available():
-        pytest.skip("CUDA is unavailable")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_cpu_and_device_rollouts_produce_matching_ppo_updates() -> None:
+    device = "cuda"
     torch.manual_seed(23)
     agent = PPOAgent(4, 2, device=device)
     reference = PPOAgent(4, 2, device=device)
@@ -149,26 +153,6 @@ def test_cpu_and_device_rollouts_produce_matching_ppo_updates(device) -> None:
             strict=True,
         ):
             torch.testing.assert_close(left, right, rtol=1e-4, atol=1e-6)
-
-
-def test_rollout_sampling_matches_full_policy_evaluation() -> None:
-    states = torch.randint(256, (3, 4, 84, 84), dtype=torch.uint8)
-    agents = [
-        PPOAgent(state_dim=4, action_dim=3, device="cpu"),
-        MultiHeadPPOAgent(state_dim=4, device="cpu"),
-    ]
-    agents[1].register_task("task", 3)
-    agents[1].set_task("task")
-
-    for agent in agents:
-        torch.manual_seed(19)
-        expected_action, expected_log_prob, _, expected_value = agent.get_action_and_value(states)
-        torch.manual_seed(19)
-        action, log_prob, value = agent.sample_action_and_value(states)
-
-        torch.testing.assert_close(action, expected_action)
-        torch.testing.assert_close(log_prob, expected_log_prob)
-        torch.testing.assert_close(value, expected_value)
 
 
 def test_gae_stops_at_transition_terminal() -> None:
@@ -208,36 +192,15 @@ def test_gae_keeps_vector_environments_independent() -> None:
     torch.testing.assert_close(returns, expected)
 
 
-def test_ppo_update_accepts_uint8_rollout_states() -> None:
+@pytest.mark.parametrize("multi_head", (False, True))
+def test_ppo_update_accepts_uint8_rollout_states(multi_head) -> None:
     torch.manual_seed(7)
-    agent = PPOAgent(state_dim=4, action_dim=2, device="cpu")
-    states = torch.randint(256, (4, 4, 84, 84), dtype=torch.uint8)
-    with torch.no_grad():
-        actions, log_probs, _, values = agent.get_action_and_value(states)
-
-    metrics = _update(
-        agent,
-        {
-            "states": states,
-            "actions": actions,
-            "rewards": torch.tensor([0.0, 0.0, 0.0, 1.0]),
-            "dones": torch.tensor([0.0, 0.0, 0.0, 1.0]),
-            "log_probs": log_probs,
-            "values": values.flatten(),
-        },
-        next_value=torch.tensor([0.0]),
-        update_epochs=1,
-        minibatch_size=2,
-    )
-
-    assert all(math.isfinite(value) for value in metrics.values())
-
-
-def test_multi_head_ppo_uses_the_shared_update_path() -> None:
-    torch.manual_seed(8)
-    agent = MultiHeadPPOAgent(state_dim=4, device="cpu")
-    agent.register_task("task", 2)
-    agent.set_task("task")
+    if multi_head:
+        agent = MultiHeadPPOAgent(state_dim=4, device="cpu")
+        agent.register_task("task", 2)
+        agent.set_task("task")
+    else:
+        agent = PPOAgent(state_dim=4, action_dim=2, device="cpu")
     states = torch.randint(256, (4, 4, 84, 84), dtype=torch.uint8)
     with torch.no_grad():
         actions, log_probs, _, values = agent.get_action_and_value(states)
@@ -298,7 +261,7 @@ def test_ppo_update_rejects_invalid_optimization_sizes() -> None:
     }
 
     for update_epochs, minibatch_size in ((0, 1), (1, 0)):
-        try:
+        with pytest.raises(ValueError):
             _update(
                 agent,
                 rollout,
@@ -306,10 +269,6 @@ def test_ppo_update_rejects_invalid_optimization_sizes() -> None:
                 update_epochs=update_epochs,
                 minibatch_size=minibatch_size,
             )
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("invalid PPO optimization sizes must be rejected")
 
 
 def test_ppo_metrics_average_all_minibatches() -> None:

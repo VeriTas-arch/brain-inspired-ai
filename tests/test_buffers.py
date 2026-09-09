@@ -24,52 +24,13 @@ def test_batched_replay_matches_scalar_writes_even_when_batch_exceeds_capacity()
             )
         batched.add_batch(states, actions, rewards, states + 1, dones)
         states.fill_(255)
+        actual = batched.sample(20)
         for key, expected in scalar.sample(20).items():
-            # Draw once per buffer so the independent RNG streams stay aligned.
-            if key == "states":
-                actual = batched.sample(20)
             torch.testing.assert_close(actual[key], expected, rtol=0, atol=0)
 
 
-def test_replay_buffer_keeps_pixels_uint8_until_sampling() -> None:
-    buffer = ReplayBuffer(capacity=2)
-    state = torch.randint(256, (4, 84, 84), dtype=torch.uint8)
-    buffer.add(state, 1, 1.0, state.clone(), False)
-
-    assert buffer._storage["states"][0].dtype == np.uint8
-    batch = buffer.sample(1)
-    assert batch["states"].dtype == torch.uint8
-    assert batch["next_states"].dtype == torch.uint8
-    torch.testing.assert_close(batch["states"][0], state)
-
-
-def test_oversized_sample_returns_every_transition_once() -> None:
-    buffer = ReplayBuffer(capacity=2)
-    state = torch.zeros((4, 84, 84), dtype=torch.uint8)
-    buffer.add(state, 0, 0.0, state, False)
-    buffer.add(state, 1, 0.0, state, False)
-
-    batch = buffer.sample(10)
-
-    assert sorted(batch["actions"].tolist()) == [0, 1]
-
-
-def test_local_sampling_generator_does_not_advance_training_rng() -> None:
-    buffer = ReplayBuffer(capacity=2)
-    state = torch.zeros((4, 84, 84), dtype=torch.uint8)
-    buffer.add(state, 0, 0.0, state, False)
-    buffer.add(state, 1, 0.0, state, False)
-
-    np.random.seed(17)
-    expected = np.random.random()
-    np.random.seed(17)
-    buffer.sample(1, rng=np.random.default_rng(23))
-
-    assert np.random.random() == expected
-
-
 @pytest.mark.parametrize("local_rng", (False, True))
-def test_ring_replay_matches_deque_sampling_after_multiple_wraps(local_rng) -> None:
+def test_replay_sampling_preserves_ring_data_dtypes_and_rng(local_rng) -> None:
     from collections import deque
 
     reference = deque(maxlen=5)
@@ -84,6 +45,8 @@ def test_ring_replay_matches_deque_sampling_after_multiple_wraps(local_rng) -> N
         state.fill_(255)
         next_state.fill_(255)
 
+    assert buffer._storage["states"].dtype == np.uint8
+    assert buffer._storage["next_states"].dtype == np.uint8
     expected_rng = np.random.default_rng(9 if local_rng else 41)
     actual_rng = np.random.default_rng(9) if local_rng else None
     for size in (3, 9, 1):

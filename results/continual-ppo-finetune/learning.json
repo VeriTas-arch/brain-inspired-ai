@@ -1,0 +1,162 @@
+{
+  "Pong-v5": {
+    "task": "Pong-v5",
+    "stage": 1,
+    "seed": 0,
+    "deterministic": true,
+    "evaluations": [
+      {
+        "step": 250880,
+        "elapsed_seconds": 62.43734836700605,
+        "rewards": [
+          -15.0,
+          -8.0,
+          -6.0,
+          -15.0,
+          -20.0,
+          -7.0,
+          -10.0,
+          -4.0,
+          -14.0,
+          8.0
+        ],
+        "mean_raw_reward": -9.1
+      },
+      {
+        "step": 500736,
+        "elapsed_seconds": 122.88546232599765,
+        "rewards": [
+          -11.0,
+          3.0,
+          5.0,
+          -19.0,
+          -8.0,
+          -14.0,
+          11.0,
+          6.0,
+          -8.0,
+          9.0
+        ],
+        "mean_raw_reward": -2.6
+      },
+      {
+        "step": 750592,
+        "elapsed_seconds": 185.26703301700763,
+        "rewards": [
+          -4.0,
+          8.0,
+          10.0,
+          -2.0,
+          12.0,
+          13.0,
+          9.0,
+          11.0,
+          12.0,
+          12.0
+        ],
+        "mean_raw_reward": 8.1
+      },
+      {
+        "step": 1000448,
+        "elapsed_seconds": 246.42196969501674,
+        "rewards": [
+          17.0,
+          13.0,
+          13.0,
+          14.0,
+          17.0,
+          13.0,
+          11.0,
+          13.0,
+          4.0,
+          11.0
+        ],
+        "mean_raw_reward": 12.6
+      }
+    ]
+  },
+  "Breakout-v5": {
+    "task": "Breakout-v5",
+    "stage": 2,
+    "seed": 0,
+    "deterministic": true,
+    "evaluations": [
+      {
+        "step": 250880,
+        "elapsed_seconds": 374.46717382600764,
+        "rewards": [
+          15.0,
+          12.0,
+          16.0,
+          4.0,
+          10.0,
+          4.0,
+          5.0,
+          1.0,
+          18.0,
+          14.0
+        ],
+        "mean_raw_reward": 9.9
+      },
+      {
+        "step": 500000,
+        "elapsed_seconds": 541.0634212840232,
+        "rewards": [
+          9.0,
+          3.0,
+          17.0,
+          9.0,
+          3.0,
+          4.0,
+          13.0,
+          8.0,
+          5.0,
+          5.0
+        ],
+        "mean_raw_reward": 7.6
+      }
+    ]
+  },
+  "SpaceInvaders-v5": {
+    "task": "SpaceInvaders-v5",
+    "stage": 3,
+    "seed": 0,
+    "deterministic": true,
+    "evaluations": [
+      {
+        "step": 250880,
+        "elapsed_seconds": 602.3852521230001,
+        "rewards": [
+          265.0,
+          230.0,
+          605.0,
+          215.0,
+          320.0,
+          190.0,
+          290.0,
+          265.0,
+          590.0,
+          195.0
+        ],
+        "mean_raw_reward": 316.5
+      },
+      {
+        "step": 500000,
+        "elapsed_seconds": 658.4150140970014,
+        "rewards": [
+          185.0,
+          190.0,
+          250.0,
+          500.0,
+          210.0,
+          155.0,
+          245.0,
+          205.0,
+          150.0,
+          330.0
+        ],
+        "mean_raw_reward": 242.0
+      }
+    ]
+  }
+}

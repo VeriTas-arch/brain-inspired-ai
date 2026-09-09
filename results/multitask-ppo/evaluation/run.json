@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-09-09T12:51:23.767317+00:00",
+  "commit": "38da831599096e871c983ccc921e81b141ddd478",
+  "dirty": false,
+  "versions": null,
+  "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+  "case": "multitask-ppo",
+  "jobs": [
+    {
+      "name": "evaluate multitask ppo",
+      "depends_on": [
+        "multitask_ppo_seed0.log"
+      ],
+      "state": "completed",
+      "started_at": "2026-09-09T12:51:23.767317+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-09-09T12:54:14.942554+00:00",
+      "case_id": "multitask-ppo",
+      "log": "evaluate.log"
+    }
+  ],
+  "checkpoint": "../checkpoints/final.pt",
+  "checkpoint_sha256": "af6ce30023a196d410efeb72025fc0b96f3a59810a6d8c1b03a290f778ad7c1e"
+}

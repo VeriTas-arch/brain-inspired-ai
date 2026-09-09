@@ -1,0 +1,20 @@
+{
+  "games": [
+    "Pong-v5",
+    "Breakout-v5",
+    "SpaceInvaders-v5"
+  ],
+  "algorithm": "ppo",
+  "total_steps": 1500000,
+  "batch_size": 32,
+  "save_video": false,
+  "seed": 0,
+  "deterministic": true,
+  "compile_ppo": true,
+  "compile_dqn": false,
+  "num_envs": 8,
+  "env_backend": "async",
+  "env_threads": 4,
+  "protocol": "multitask",
+  "environment_protocol": "gymnasium_wrappers_v1"
+}

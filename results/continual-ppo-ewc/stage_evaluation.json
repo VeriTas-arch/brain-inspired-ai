@@ -1,0 +1,164 @@
+{
+  "stage": 3,
+  "completed_tasks": [
+    "Pong-v5",
+    "Breakout-v5",
+    "SpaceInvaders-v5"
+  ],
+  "task_steps": {
+    "Pong-v5": 1000448,
+    "Breakout-v5": 500000,
+    "SpaceInvaders-v5": 500000
+  },
+  "seed": 0,
+  "deterministic": true,
+  "evaluation": {
+    "score_units": "raw_environment_reward",
+    "score_matrix": [
+      {
+        "stage": 1,
+        "after_task": "Pong-v5",
+        "scores": {
+          "Pong-v5": 12.6,
+          "Breakout-v5": null,
+          "SpaceInvaders-v5": null
+        }
+      },
+      {
+        "stage": 2,
+        "after_task": "Breakout-v5",
+        "scores": {
+          "Pong-v5": -19.7,
+          "Breakout-v5": 7.8,
+          "SpaceInvaders-v5": null
+        }
+      },
+      {
+        "stage": 3,
+        "after_task": "SpaceInvaders-v5",
+        "scores": {
+          "Pong-v5": -12.9,
+          "Breakout-v5": 9.8,
+          "SpaceInvaders-v5": 334.5
+        }
+      }
+    ],
+    "per_task": {
+      "Pong-v5": {
+        "score_after_learning": 12.6,
+        "best_score": 12.6,
+        "final_score": -12.9,
+        "forgetting": 25.5
+      },
+      "Breakout-v5": {
+        "score_after_learning": 7.8,
+        "best_score": 9.8,
+        "final_score": 9.8,
+        "forgetting": 0.0
+      },
+      "SpaceInvaders-v5": {
+        "score_after_learning": 334.5,
+        "best_score": 334.5,
+        "final_score": 334.5,
+        "forgetting": 0.0
+      }
+    }
+  },
+  "stage_episode_rewards": [
+    {
+      "stage": 1,
+      "elapsed_seconds": 246.30185736902058,
+      "rewards": {
+        "Pong-v5": [
+          17.0,
+          13.0,
+          13.0,
+          14.0,
+          17.0,
+          13.0,
+          11.0,
+          13.0,
+          4.0,
+          11.0
+        ]
+      }
+    },
+    {
+      "stage": 2,
+      "elapsed_seconds": 607.3174090510001,
+      "rewards": {
+        "Pong-v5": [
+          -20.0,
+          -18.0,
+          -21.0,
+          -19.0,
+          -19.0,
+          -19.0,
+          -19.0,
+          -20.0,
+          -21.0,
+          -21.0
+        ],
+        "Breakout-v5": [
+          11.0,
+          5.0,
+          7.0,
+          5.0,
+          4.0,
+          8.0,
+          14.0,
+          7.0,
+          5.0,
+          12.0
+        ]
+      }
+    },
+    {
+      "stage": 3,
+      "elapsed_seconds": 833.4224782160018,
+      "rewards": {
+        "Pong-v5": [
+          -13.0,
+          -6.0,
+          -17.0,
+          -15.0,
+          -12.0,
+          -18.0,
+          -12.0,
+          -10.0,
+          -17.0,
+          -9.0
+        ],
+        "Breakout-v5": [
+          8.0,
+          13.0,
+          11.0,
+          10.0,
+          8.0,
+          6.0,
+          7.0,
+          15.0,
+          3.0,
+          17.0
+        ],
+        "SpaceInvaders-v5": [
+          360.0,
+          355.0,
+          395.0,
+          300.0,
+          355.0,
+          285.0,
+          475.0,
+          240.0,
+          240.0,
+          340.0
+        ]
+      }
+    }
+  ],
+  "head_initialization_seeds": {
+    "Breakout-v5": 60001,
+    "SpaceInvaders-v5": 60002
+  },
+  "purpose": "Task-boundary evaluation; not an exact training-resume snapshot"
+}

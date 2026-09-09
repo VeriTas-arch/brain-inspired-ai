@@ -25,9 +25,11 @@ from training import (
     VideoRecorder,
     configure_ppo_runtime,
     dqn_updates_due,
+    evaluation_schedule,
     run_evaluation_episodes,
     seed_everything,
 )
+from training.results import case_name, file_digest, prepare_case, result_directory
 
 
 def train_single_game(
@@ -44,7 +46,9 @@ def train_single_game(
     seed: int = 0,
     deterministic: bool = False,
     eval_interval: int = 0,
+    eval_points: int = 0,
     eval_episodes: int = 10,
+    output_dir: Path | None = None,
 ):
     """Train agent on a single game."""
     if batch_size <= 0:
@@ -61,6 +65,33 @@ def train_single_game(
         raise ValueError("eval_interval must be nonnegative and eval_episodes positive")
     if compile_dqn and algorithm != "dqn":
         raise ValueError("compile_dqn requires DQN")
+    evaluation_steps = evaluation_schedule(
+        num_steps,
+        points=eval_points,
+        interval=eval_interval,
+        step_size=num_envs * (128 if algorithm == "ppo" else 1),
+    )
+    exp_dir = prepare_case(
+        output_dir,
+        protocol="single",
+        algorithm=algorithm,
+        games=[game_name],
+        seed=seed,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        num_envs=num_envs,
+        env_backend=env_backend,
+        env_threads=env_threads,
+        compile_ppo=compile_ppo,
+        compile_dqn=compile_dqn,
+        save_video=save_video,
+        deterministic=deterministic,
+        eval_interval=eval_interval,
+        eval_points=eval_points,
+        eval_episodes=eval_episodes,
+        eval_max_steps=DEFAULT_MAX_EPISODE_STEPS,
+        environment_protocol=observation_protocol(env_backend),
+    )
     started_at = time.perf_counter()
     configure_ppo_runtime(env_backend)
     seed_everything(seed, deterministic=deterministic)
@@ -115,13 +146,10 @@ def train_single_game(
         minibatch_size = batch_size
 
     agent.environment_protocol = observation_protocol(env_backend)
-    run_name = f"{game_name}_{algorithm}"
-    exp_dir = Path("outputs") / "single" / run_name / f"seed-{seed}"
-    exp_dir.mkdir(parents=True, exist_ok=True)
 
     video_recorder = None
     if save_video:
-        video_path = exp_dir / "training.mp4"
+        video_path = exp_dir / "videos" / "training.mp4"
         video_recorder = VideoRecorder(
             str(video_path),
             fps=30,
@@ -167,7 +195,8 @@ def train_single_game(
     dqn_metrics = DQNMetrics(agent, record_dqn_metrics) if algorithm == "dqn" else None
     step = 0
     evaluations = []
-    next_evaluation = eval_interval
+    evaluation_targets = iter(evaluation_steps)
+    next_evaluation = next(evaluation_targets, None)
 
     try:
         while step < num_steps:
@@ -203,7 +232,7 @@ def train_single_game(
                     if metric_name in metrics:
                         metrics_plotter.add_metric(metric_name, metrics[metric_name])
                 pbar.update(rollout.transition_count)
-            if eval_interval and (step >= next_evaluation or step == num_steps):
+            if next_evaluation is not None and step >= next_evaluation:
                 if dqn_metrics is not None:
                     dqn_metrics.flush()
                 evaluation_env = AtariEnv(game_name, seed=seed, training=False, backend=env_backend)
@@ -213,29 +242,29 @@ def train_single_game(
                     )
                 finally:
                     evaluation_env.close()
-                boundary_path = (
-                    Path("checkpoints") / "single" / run_name / f"seed-{seed}" / f"step-{step}.pt"
-                )
-                boundary_path.parent.mkdir(parents=True, exist_ok=True)
-                agent.save(str(boundary_path))
                 evaluations.append(
                     {
                         "step": step,
                         "elapsed_seconds": time.perf_counter() - started_at,
                         "rewards": rewards,
                         "mean_raw_reward": sum(rewards) / len(rewards),
-                        "checkpoint": str(boundary_path),
                     }
                 )
-                (exp_dir / "learning_evaluation.json").write_text(
+                (exp_dir / "learning.json").write_text(
                     json.dumps(
-                        {"seed": seed, "deterministic": deterministic, "evaluations": evaluations},
+                        {
+                            "seed": seed,
+                            "deterministic": deterministic,
+                            "eval_points": eval_points,
+                            "evaluation_steps": evaluation_steps,
+                            "evaluations": evaluations,
+                        },
                         indent=2,
                     ),
                     encoding="utf-8",
                 )
                 print(f"[Eval] step={step}, mean raw reward={evaluations[-1]['mean_raw_reward']}")
-                next_evaluation = (step // eval_interval + 1) * eval_interval
+                next_evaluation = next(evaluation_targets, None)
     finally:
         if dqn_metrics is not None:
             dqn_metrics.flush()
@@ -276,23 +305,24 @@ def train_single_game(
         print(f"Worst episode reward: {worst_ep:.2f}")
         print(f"{'=' * 60}")
 
-    metrics_output_path = exp_dir / "metrics.png"
+    metrics_output_path = exp_dir / "figures" / "metrics.png"
     metrics_plotter.plot(str(metrics_output_path))
     print(f"Metrics plot saved to {metrics_output_path}")
 
-    Path("checkpoints").mkdir(exist_ok=True)
-    checkpoint_path = Path("checkpoints") / "single" / run_name / f"seed-{seed}.pt"
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = exp_dir / "checkpoints" / "final.pt"
     agent.save(str(checkpoint_path))
     print(f"Agent saved to {checkpoint_path}")
 
     (exp_dir / "training_summary.json").write_text(
         json.dumps(
             {
+                "checkpoint_sha256": file_digest(checkpoint_path),
                 "algorithm": algorithm,
                 "seed": seed,
                 "deterministic": deterministic,
                 "total_steps": step,
+                "eval_points": eval_points,
+                "evaluation_steps": evaluation_steps,
                 "num_envs": num_envs,
                 "env_backend": env_backend,
                 "env_threads": env_threads,
@@ -326,26 +356,43 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--eval-interval", type=int, default=0)
+    parser.add_argument(
+        "--eval-points",
+        type=int,
+        default=0,
+        help="Evaluation points per task budget; exclusive with --eval-interval",
+    )
     parser.add_argument("--eval-episodes", type=int, default=10)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
 
+    parser.add_argument("--output-dir", type=Path, help="Case directory; default: results/<case>")
+    parser.add_argument(
+        "--force", action="store_true", help="Replace existing results after success"
+    )
     args = parser.parse_args()
 
-    train_single_game(
-        game_name=args.game,
-        algorithm=args.algorithm,
-        num_steps=args.steps,
-        batch_size=args.batch_size,
-        num_envs=args.num_envs,
-        env_backend=args.env_backend,
-        env_threads=args.env_threads,
-        compile_ppo=args.compile_ppo,
-        compile_dqn=args.compile_dqn,
-        save_video=args.save_video,
-        seed=args.seed,
-        deterministic=args.deterministic,
-        eval_interval=args.eval_interval,
-        eval_episodes=args.eval_episodes,
+    output_dir = args.output_dir or Path("results") / case_name(
+        "single", args.algorithm, game=args.game, seed=args.seed
     )
+    with result_directory(output_dir, force=args.force) as staging:
+        train_single_game(
+            output_dir=staging,
+            game_name=args.game,
+            algorithm=args.algorithm,
+            num_steps=args.steps,
+            batch_size=args.batch_size,
+            num_envs=args.num_envs,
+            env_backend=args.env_backend,
+            env_threads=args.env_threads,
+            compile_ppo=args.compile_ppo,
+            compile_dqn=args.compile_dqn,
+            save_video=args.save_video,
+            seed=args.seed,
+            deterministic=args.deterministic,
+            eval_interval=args.eval_interval,
+            eval_points=args.eval_points,
+            eval_episodes=args.eval_episodes,
+        )
+    print(f"Results saved to {output_dir}")

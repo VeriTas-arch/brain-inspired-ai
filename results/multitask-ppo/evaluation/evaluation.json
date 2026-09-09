@@ -1,0 +1,57 @@
+{
+  "mode": "multitask",
+  "algorithm": "ppo",
+  "games": {
+    "Pong-v5": {
+      "rewards": [
+        -21.0,
+        -11.0,
+        -17.0,
+        -14.0,
+        -9.0,
+        -16.0,
+        -20.0,
+        -17.0,
+        -15.0,
+        -20.0
+      ],
+      "avg_reward": -16.0
+    },
+    "Breakout-v5": {
+      "rewards": [
+        5.0,
+        3.0,
+        7.0,
+        8.0,
+        5.0,
+        15.0,
+        5.0,
+        9.0,
+        3.0,
+        7.0
+      ],
+      "avg_reward": 6.7
+    },
+    "SpaceInvaders-v5": {
+      "rewards": [
+        250.0,
+        130.0,
+        270.0,
+        405.0,
+        200.0,
+        265.0,
+        425.0,
+        215.0,
+        470.0,
+        245.0
+      ],
+      "avg_reward": 287.5
+    }
+  },
+  "episodes": 10,
+  "seed": 0,
+  "environment_protocol": "gymnasium_wrappers_v1",
+  "deterministic": true,
+  "compile_ppo": true,
+  "compile_dqn": null
+}

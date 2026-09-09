@@ -9,10 +9,11 @@ from algorithms import DQNAgent, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
 
 
 @pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
-def test_compiled_greedy_batches_match_scalar_actions_without_consuming_rng(algorithm):
+def test_compiled_greedy_batches_match_scalar_actions_without_consuming_rng(
+    algorithm, fresh_compiler_state
+):
     if not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
-    torch.compiler.reset()
     agent = (MultiHeadDQNAgent if algorithm == "dqn" else MultiHeadPPOAgent)(4, device="cuda")
     for task, actions in (("old", 6), ("new", 4)):
         agent.register_task(task, actions)
@@ -37,7 +38,6 @@ def test_compiled_greedy_batches_match_scalar_actions_without_consuming_rng(algo
     torch.testing.assert_close(torch.cuda.get_rng_state(), cuda_rng, rtol=0, atol=0)
     for first, second in zip(np.random.get_state(), numpy_rng, strict=True):
         np.testing.assert_equal(first, second)
-    torch.compiler.reset()
 
 
 @pytest.mark.parametrize("agent_type", (DQNAgent, PPOAgent, MultiHeadDQNAgent, MultiHeadPPOAgent))

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -21,6 +22,7 @@ from training import (
     run_evaluation_episodes,
     seed_everything,
 )
+from training.results import file_digest, result_directory, run_metadata
 
 
 def _evaluation_backend(agent):
@@ -32,20 +34,18 @@ def _evaluation_backend(agent):
 
 
 def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:
-    """Infer the evaluation directory from the checkpoint name."""
+    """Use one stable evaluation directory beside the model checkpoints."""
     model = Path(model_path)
-    parts = model.parts
-    for index in range(len(parts) - 1):
-        if parts[index : index + 2] == ("checkpoints", mode):
-            relative_checkpoint = Path(*parts[index + 2 :]).with_suffix("")
-            return Path(*parts[:index]) / "outputs" / mode / relative_checkpoint / "eval"
-    return Path("outputs") / mode / model.stem / "eval"
+    case = model.parent.parent if model.parent.name == "checkpoints" else model.parent
+    return case / "evaluation"
 
 
 def _prepare_output_dir(output_dir: Path | None, model_path: str, mode: str) -> Path:
     """Create and return the directory used by evaluation artifacts."""
     resolved = output_dir or _infer_eval_dir_from_model_path(model_path, mode)
     resolved.mkdir(parents=True, exist_ok=True)
+    (resolved / "figures").mkdir(exist_ok=True)
+    (resolved / "videos").mkdir(exist_ok=True)
     return resolved
 
 
@@ -75,7 +75,7 @@ def _plot_single_results(result: dict, output_dir: Path) -> Path:
     game = result["game"]
     algorithm = result["algorithm"]
     rewards = result["rewards"]
-    plot_path = output_dir / f"{game}_{algorithm}_eval_rewards.png"
+    plot_path = output_dir / "figures" / f"{game}_{algorithm}_eval_rewards.png"
 
     plt.figure(figsize=(6, 4))
     plt.plot(range(1, len(rewards) + 1), rewards, marker="o")
@@ -95,7 +95,7 @@ def _plot_multi_game_results(result: dict, output_dir: Path) -> Path:
     algorithm = result["algorithm"]
     games = sorted(result["games"])
     avg_rewards = [result["games"][game]["avg_reward"] for game in games]
-    plot_path = output_dir / f"{mode}_{algorithm}_avg_rewards.png"
+    plot_path = output_dir / "figures" / f"{mode}_{algorithm}_avg_rewards.png"
 
     plt.figure(figsize=(6, 4))
     plt.bar(games, avg_rewards)
@@ -193,7 +193,7 @@ def evaluate_single(
 
     plot_path = _plot_single_results(result, output_dir)
     print(f"  Reward plot saved to: {plot_path}")
-    video_path = output_dir / f"{game}_{algorithm}_eval_gameplay.mp4"
+    video_path = output_dir / "videos" / f"{game}_{algorithm}_eval_gameplay.mp4"
     _record_example_video(agent, game, video_path, max_steps=max_steps, seed=seed)
     print(f"  Example gameplay video saved to: {video_path}")
     return result
@@ -303,7 +303,7 @@ def _evaluate_multihead_checkpoint(
     print(f"\n[{label.title()}] Raw reward plot saved to: {plot_path}")
 
     for game_index, game in enumerate(games):
-        video_path = output_dir / f"{mode}_{algorithm}_{game}_eval_gameplay.mp4"
+        video_path = output_dir / "videos" / f"{mode}_{algorithm}_{game}_eval_gameplay.mp4"
         _record_example_video(
             agent,
             game,
@@ -399,6 +399,9 @@ def main() -> None:
     parser.add_argument("--ewc", action="store_true", help="Use EWC wrapper in continual mode")
     parser.add_argument("--ewc-lambda", type=float, default=0.4, help="EWC lambda (if --ewc)")
     parser.add_argument("--json-out", help="Optional path to write JSON results")
+    parser.add_argument(
+        "--force", action="store_true", help="Replace existing evaluation after success"
+    )
     args = parser.parse_args()
 
     output_dir = (
@@ -406,60 +409,67 @@ def main() -> None:
         if args.json_out
         else _infer_eval_dir_from_model_path(args.model, args.mode)
     )
-    if args.mode == "single":
-        if not args.game:
-            raise SystemExit("--game is required for single mode")
-        result = evaluate_single(
-            args.model,
-            args.game,
-            args.algorithm,
-            args.episodes,
-            args.max_steps,
-            output_dir,
-            args.seed,
-            deterministic=args.deterministic,
-            compile_dqn=args.compile_dqn,
-            compile_ppo=args.compile_ppo,
-        )
-    elif args.mode == "multitask":
-        if not args.games:
-            raise SystemExit("--games is required for multitask mode")
-        result = evaluate_multitask(
-            args.model,
-            args.games,
-            args.algorithm,
-            args.episodes,
-            args.max_steps,
-            output_dir,
-            args.seed,
-            deterministic=args.deterministic,
-            compile_dqn=args.compile_dqn,
-            compile_ppo=args.compile_ppo,
-        )
-    else:
-        if not args.games:
-            raise SystemExit("--games is required for continual mode")
-        result = evaluate_continual(
-            args.model,
-            args.games,
-            args.algorithm,
-            args.episodes,
-            args.max_steps,
-            args.ewc,
-            args.ewc_lambda,
-            output_dir,
-            args.seed,
-            deterministic=args.deterministic,
-            compile_dqn=args.compile_dqn,
-            compile_ppo=args.compile_ppo,
-        )
+    output_path = Path(args.json_out) if args.json_out else output_dir / "evaluation.json"
+    if Path(args.model).resolve().is_relative_to(output_dir.resolve()):
+        raise ValueError("Evaluation output must be separate from the model directory")
+    metadata = {
+        **run_metadata(Path(__file__).resolve().parents[1]),
+        "checkpoint": os.path.relpath(Path(args.model).resolve(), output_dir.resolve()),
+        "checkpoint_sha256": file_digest(Path(args.model)),
+    }
+    with result_directory(output_dir, force=args.force) as staging:
+        if args.mode == "single":
+            if not args.game:
+                raise SystemExit("--game is required for single mode")
+            result = evaluate_single(
+                args.model,
+                args.game,
+                args.algorithm,
+                args.episodes,
+                args.max_steps,
+                staging,
+                args.seed,
+                deterministic=args.deterministic,
+                compile_dqn=args.compile_dqn,
+                compile_ppo=args.compile_ppo,
+            )
+        elif args.mode == "multitask":
+            if not args.games:
+                raise SystemExit("--games is required for multitask mode")
+            result = evaluate_multitask(
+                args.model,
+                args.games,
+                args.algorithm,
+                args.episodes,
+                args.max_steps,
+                staging,
+                args.seed,
+                deterministic=args.deterministic,
+                compile_dqn=args.compile_dqn,
+                compile_ppo=args.compile_ppo,
+            )
+        else:
+            if not args.games:
+                raise SystemExit("--games is required for continual mode")
+            result = evaluate_continual(
+                args.model,
+                args.games,
+                args.algorithm,
+                args.episodes,
+                args.max_steps,
+                args.ewc,
+                args.ewc_lambda,
+                staging,
+                args.seed,
+                deterministic=args.deterministic,
+                compile_dqn=args.compile_dqn,
+                compile_ppo=args.compile_ppo,
+            )
 
-    if args.json_out:
-        output_path = Path(args.json_out)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", encoding="utf-8") as output_file:
+        with (staging / output_path.name).open("x", encoding="utf-8") as output_file:
             json.dump(result, output_file, indent=2)
-        print(f"Results written to {output_path}")
+        (staging / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    print(f"Results written to {output_path}")
 
 
 if __name__ == "__main__":

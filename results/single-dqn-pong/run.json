@@ -1,0 +1,20 @@
+{
+  "created_at": "2026-09-09T11:42:11.810119+00:00",
+  "commit": "38da831599096e871c983ccc921e81b141ddd478",
+  "dirty": false,
+  "versions": null,
+  "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+  "case": "single-dqn-pong",
+  "jobs": [
+    {
+      "name": "single Pong-v5 dqn",
+      "depends_on": [],
+      "state": "completed",
+      "started_at": "2026-09-09T11:42:11.810119+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-09-09T11:54:11.791163+00:00",
+      "case_id": "single-dqn-pong",
+      "log": "train.log"
+    }
+  ]
+}

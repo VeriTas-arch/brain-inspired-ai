@@ -2,7 +2,7 @@
 
 from .buffers import ReplayBuffer, RolloutBuffer
 from .dqn_runtime import DQNCollector, DQNMetrics, dqn_updates_due
-from .evaluation import DEFAULT_MAX_EPISODE_STEPS, run_evaluation_episodes
+from .evaluation import DEFAULT_MAX_EPISODE_STEPS, evaluation_schedule, run_evaluation_episodes
 from .ppo_runtime import (
     CollectedRollout,
     PPOCollector,
@@ -26,6 +26,7 @@ __all__ = [
     "VideoRecorder",
     "configure_ppo_runtime",
     "dqn_updates_due",
+    "evaluation_schedule",
     "flatten_rollout_data",
     "run_evaluation_episodes",
     "seed_everything",

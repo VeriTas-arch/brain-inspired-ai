@@ -201,9 +201,12 @@ marimo/_lsp/
 __marimo__/
 
 
-# Self-defined
-checkpoints
-outputs
-logs
-/archive/
+# Local reference material
 ref/
+
+# Large and temporary artifacts inside the unified results tree
+*.pt
+*.mp4
+/results/smoke/
+/results/performance/
+/results/**/.pending-*/

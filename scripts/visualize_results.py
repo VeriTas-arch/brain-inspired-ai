@@ -38,7 +38,19 @@ def _finish_figure(figure, axes, used_panels: int, output_path: Path) -> Path:
 def _evaluation_series(results_dir: Path) -> list[tuple[str, list[float]]]:
     """Read reward series from the current evaluation JSON schema."""
     series = []
-    for metrics_path in sorted(results_dir.glob("**/metrics.json")):
+    paths = {
+        path
+        for pattern in (
+            "evaluation.json",
+            "evaluation/evaluation.json",
+            "*/evaluation/evaluation.json",
+        )
+        for path in results_dir.glob(pattern)
+    }
+    for metrics_path in sorted(paths):
+        case = metrics_path.relative_to(results_dir).parts[0]
+        if case.startswith(".") or case in {"smoke", "performance"}:
+            continue
         data = _load_json(metrics_path)
         relative_run = metrics_path.parent.relative_to(results_dir)
         mode = data.get("mode")
@@ -58,7 +70,7 @@ def _evaluation_series(results_dir: Path) -> list[tuple[str, list[float]]]:
 
 def plot_evaluation_results(
     results_dir: str | Path,
-    output_path: str | Path = "outputs/evaluation_rewards.png",
+    output_path: str | Path | None = None,
 ) -> Path:
     """Plot every evaluation series on its own raw-reward axis."""
     results_dir = Path(results_dir)
@@ -67,7 +79,7 @@ def plot_evaluation_results(
 
     series = _evaluation_series(results_dir)
     if not series:
-        raise ValueError(f"No compatible metrics.json files found under {results_dir}")
+        raise ValueError(f"No compatible evaluation.json files found under {results_dir}")
 
     figure, axes_iterator = _make_axes(len(series))
     axes = list(axes_iterator)
@@ -78,7 +90,12 @@ def plot_evaluation_results(
         axis.set_ylabel("Raw Environment Reward")
         axis.grid(True, alpha=0.3)
 
-    output_path = _finish_figure(figure, axes, len(series), Path(output_path))
+    output_path = _finish_figure(
+        figure,
+        axes,
+        len(series),
+        Path(output_path) if output_path else results_dir / "figures" / "evaluation_rewards.png",
+    )
     print(f"Evaluation plot saved to {output_path}")
     return output_path
 
@@ -86,7 +103,15 @@ def plot_evaluation_results(
 def _continual_series(results_dir: Path) -> list[tuple[str, list[int], list[float], float | None]]:
     """Read per-task trajectories from current continual evaluation reports."""
     series = []
-    for report_path in sorted(results_dir.glob("**/continual_evaluation.json")):
+    paths = {
+        path
+        for pattern in ("training_summary.json", "*/training_summary.json")
+        for path in results_dir.glob(pattern)
+    }
+    for report_path in sorted(paths):
+        case = report_path.relative_to(results_dir).parts[0]
+        if case.startswith(".") or case in {"smoke", "performance"}:
+            continue
         data = _load_json(report_path)
         relative_run = report_path.parent.relative_to(results_dir)
         score_matrix = data.get("score_matrix")
@@ -113,7 +138,7 @@ def _continual_series(results_dir: Path) -> list[tuple[str, list[int], list[floa
 
 def plot_continual_results(
     results_dir: str | Path,
-    output_path: str | Path = "outputs/continual_scores.png",
+    output_path: str | Path | None = None,
 ) -> Path:
     """Plot each task's raw score trajectory without averaging across games."""
     results_dir = Path(results_dir)
@@ -122,7 +147,7 @@ def plot_continual_results(
 
     series = _continual_series(results_dir)
     if not series:
-        raise ValueError(f"No compatible continual_evaluation.json files found under {results_dir}")
+        raise ValueError(f"No compatible training_summary.json files found under {results_dir}")
 
     figure, axes_iterator = _make_axes(len(series))
     axes = list(axes_iterator)
@@ -137,7 +162,12 @@ def plot_continual_results(
         axis.set_xticks(stages)
         axis.grid(True, alpha=0.3)
 
-    output_path = _finish_figure(figure, axes, len(series), Path(output_path))
+    output_path = _finish_figure(
+        figure,
+        axes,
+        len(series),
+        Path(output_path) if output_path else results_dir / "figures" / "continual_scores.png",
+    )
     print(f"Continual-learning plot saved to {output_path}")
     return output_path
 
@@ -145,7 +175,7 @@ def plot_continual_results(
 def main() -> None:
     """Parse command-line arguments and render current result artifacts."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--results-dir", default="outputs", help="Experiment output directory")
+    parser.add_argument("--results-dir", required=True, help="One run or case directory")
     parser.add_argument(
         "--type",
         choices=["evaluation", "continual"],
@@ -158,12 +188,12 @@ def main() -> None:
     if args.type == "evaluation":
         plot_evaluation_results(
             args.results_dir,
-            args.output or "outputs/evaluation_rewards.png",
+            args.output,
         )
     else:
         plot_continual_results(
             args.results_dir,
-            args.output or "outputs/continual_scores.png",
+            args.output,
         )
 
 

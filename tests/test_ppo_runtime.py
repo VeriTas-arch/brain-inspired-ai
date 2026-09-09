@@ -9,15 +9,6 @@ from environments import VectorStep
 from training import CollectedRollout, PPOCollector, PPOLearner, flatten_rollout_data
 
 
-@pytest.fixture
-def fresh_compiler_state():
-    # Independent jobs start fresh Python processes. Isolate their compiler caches
-    # here too; task switches and repeated updates inside each test still share a cache.
-    torch.compiler.reset()
-    yield
-    torch.compiler.reset()
-
-
 class _FakeAgent:
     device = torch.device("cpu")
     gamma = 0.5
@@ -119,12 +110,8 @@ def test_collector_requires_exact_vector_transition_budget() -> None:
     learner = PPOLearner(_FakeAgent())
     collector = PPOCollector(_FakeVectorEnvironment(), learner)
 
-    try:
+    with pytest.raises(ValueError, match="divisible"):
         collector.collect(transition_budget=3)
-    except ValueError as error:
-        assert "divisible" in str(error)
-    else:
-        raise AssertionError("collector must reject a partial vector step")
 
 
 def test_compiled_learner_compiles_only_policy_hot_paths(monkeypatch) -> None:

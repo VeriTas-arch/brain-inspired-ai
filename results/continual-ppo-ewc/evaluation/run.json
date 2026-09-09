@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-09-09T12:57:07.839024+00:00",
+  "commit": "38da831599096e871c983ccc921e81b141ddd478",
+  "dirty": false,
+  "versions": null,
+  "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+  "case": "continual-ppo-ewc",
+  "jobs": [
+    {
+      "name": "evaluate continual ppo ewc",
+      "depends_on": [
+        "continual_ppo_ewc_seed0.log"
+      ],
+      "state": "completed",
+      "started_at": "2026-09-09T12:57:07.839024+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-09-09T12:59:24.047072+00:00",
+      "case_id": "continual-ppo-ewc",
+      "log": "evaluate.log"
+    }
+  ],
+  "checkpoint": "../checkpoints/final.pt",
+  "checkpoint_sha256": "de7c4893a78244581265ab09ff8b50aa5be64f6935e2970d7a96cebffa610d7c"
+}

@@ -68,13 +68,22 @@
 - Formal teaching runs use seed 0 and deterministic training and evaluation. When comparing
   continual-learning methods, verify that network and task-head initialization, task order, and
   budgets match. Check these conditions directly as well as setting the seed.
-- Give each run a new directory. Preserve earlier artifacts and frozen source snapshots. Before
-  reusing a result, verify the source code, resolved configuration, and checkpoint it came from.
-- The experiment runner freezes source in each run directory and bounds job concurrency. Preserve
-  training-to-evaluation dependencies and disjoint CPU quotas when adding configurations. Use
-  `--smoke` to cover all teaching configurations before a full-budget run.
-- Store small summaries and figures in `results/`. Large artifacts belong in the ignored
-  `outputs/`, `checkpoints/`, and `logs/` directories; historical material belongs in `archive/`.
+- Store current teaching results directly under `results/<case>/`, without timestamp directories.
+  Each case records its Git commit, dirty status, dependency versions, configuration and seed.
+  Run from the maintained repository; do not copy source or create source manifests for runs.
+- Default to rejecting existing output. `--force` authorizes replacement of selected cases only.
+  Write to a temporary directory first; publish after jobs and artifact checks succeed. Preserve
+  previous results and failed work on error. Teaching matrices must finish dependent evaluation
+  before publication. Preserve bounded concurrency and disjoint CPU quotas.
+- Keep standalone evaluation in `<case>/evaluation/`, including its own `run.json`. Re-evaluation
+  with `--force` replaces this directory while preserving the case's training data and models.
+- Keep JSON records, figures and short GIFs in Git. Ignore checkpoints, MP4s, logs, `results/smoke/`, temporary `.pending-*` directories and local `results/performance/` reports.
+  Retain only final single/joint models and task-boundary continual models, using `final.pt` for the
+  last stage. Evaluation points record scores without saving periodic models. Record parameter
+  digests for initialization comparisons instead of retaining initial checkpoints.
+- Keep the selected teaching run's metrics and necessary models. After verification, remove
+  obsolete smoke and historical raw artifacts; retain small summaries of useful earlier results.
+  Do not recreate `outputs/`, `archive/`, source snapshots or old-path compatibility links.
 - Report old-task retention, new-task learning, and the stage-by-task score matrix. EWC penalizes
   parameter changes; assess its effect on both old and new tasks. Keep negative results and label
   historical configurations. Conclusions from a single seed apply to that run. Compare each

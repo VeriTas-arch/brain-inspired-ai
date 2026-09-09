@@ -1,0 +1,128 @@
+{
+  "Pong-v5": {
+    "task": "Pong-v5",
+    "stage": 1,
+    "seed": 0,
+    "deterministic": true,
+    "evaluations": [
+      {
+        "step": 250000,
+        "elapsed_seconds": 80.15735493798275,
+        "rewards": [
+          -21.0,
+          -18.0,
+          -17.0,
+          -19.0,
+          -17.0,
+          -17.0,
+          -19.0,
+          -18.0,
+          -19.0,
+          -18.0
+        ],
+        "mean_raw_reward": -18.3
+      },
+      {
+        "step": 500000,
+        "elapsed_seconds": 162.93686198594514,
+        "rewards": [
+          -19.0,
+          -17.0,
+          -12.0,
+          -17.0,
+          -17.0,
+          -21.0,
+          -11.0,
+          -9.0,
+          -15.0,
+          -12.0
+        ],
+        "mean_raw_reward": -15.0
+      }
+    ]
+  },
+  "Breakout-v5": {
+    "task": "Breakout-v5",
+    "stage": 2,
+    "seed": 0,
+    "deterministic": true,
+    "evaluations": [
+      {
+        "step": 250000,
+        "elapsed_seconds": 300.9136731129838,
+        "rewards": [
+          15.0,
+          15.0,
+          16.0,
+          21.0,
+          12.0,
+          14.0,
+          11.0,
+          13.0,
+          4.0,
+          9.0
+        ],
+        "mean_raw_reward": 13.0
+      },
+      {
+        "step": 500000,
+        "elapsed_seconds": 422.24833250796655,
+        "rewards": [
+          18.0,
+          19.0,
+          28.0,
+          25.0,
+          18.0,
+          19.0,
+          15.0,
+          31.0,
+          29.0,
+          18.0
+        ],
+        "mean_raw_reward": 22.0
+      }
+    ]
+  },
+  "SpaceInvaders-v5": {
+    "task": "SpaceInvaders-v5",
+    "stage": 3,
+    "seed": 0,
+    "deterministic": true,
+    "evaluations": [
+      {
+        "step": 250000,
+        "elapsed_seconds": 504.26044638699386,
+        "rewards": [
+          315.0,
+          455.0,
+          80.0,
+          145.0,
+          290.0,
+          570.0,
+          235.0,
+          270.0,
+          335.0,
+          390.0
+        ],
+        "mean_raw_reward": 308.5
+      },
+      {
+        "step": 500000,
+        "elapsed_seconds": 583.7682075359626,
+        "rewards": [
+          385.0,
+          205.0,
+          300.0,
+          270.0,
+          135.0,
+          290.0,
+          290.0,
+          185.0,
+          395.0,
+          280.0
+        ],
+        "mean_raw_reward": 273.5
+      }
+    ]
+  }
+}

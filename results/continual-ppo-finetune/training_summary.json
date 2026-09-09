@@ -1,0 +1,191 @@
+{
+  "algorithm": "ppo",
+  "method": "finetune",
+  "initialization": "random",
+  "games": [
+    "Pong-v5",
+    "Breakout-v5",
+    "SpaceInvaders-v5"
+  ],
+  "use_ewc": false,
+  "ewc_lambda": null,
+  "steps_per_game": null,
+  "task_steps": {
+    "Pong-v5": 1000448,
+    "Breakout-v5": 500000,
+    "SpaceInvaders-v5": 500000
+  },
+  "batch_size": 32,
+  "num_envs": 8,
+  "env_backend": "async",
+  "env_threads": 4,
+  "environment_protocol": "gymnasium_wrappers_v1",
+  "replay_sampler": null,
+  "replay_seeds": null,
+  "compile_ppo": true,
+  "compile_dqn": null,
+  "eval_episodes": 10,
+  "eval_interval": 250000,
+  "eval_max_steps": 30000,
+  "seed": 0,
+  "deterministic": true,
+  "boundary_checkpoints": [
+    "checkpoints/stage-01.pt",
+    "checkpoints/stage-02.pt",
+    "checkpoints/final.pt"
+  ],
+  "task_seeds": {
+    "Pong-v5": 0,
+    "Breakout-v5": 1,
+    "SpaceInvaders-v5": 2
+  },
+  "head_initialization_seeds": {
+    "Breakout-v5": 60001,
+    "SpaceInvaders-v5": 60002
+  },
+  "stage_episode_rewards": [
+    {
+      "stage": 1,
+      "elapsed_seconds": 246.43735277000815,
+      "rewards": {
+        "Pong-v5": [
+          17.0,
+          13.0,
+          13.0,
+          14.0,
+          17.0,
+          13.0,
+          11.0,
+          13.0,
+          4.0,
+          11.0
+        ]
+      }
+    },
+    {
+      "stage": 2,
+      "elapsed_seconds": 545.5147818580153,
+      "rewards": {
+        "Pong-v5": [
+          -21.0,
+          -21.0,
+          -21.0,
+          -21.0,
+          -21.0,
+          -20.0,
+          -21.0,
+          -21.0,
+          -21.0,
+          -20.0
+        ],
+        "Breakout-v5": [
+          9.0,
+          3.0,
+          17.0,
+          9.0,
+          3.0,
+          4.0,
+          13.0,
+          8.0,
+          5.0,
+          5.0
+        ]
+      }
+    },
+    {
+      "stage": 3,
+      "elapsed_seconds": 806.5785945510142,
+      "rewards": {
+        "Pong-v5": [
+          -20.0,
+          -19.0,
+          -21.0,
+          -20.0,
+          -21.0,
+          -19.0,
+          -19.0,
+          -20.0,
+          -21.0,
+          -19.0
+        ],
+        "Breakout-v5": [
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "SpaceInvaders-v5": [
+          185.0,
+          190.0,
+          250.0,
+          500.0,
+          210.0,
+          155.0,
+          245.0,
+          205.0,
+          150.0,
+          330.0
+        ]
+      }
+    }
+  ],
+  "ewc_diagnostics": null,
+  "gpm_diagnostics": null,
+  "score_units": "raw_environment_reward",
+  "score_matrix": [
+    {
+      "stage": 1,
+      "after_task": "Pong-v5",
+      "scores": {
+        "Pong-v5": 12.6,
+        "Breakout-v5": null,
+        "SpaceInvaders-v5": null
+      }
+    },
+    {
+      "stage": 2,
+      "after_task": "Breakout-v5",
+      "scores": {
+        "Pong-v5": -20.8,
+        "Breakout-v5": 7.6,
+        "SpaceInvaders-v5": null
+      }
+    },
+    {
+      "stage": 3,
+      "after_task": "SpaceInvaders-v5",
+      "scores": {
+        "Pong-v5": -19.9,
+        "Breakout-v5": 0.5,
+        "SpaceInvaders-v5": 242.0
+      }
+    }
+  ],
+  "per_task": {
+    "Pong-v5": {
+      "score_after_learning": 12.6,
+      "best_score": 12.6,
+      "final_score": -19.9,
+      "forgetting": 32.5
+    },
+    "Breakout-v5": {
+      "score_after_learning": 7.6,
+      "best_score": 7.6,
+      "final_score": 0.5,
+      "forgetting": 7.1
+    },
+    "SpaceInvaders-v5": {
+      "score_after_learning": 242.0,
+      "best_score": 242.0,
+      "final_score": 242.0,
+      "forgetting": 0.0
+    }
+  },
+  "checkpoint_sha256": "82d09230342b84459152c0a5d958c8c51f78f5bfff5d97001946f109f0cfad65"
+}

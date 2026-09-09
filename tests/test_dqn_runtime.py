@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent
 from algorithms.subspace_projection import AdamSubspaceProjection, affine_layers
-from scripts.run_experiments import build_jobs, build_teaching_jobs
 from training import seed_everything
 
 
@@ -23,7 +22,6 @@ def replay_batch(size=4):
 
 
 def test_eager_dqn_matches_explicit_td_update():
-    torch.set_num_threads(1)
     seed_everything(0)
     agent = DQNAgent(4, 2, device="cpu", target_update_freq=2, tau=0.5)
     reference = DQNAgent(4, 2, device="cpu", target_update_freq=2, tau=0.5)
@@ -63,9 +61,9 @@ def test_eager_dqn_matches_explicit_td_update():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("variant", ("single", "multi", "ewc", "gpm"))
-def test_compiled_dqn_updates_task_switches_and_checkpoints(variant, tmp_path):
-    torch.compiler.reset()
-    torch.set_num_threads(1)
+def test_compiled_dqn_updates_task_switches_and_checkpoints(
+    variant, tmp_path, fresh_compiler_state
+):
     seed_everything(0, deterministic=True)
     batch = replay_batch()
     agents = []
@@ -159,15 +157,3 @@ def test_compiled_dqn_updates_task_switches_and_checkpoints(variant, tmp_path):
     finally:
         for projection in projections:
             projection.close()
-        torch.compiler.reset()
-
-
-def test_teaching_dqn_compile_covers_training_and_standalone_evaluation():
-    jobs = build_teaching_jobs(phase="train", seed=0, steps=1024)
-    dqn = [job for job in jobs if job.arguments[job.arguments.index("--algorithm") + 1] == "dqn"]
-    assert len(dqn) == 12
-    assert all("--compile-dqn" in job.arguments for job in dqn)
-    eager = build_teaching_jobs(phase="train", seed=0, steps=1024, compile_dqn=False)
-    assert all("--compile-dqn" not in job.arguments for job in eager)
-    with pytest.raises(ValueError, match="DQN only"):
-        build_jobs("train", "single", games=("Pong-v5",), algorithms=("ppo",), compile_dqn=True)

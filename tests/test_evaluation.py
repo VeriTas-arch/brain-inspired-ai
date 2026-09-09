@@ -1,7 +1,6 @@
 """Deterministic evaluation, continual-learning reports, and plots."""
 
 import json
-from pathlib import Path
 
 import pytest
 import torch
@@ -105,20 +104,11 @@ def test_multihead_evaluation_records_the_loaded_inner_agents_protocol(
     assert result["games"]["game"]["rewards"] == [3.0, 3.0]
 
 
-def test_seed_checkpoint_path_maps_to_seed_evaluation_directory() -> None:
-    output = _infer_eval_dir_from_model_path(
-        "checkpoints/continual/ppo_ewcTrue/seed-17.pt",
-        "continual",
-    )
-
-    assert output == Path("outputs/continual/ppo_ewcTrue/seed-17/eval")
-
-
-def test_absolute_run_checkpoint_keeps_evaluation_inside_its_run(tmp_path):
-    checkpoint = tmp_path / "checkpoints/single/Pong-v5_ppo/seed-0.pt"
-    assert _infer_eval_dir_from_model_path(str(checkpoint), "single") == (
-        tmp_path / "outputs/single/Pong-v5_ppo/seed-0/eval"
-    )
+def test_checkpoint_evaluations_use_one_stable_directory_per_case(tmp_path):
+    checkpoint = tmp_path / "single-ppo-pong/checkpoints/final.pt"
+    first = _infer_eval_dir_from_model_path(str(checkpoint), "single")
+    second = _infer_eval_dir_from_model_path(str(checkpoint), "single")
+    assert first == second == tmp_path / "single-ppo-pong/evaluation"
 
 
 def test_report_keeps_task_scores_separate_and_computes_forgetting() -> None:
@@ -147,7 +137,7 @@ def test_report_keeps_task_scores_separate_and_computes_forgetting() -> None:
 
 
 def test_plot_evaluation_results_reads_current_metrics_schema(tmp_path) -> None:
-    metrics_path = tmp_path / "single" / "run" / "eval" / "metrics.json"
+    metrics_path = tmp_path / "single-ppo-pong" / "evaluation" / "evaluation.json"
     metrics_path.parent.mkdir(parents=True)
     metrics_path.write_text(
         json.dumps(
@@ -163,13 +153,17 @@ def test_plot_evaluation_results_reads_current_metrics_schema(tmp_path) -> None:
         encoding="utf-8",
     )
 
+    for name in (".pending-case", "smoke", "performance"):
+        ignored = tmp_path / name / "evaluation"
+        ignored.mkdir(parents=True)
+        (ignored / "evaluation.json").write_text("incomplete output")
     output_path = plot_evaluation_results(tmp_path, tmp_path / "evaluation.png")
 
     assert output_path.is_file()
 
 
 def test_plot_continual_results_reads_score_matrix_without_cross_game_average(tmp_path) -> None:
-    report_path = tmp_path / "continual" / "run" / "continual_evaluation.json"
+    report_path = tmp_path / "continual-ppo-gpm" / "training_summary.json"
     report_path.parent.mkdir(parents=True)
     report_path.write_text(
         json.dumps(
@@ -244,3 +238,27 @@ def test_evaluation_preserves_requested_deterministic_kernels(monkeypatch, tmp_p
         assert rewards == [3.0, 3.0]
     finally:
         seed_everything(0)
+
+
+@pytest.mark.parametrize("budget", (500_000, 1_000_448, 2_000_000))
+@pytest.mark.parametrize("step_size", (8, 1024))
+def test_evaluation_points_follow_budget_and_completed_updates(budget, step_size):
+    from training import evaluation_schedule
+
+    steps = evaluation_schedule(budget, points=10, step_size=step_size)
+    assert len(steps) == len(set(steps)) == 10
+    assert steps[-1] == budget
+    for i, step in enumerate(steps, 1):
+        assert budget * i / 10 <= step < budget * i / 10 + step_size
+        assert step == budget or step % step_size == 0
+
+
+def test_evaluation_schedule_rejects_conflicting_or_impossible_counts():
+    from training import evaluation_schedule
+
+    with pytest.raises(ValueError, match="not both"):
+        evaluation_schedule(100, points=10, interval=20)
+    with pytest.raises(ValueError, match="boundaries"):
+        evaluation_schedule(2048, points=10, step_size=1024)
+    with pytest.raises(ValueError, match="nonnegative"):
+        evaluation_schedule(100, points=-1)

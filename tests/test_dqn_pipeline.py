@@ -12,7 +12,6 @@ from training import DQNMetrics, seed_everything
 @pytest.mark.parametrize("wrapped", (False, True))
 def test_deferred_diagnostics_preserve_every_metric_and_q_history(wrapped):
     seed_everything(17)
-    torch.set_num_threads(1)
     if wrapped:
         base = MultiHeadDQNAgent(4, device="cpu")
         base.register_task("task", 2)

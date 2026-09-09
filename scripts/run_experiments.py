@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex
@@ -11,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Sequence
 
 from training import DEFAULT_MAX_EPISODE_STEPS
+from training.results import case_name, check_output, file_digest, publish_output, run_metadata
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GAMES = {
@@ -41,6 +42,7 @@ class Job:
     log_name: str
     capture_output: bool
     depends_on: tuple[str, ...] = ()
+    case_id: str = ""
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -178,13 +180,18 @@ def _build_training_jobs(
     if suite == "single":
         for game in games:
             for algorithm in algorithms:
+                case = case_name("single", algorithm, game=game, seed=seed)
                 name = f"single {game} {algorithm}"
                 arguments = [
                     "scripts/train_single.py",
+                    "--output-dir",
+                    case,
                     "--seed",
                     str(seed),
                     "--game",
                     game,
+                    "--eval-episodes",
+                    str(eval_episodes),
                     "--algorithm",
                     algorithm,
                     "--steps",
@@ -202,13 +209,17 @@ def _build_training_jobs(
                         tuple(arguments),
                         f"{_game_slug(game)}_{algorithm}_seed{seed}.log",
                         True,
+                        case_id=case,
                     )
                 )
     elif suite == "continual":
         for algorithm in algorithms:
             for method in methods:
+                case = case_name("continual", algorithm, method=method, seed=seed)
                 arguments = [
                     "scripts/train_continual.py",
+                    "--output-dir",
+                    case,
                     "--seed",
                     str(seed),
                     "--games",
@@ -241,15 +252,19 @@ def _build_training_jobs(
                         tuple(arguments),
                         f"continual_{algorithm}_{variant}_seed{seed}.log",
                         True,
+                        case_id=case,
                     )
                 )
     else:
         for algorithm in algorithms:
+            case = case_name("multitask", algorithm, seed=seed)
             jobs.append(
                 Job(
                     f"multitask {algorithm}",
                     (
                         "scripts/train_multitask.py",
+                        "--output-dir",
+                        case,
                         "--seed",
                         str(seed),
                         "--games",
@@ -264,6 +279,7 @@ def _build_training_jobs(
                     ),
                     f"multitask_{algorithm}_seed{seed}.log",
                     True,
+                    case_id=case,
                 )
             )
     return jobs
@@ -283,7 +299,7 @@ def _build_evaluation_jobs(
     if suite == "single":
         for game in games:
             for algorithm in algorithms:
-                run_name = f"{game}_{algorithm}"
+                case = case_name("single", algorithm, game=game, seed=seed)
                 jobs.append(
                     Job(
                         f"evaluate single {game} {algorithm}",
@@ -294,7 +310,7 @@ def _build_evaluation_jobs(
                             "--mode",
                             "single",
                             "--model",
-                            f"checkpoints/single/{run_name}/seed-{seed}.pt",
+                            f"{case}/checkpoints/final.pt",
                             "--algorithm",
                             algorithm,
                             "--game",
@@ -304,15 +320,17 @@ def _build_evaluation_jobs(
                             "--max-steps",
                             str(max_steps),
                             "--json-out",
-                            f"outputs/single/{run_name}/seed-{seed}/eval/metrics.json",
+                            f"{case}/evaluation/evaluation.json",
                         ),
                         f"evaluate_{_game_slug(game)}_{algorithm}_seed{seed}.log",
                         False,
+                        case_id=case,
                     )
                 )
     elif suite == "continual":
         for algorithm in algorithms:
             for method in methods:
+                case = case_name("continual", algorithm, method=method, seed=seed)
                 use_ewc = method == "ewc"
                 variant = f"{algorithm}_gpm" if method == "gpm" else f"{algorithm}_ewc{use_ewc}"
                 arguments = [
@@ -322,7 +340,7 @@ def _build_evaluation_jobs(
                     "--mode",
                     "continual",
                     "--model",
-                    f"checkpoints/continual/{variant}/seed-{seed}.pt",
+                    f"{case}/checkpoints/final.pt",
                     "--algorithm",
                     algorithm,
                     "--games",
@@ -332,7 +350,7 @@ def _build_evaluation_jobs(
                     "--max-steps",
                     str(max_steps),
                     "--json-out",
-                    f"outputs/continual/{variant}/seed-{seed}/eval/metrics.json",
+                    f"{case}/evaluation/evaluation.json",
                 ]
                 if use_ewc:
                     arguments.extend(("--ewc", "--ewc-lambda", str(ewc_lambda)))
@@ -342,10 +360,12 @@ def _build_evaluation_jobs(
                         tuple(arguments),
                         f"evaluate_continual_{variant}_seed{seed}.log",
                         False,
+                        case_id=case,
                     )
                 )
     else:
         for algorithm in algorithms:
+            case = case_name("multitask", algorithm, seed=seed)
             jobs.append(
                 Job(
                     f"evaluate multitask {algorithm}",
@@ -356,7 +376,7 @@ def _build_evaluation_jobs(
                         "--mode",
                         "multitask",
                         "--model",
-                        f"checkpoints/multitask/{algorithm}/seed-{seed}.pt",
+                        f"{case}/checkpoints/final.pt",
                         "--algorithm",
                         algorithm,
                         "--games",
@@ -366,10 +386,11 @@ def _build_evaluation_jobs(
                         "--max-steps",
                         str(max_steps),
                         "--json-out",
-                        f"outputs/multitask/{algorithm}/seed-{seed}/eval/metrics.json",
+                        f"{case}/evaluation/evaluation.json",
                     ),
                     f"evaluate_multitask_{algorithm}_seed{seed}.log",
                     False,
+                    case_id=case,
                 )
             )
     return jobs
@@ -392,7 +413,7 @@ def build_teaching_jobs(
     deterministic: bool = True,
     smoke: bool = False,
 ) -> list[Job]:
-    """Run all ten configurations; training includes a final evaluation of each job.
+    """Run all twelve configurations; training includes a final evaluation of each job.
 
     Single-task uses the two teaching games. Joint training gets the same total
     transition budget as the original three-task protocol. Without a uniform steps
@@ -472,9 +493,7 @@ def build_teaching_jobs(
             if arguments[0] == "scripts/train_single.py" and "Pong-v5" in arguments:
                 arguments[arguments.index("--steps") + 1] = "2000000"
             if arguments[0] in {"scripts/train_single.py", "scripts/train_continual.py"}:
-                arguments.extend(("--eval-interval", "250000"))
-                if arguments[0] == "scripts/train_single.py":
-                    arguments.extend(("--eval-episodes", str(episodes)))
+                arguments.extend(("--eval-points", "10"))
             updated.append(replace(job, arguments=tuple(arguments)))
         training = updated
     if training:
@@ -511,31 +530,6 @@ def _print_job(job: Job, index: int, total: int, device: str) -> None:
     print(f"  {shlex.join(job.command)}")
 
 
-def _freeze_source(destination: Path) -> Path:
-    """Keep the exact maintained Python source and its hash beside each new run."""
-    destination.mkdir(parents=True, exist_ok=False)
-    # Frozen checkouts must remain runnable and snapshot-able without .git.
-    files = [
-        str(path.relative_to(PROJECT_ROOT))
-        for directory in ("algorithms", "environments", "training", "scripts", "tests")
-        for path in (PROJECT_ROOT / directory).rglob("*.py")
-    ]
-    files.extend(
-        path.name
-        for path in PROJECT_ROOT.iterdir()
-        if path.is_file() and path.suffix in {".py", ".md", ".toml", ".ipynb", ".json"}
-    )
-    manifest = {}
-    for name in sorted(set(files)):
-        source = PROJECT_ROOT / name
-        target = destination / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        manifest[name] = hashlib.sha256(target.read_bytes()).hexdigest()
-    (destination.parent / "source_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    return destination
-
-
 def run_jobs(
     jobs: Sequence[Job],
     *,
@@ -556,22 +550,24 @@ def run_jobs(
     if any(dependency not in identifiers for job in jobs for dependency in job.depends_on):
         raise ValueError("Job dependency is missing from this matrix")
     device_count = _cuda_device_count(device)
-    cwd, source = PROJECT_ROOT, PROJECT_ROOT
+    cwd = PROJECT_ROOT if run_dir is None else run_dir.resolve()
     if run_dir is not None:
-        cwd = run_dir.resolve()
-        source = cwd / "source"
-        if any(job.arguments[0].startswith("scripts/train_") for job in jobs):
-            if cwd.exists():
-                raise ValueError(f"Training requires a new run directory: {cwd}")
-            source = _freeze_source(source)
-        elif not source.is_dir():
-            raise ValueError(f"Evaluation requires an existing run source: {source}")
-        jobs = [
-            replace(job, arguments=(str(source / job.arguments[0]), *job.arguments[1:]))
-            if job.arguments[0].startswith("scripts/")
-            else job
-            for job in jobs
-        ]
+        if cwd.exists():
+            raise ValueError(f"Training requires a new run directory: {cwd}")
+        cwd.mkdir(parents=True)
+    jobs = [
+        replace(
+            job,
+            arguments=(
+                "-m",
+                job.arguments[0].removesuffix(".py").replace("/", "."),
+                *job.arguments[1:],
+            ),
+        )
+        if job.arguments[0].startswith("scripts/")
+        else job
+        for job in jobs
+    ]
     log_dir = log_dir.resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
     available_cpus = sorted(os.sched_getaffinity(0))
@@ -580,17 +576,31 @@ def run_jobs(
     )
     if cpu_count * workers > len(available_cpus):
         raise ValueError("Requested CPU allocation exceeds the available affinity set")
-    status_path = log_dir / "status.json"
+    status_path = (cwd if run_dir is not None else log_dir) / "run.json"
+    if status_path.exists():
+        raise FileExistsError(
+            f"Run record already exists; choose a new log directory: {status_path}"
+        )
     status = {
-        "cwd": str(cwd),
-        "source": str(source),
+        **run_metadata(PROJECT_ROOT),
+        "cases": sorted({job.case_id for job in jobs if job.case_id}),
         "pid": os.getpid(),
         "max_workers": workers,
         "jobs": [
             {
                 "name": job.name,
                 "command": list(job.command),
-                "log": str(log_dir / job.log_name),
+                "case_id": job.case_id,
+                "log": os.path.relpath(
+                    log_dir
+                    / (
+                        Path(job.case_id)
+                        / ("train.log" if "--output-dir" in job.arguments else "evaluate.log")
+                        if job.case_id
+                        else job.log_name
+                    ),
+                    status_path.parent,
+                ),
                 "depends_on": list(job.depends_on),
                 "state": "pending",
             }
@@ -635,18 +645,16 @@ def run_jobs(
                 pending.remove(ready)
                 environment = _job_environment(device_count, slot, parallel=workers > 1)
                 environment.update(
-                    PYTHONPATH=str(source),
+                    PYTHONPATH=str(PROJECT_ROOT),
                     OMP_NUM_THREADS="1",
                     MKL_NUM_THREADS="1",
                     OPENBLAS_NUM_THREADS="1",
                 )
                 cpus = available_cpus[slot * cpu_count : (slot + 1) * cpu_count]
                 command = ("taskset", "-c", ",".join(map(str, cpus)), *job.command)
-                log_file = (
-                    (log_dir / job.log_name).open("w")
-                    if job.capture_output or workers > 1
-                    else None
-                )
+                log_path = status_path.parent / status["jobs"][index]["log"]
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_file = log_path.open("w") if job.capture_output or workers > 1 else None
                 try:
                     process = subprocess.Popen(
                         command,
@@ -768,9 +776,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--cpus-per-job", type=int, help="Disjoint CPU cores assigned to each worker"
     )
     parser.add_argument(
-        "--run-dir", type=Path, help="New directory for training, or existing run to evaluate"
+        "--results-dir", type=Path, help="Case output root (default: results, or results/smoke)"
     )
-    parser.add_argument("--log-dir", type=Path)
+    parser.add_argument(
+        "--force", action="store_true", help="Replace selected existing results after success"
+    )
+    parser.add_argument(
+        "--eval-points", type=int, help="Process evaluation points per single/continual task budget"
+    )
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -781,38 +794,109 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch_jobs(jobs, args):
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    run_dir = args.run_dir
-    if args.phase == "train" and run_dir is None:
-        run_dir = PROJECT_ROOT / "outputs" / "runs" / f"{stamp}-{args.suite}"
-    if args.phase == "evaluate" and run_dir is not None:
+    if args.eval_points is not None:
+        if args.eval_points < 0 or args.phase != "train" or args.suite == "multitask":
+            raise ValueError(
+                "eval-points requires single, continual or teaching training and a nonnegative count"
+            )
         updated = []
         for job in jobs:
             arguments = list(job.arguments)
-            output_index = arguments.index("--json-out") + 1
-            arguments[output_index] = str(
-                run_dir.resolve() / "evaluations" / stamp / arguments[output_index]
-            )
+            if arguments[0] in {"scripts/train_single.py", "scripts/train_continual.py"}:
+                if "--eval-points" in arguments:
+                    arguments[arguments.index("--eval-points") + 1] = str(args.eval_points)
+                else:
+                    arguments.extend(("--eval-points", str(args.eval_points)))
+            updated.append(replace(job, arguments=tuple(arguments)))
+        jobs = updated
+    root = (
+        args.results_dir or PROJECT_ROOT / "results" / ("smoke" if args.smoke else "")
+    ).resolve()
+    cases = sorted({job.case_id for job in jobs})
+    destinations = {
+        case: root / case / ("evaluation" if args.phase == "evaluate" else "") for case in cases
+    }
+    if args.phase == "evaluate":
+        updated = []
+        for job in jobs:
+            arguments = list(job.arguments)
+            model_index = arguments.index("--model") + 1
+            arguments[model_index] = str(root / arguments[model_index])
             updated.append(replace(job, arguments=tuple(arguments)))
         jobs = updated
     if args.dry_run:
-        if run_dir is not None:
-            print(f"Run directory: {run_dir}")
+        print(f"Results directory: {root}")
         for index, job in enumerate(jobs, start=1):
             _print_job(job, index, len(jobs), args.device)
         return
-    log_dir = args.log_dir or (
-        (run_dir / "logs" / stamp) if run_dir is not None else Path("logs") / stamp
-    )
-    run_jobs(
-        jobs,
-        device=args.device,
-        parallel=args.parallel,
-        log_dir=log_dir,
-        max_workers=args.max_workers,
-        cpus_per_job=args.cpus_per_job,
-        run_dir=run_dir,
-    )
+    for destination in destinations.values():
+        check_output(destination, force=args.force)
+    if args.phase == "evaluate":
+        for job in jobs:
+            model = Path(job.arguments[job.arguments.index("--model") + 1])
+            if not model.is_file():
+                raise FileNotFoundError(model)
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".pending-", dir=root))
+    work = staging / "work"
+    jobs = [replace(job, capture_output=True) for job in jobs]
+    try:
+        run_jobs(
+            jobs,
+            device=args.device,
+            parallel=args.parallel,
+            log_dir=work / ".logs",
+            max_workers=args.max_workers,
+            cpus_per_job=args.cpus_per_job,
+            run_dir=work,
+        )
+        record = json.loads((work / "run.json").read_text())
+        # Check every selected result before replacing any existing case.
+        for job in jobs:
+            directory = work / job.case_id
+            if "--output-dir" in job.arguments:
+                summary = json.loads((directory / "training_summary.json").read_text())
+                json.loads((directory / "config.json").read_text())
+                if file_digest(directory / "checkpoints/final.pt") != summary["checkpoint_sha256"]:
+                    raise ValueError(f"Checkpoint hash mismatch: {job.case_id}")
+            else:
+                json.loads((directory / "evaluation/evaluation.json").read_text())
+        for job, row in zip(jobs, record["jobs"], strict=True):
+            training = "--output-dir" in job.arguments
+            directory = work / job.case_id / ("" if training else "evaluation")
+            metadata_path = directory / "run.json"
+            metadata = (
+                json.loads(metadata_path.read_text())
+                if metadata_path.exists()
+                else {k: record[k] for k in ("created_at", "commit", "dirty", "versions")}
+            )
+            log_name = "train.log" if training else "evaluate.log"
+            shutil.move(work / row["log"], directory / log_name)
+            metadata.update(case=job.case_id, jobs=[{**row, "log": log_name}])
+            if not training:
+                checkpoint = (
+                    (root if args.phase == "evaluate" else work)
+                    / job.case_id
+                    / "checkpoints/final.pt"
+                )
+                metadata.update(
+                    checkpoint="../checkpoints/final.pt", checkpoint_sha256=file_digest(checkpoint)
+                )
+            if args.smoke and args.phase == "train":
+                metadata["temporary_models_and_videos_removed"] = True
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        if args.smoke and args.phase == "train":
+            for pattern in ("*/checkpoints", "*/videos", "*/evaluation/videos"):
+                for directory in work.glob(pattern):
+                    shutil.rmtree(directory)
+        for case, destination in destinations.items():
+            source = work / case / ("evaluation" if args.phase == "evaluate" else "")
+            publish_output(source, destination, force=args.force)
+        shutil.rmtree(staging)
+    except BaseException:
+        print(f"Unpublished results and logs retained at {work}", file=sys.stderr)
+        raise
+    print(f"Completed results saved to {root}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -876,7 +960,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
             )
         _dispatch_jobs(jobs, args)
-    except (RuntimeError, ValueError) as error:
+    except (RuntimeError, ValueError, FileExistsError, FileNotFoundError) as error:
         parser.exit(1, f"error: {error}\n")
 
 
