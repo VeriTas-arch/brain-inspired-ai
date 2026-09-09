@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -16,56 +17,79 @@ from algorithms import (
     MultiHeadPPOAgent,
 )
 from algorithms.subspace_projection import AdamSubspaceProjection, build_input_subspaces
-from environments import AtariEnv, make_vector_atari_env
+from environments import AtariEnv, make_vector_atari_env, observation_protocol
 from training import (
     DEFAULT_MAX_EPISODE_STEPS,
+    DQNCollector,
     MetricsPlotter,
     PPOCollector,
     PPOLearner,
     ReplayBuffer,
     VideoRecorder,
     configure_ppo_runtime,
+    dqn_updates_due,
     flatten_rollout_data,
     run_evaluation_episodes,
     seed_everything,
 )
 
 
-def collect_gpm_states(agent, *, num_envs, env_backend, seed, collection_steps, samples):
+def collect_gpm_states(
+    agent, *, num_envs, env_backend, seed, collection_steps, samples, env_threads=4
+):
     """Sample a frozen task policy without updates or changes to the training RNG."""
     is_dqn = isinstance(agent, MultiHeadDQNAgent)
     environment = (
-        AtariEnv(agent.current_task, seed=seed, training=False)
-        if is_dqn
+        AtariEnv(agent.current_task, seed=seed, training=False, backend=env_backend)
+        if is_dqn and num_envs == 1
         else make_vector_atari_env(
-            agent.current_task, num_envs, backend=env_backend, seed=seed, training=False
+            agent.current_task,
+            num_envs,
+            backend=env_backend,
+            seed=seed,
+            training=False,
+            num_threads=env_threads,
         )
     )
     devices = [agent.device.index or 0] if agent.device.type == "cuda" else []
     try:
         with torch.random.fork_rng(devices=devices):
             torch.manual_seed(seed)
+            generator = torch.Generator().manual_seed(seed)
+            indices = torch.randperm(collection_steps, generator=generator)[:samples]
             if is_dqn:
                 state = environment.reset()
-                observations = []
-                for _ in range(collection_steps):
-                    observations.append(state.cpu().clone())
-                    action = agent.select_action(state, deterministic=True)
-                    state, _, terminated, truncated = environment.step(action)
-                    if terminated or truncated:
-                        state = environment.reset()
-                states = torch.stack(observations)
+                shape = state.shape[1:] if num_envs > 1 else state.shape
+                states = torch.empty((len(indices), *shape), dtype=state.dtype)
+                selected = {step: position for position, step in enumerate(indices.tolist())}
+                for step in range(0, collection_steps, num_envs):
+                    for offset in range(num_envs):
+                        position = selected.get(step + offset)
+                        if position is not None:
+                            states[position].copy_(state[offset] if num_envs > 1 else state)
+                    if num_envs > 1:
+                        actions = agent.select_actions(state, deterministic=True)
+                        state = environment.step_and_reset(actions).observations
+                    else:
+                        action = agent.select_action(state, deterministic=True)
+                        state, _, terminated, truncated = environment.step(action)
+                        if terminated or truncated:
+                            state = environment.reset()
             else:
                 collector = PPOCollector(environment, PPOLearner(agent), rollout_length=128)
-                chunks, completed = [], 0
+                states, completed = None, 0
                 while completed < collection_steps:
                     rollout = collector.collect(collection_steps - completed)
-                    chunks.append(flatten_rollout_data(rollout.data)["states"].cpu().clone())
+                    observations = flatten_rollout_data(rollout.data)["states"]
+                    if states is None:
+                        states = torch.empty(
+                            (len(indices), *observations.shape[1:]), dtype=observations.dtype
+                        )
+                    mask = (indices >= completed) & (indices < completed + rollout.transition_count)
+                    positions = (indices[mask] - completed).to(observations.device)
+                    states[mask] = observations[positions].cpu()
                     completed += rollout.transition_count
-                states = torch.cat(chunks)
-            generator = torch.Generator().manual_seed(seed)
-            indices = torch.randperm(len(states), generator=generator)[:samples]
-            return states[indices]
+            return states
     finally:
         environment.close()
 
@@ -148,7 +172,9 @@ def train_continual(
     batch_size: int = 32,
     num_envs: int = 1,
     env_backend: str = "sync",
+    env_threads: int = 4,
     compile_ppo: bool = False,
+    compile_dqn: bool = False,
     eval_episodes: int = 5,
     eval_max_steps: int = DEFAULT_MAX_EPISODE_STEPS,
     save_video: bool = False,
@@ -177,17 +203,15 @@ def train_continual(
         raise ValueError("batch_size must be positive")
     if num_envs <= 0:
         raise ValueError("num_envs must be positive")
-    if algorithm != "ppo" and num_envs != 1:
-        raise ValueError("num_envs greater than one is currently supported only for PPO")
-    if env_backend not in {"sync", "async"}:
-        raise ValueError("env_backend must be 'sync' or 'async'")
-    if algorithm != "ppo" and (env_backend != "sync" or compile_ppo):
-        raise ValueError("env_backend and compile_ppo options are supported only for PPO")
+    if env_backend not in {"sync", "async", "ale"}:
+        raise ValueError("env_backend must be sync, async, or ale")
+    if algorithm != "ppo" and compile_ppo:
+        raise ValueError("compile_ppo requires PPO")
     budgets = list(task_steps) if task_steps is not None else [steps_per_game] * len(games)
     if len(budgets) != len(games) or any(steps <= 0 for steps in budgets):
         raise ValueError("task_steps must provide one positive transition budget per game")
-    if algorithm == "ppo" and any(steps % num_envs != 0 for steps in budgets):
-        raise ValueError("PPO task budgets must be divisible by num_envs")
+    if any(steps % num_envs != 0 for steps in budgets):
+        raise ValueError("Task budgets must be divisible by num_envs")
     if method == "gpm":
         if not 0 < gpm_threshold <= 1:
             raise ValueError("gpm_threshold must be in (0, 1]")
@@ -201,6 +225,9 @@ def train_continual(
         raise ValueError("eval_episodes must be positive")
     if eval_max_steps <= 0:
         raise ValueError("eval_max_steps must be positive")
+    if compile_dqn and algorithm != "dqn":
+        raise ValueError("compile_dqn requires DQN")
+    started_at = time.perf_counter()
     configure_ppo_runtime(env_backend)
     seed_everything(seed, deterministic=deterministic)
     game_seeds = {game: seed + index for index, game in enumerate(games)}
@@ -232,10 +259,11 @@ def train_continual(
                 game_name,
                 num_envs,
                 backend=env_backend,
+                num_threads=env_threads,
                 render_mode=None,
                 seed=game_seeds[game_name],
             )
-            if algorithm == "ppo"
+            if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
             else AtariEnv(game_name, render_mode=None, seed=game_seeds[game_name])
         )
         action_dim = env.action_space
@@ -264,6 +292,7 @@ def train_continual(
                 base_agent.register_task(task_id, action_dim)
                 base_agent.set_task(task_id)
 
+            base_agent.environment_protocol = observation_protocol(env_backend)
             agent = EWCWrapper(base_agent, ewc_lambda=ewc_lambda) if use_ewc else base_agent
         else:
             # Match new-head initialization without resetting rollout/minibatch RNG streams.
@@ -279,9 +308,10 @@ def train_continual(
 
         # Initialize buffers and training parameters based on algorithm
         if algorithm == "dqn":
+            agent.configure_runtime(compile_enabled=compile_dqn)
             learning_starts = DEFAULT_DQN_LEARNING_STARTS
             train_frequency = 4
-            buffer = ReplayBuffer(capacity=100000)
+            buffer = ReplayBuffer(capacity=100000, seed=(seed, game_idx, 1))
         else:  # ppo
             learning_starts = 0
             train_frequency = 1
@@ -297,6 +327,7 @@ def train_continual(
             video_recorder = VideoRecorder(str(exp_dir / "training.mp4"), fps=30)
 
         if algorithm == "ppo":
+            agent.configure_runtime(compile_enabled=compile_ppo)
             learner = PPOLearner(
                 agent,
                 update_epochs=update_epochs,
@@ -315,8 +346,9 @@ def train_continual(
                 frame_callback=record_ppo_frame if video_recorder is not None else None,
             )
         else:
-            state = env.reset()
-            episode_reward = 0.0
+            collector = DQNCollector(
+                env, agent, buffer, vectorized=num_envs > 1 or env_backend != "sync"
+            )
         episode_rewards = []
         episode_count = 0
         step = 0
@@ -328,7 +360,12 @@ def train_continual(
         if method == "gpm":
             gpm_backbone = agent.backbone.network if algorithm == "dqn" else agent.backbone
         projection = (
-            AdamSubspaceProjection(agent.optimizer, gpm_backbone, subspaces)
+            AdamSubspaceProjection(
+                agent.optimizer,
+                gpm_backbone,
+                subspaces,
+                compile_projection=compile_dqn if algorithm == "dqn" else compile_ppo,
+            )
             if method == "gpm" and subspaces is not None
             else None
         )
@@ -337,50 +374,28 @@ def train_continual(
         try:
             while step < stage_steps:
                 if algorithm == "dqn":
-                    action = agent.select_action(state)
-
-                    next_state, reward, terminated, truncated = env.step(action)
-                    episode_done = terminated or truncated
-                    episode_reward += reward
-                    buffer.add(state, action, reward, next_state, terminated)
-
+                    completed, frame = collector.collect()
                     if video_recorder is not None and step % 2 == 0:
-                        frame = (
-                            state[0].cpu().numpy() if isinstance(state, torch.Tensor) else state[0]
+                        video_recorder.add_frame(frame.cpu().numpy())
+                    for _ in range(
+                        dqn_updates_due(
+                            step,
+                            num_envs,
+                            learning_starts=learning_starts,
+                            frequency=train_frequency,
                         )
-                        video_recorder.add_frame(frame)
-
-                    if step >= learning_starts and step % train_frequency == 0:
+                    ):
                         if buffer.is_ready(batch_size):
-                            batch = buffer.sample(batch_size)
-                            metrics = agent.update(batch)
+                            metrics = agent.update(buffer.sample(batch_size))
                             pbar.set_postfix(metrics, refresh=False)
-
-                            if "loss" in metrics:
-                                continual_metrics.setdefault(game_name + "_loss", []).append(
-                                    metrics["loss"]
-                                )
-                            if "epsilon" in metrics:
-                                continual_metrics.setdefault(game_name + "_epsilon", []).append(
-                                    metrics["epsilon"]
-                                )
-                            if "q_value" in metrics:
-                                continual_metrics.setdefault(game_name + "_q_value", []).append(
-                                    metrics["q_value"]
-                                )
-                            if "ewc_loss" in metrics:
-                                continual_metrics.setdefault(game_name + "_ewc_loss", []).append(
-                                    metrics["ewc_loss"]
-                                )
-
-                    state = next_state
-                    step += 1
-                    pbar.update(1)
-
-                    if episode_done:
-                        episode_rewards.append(episode_reward)
-                        episode_reward = 0
-                        state = env.reset()
+                            for name in ("loss", "epsilon", "q_value", "ewc_loss"):
+                                if name in metrics:
+                                    continual_metrics.setdefault(game_name + "_" + name, []).append(
+                                        metrics[name]
+                                    )
+                    step += num_envs
+                    pbar.update(num_envs)
+                    episode_rewards.extend(completed)
 
                 else:  # ppo
                     rollout = collector.collect(stage_steps - step)
@@ -400,7 +415,9 @@ def train_continual(
                     pbar.update(rollout.transition_count)
 
                 if eval_interval and (step >= next_evaluation or step == stage_steps):
-                    evaluation_env = AtariEnv(game_name, seed=game_seeds[game_name], training=False)
+                    evaluation_env = AtariEnv(
+                        game_name, seed=game_seeds[game_name], training=False, backend=env_backend
+                    )
                     try:
                         rewards = run_evaluation_episodes(
                             agent, evaluation_env, eval_episodes, eval_max_steps
@@ -412,6 +429,7 @@ def train_continual(
                     learning_evaluations.append(
                         {
                             "step": step,
+                            "elapsed_seconds": time.perf_counter() - started_at,
                             "rewards": rewards,
                             "mean_raw_reward": sum(rewards) / len(rewards),
                             "checkpoint": str(periodic_path),
@@ -447,34 +465,44 @@ def train_continual(
 
         stage_rewards = {}
         for eval_game in games[: game_idx + 1]:
-            eval_env = AtariEnv(
-                eval_game,
-                render_mode=None,
-                training=False,
-                seed=game_seeds[eval_game],
-            )
             eval_task_id = eval_game
             if isinstance(agent, EWCWrapper) and hasattr(agent.agent, "set_task"):
                 agent.set_task(eval_task_id)
             elif hasattr(agent, "set_task"):
                 agent.set_task(eval_task_id)
 
-            episode_eval_rewards = run_evaluation_episodes(
-                agent,
-                eval_env,
-                eval_episodes,
-                eval_max_steps,
-            )
+            if (
+                eval_game == game_name
+                and learning_evaluations
+                and learning_evaluations[-1]["step"] == stage_steps
+            ):
+                # Same weights, task, seed, episode count, and step limit as the final periodic evaluation.
+                episode_eval_rewards = list(learning_evaluations[-1]["rewards"])
+            else:
+                eval_env = AtariEnv(
+                    eval_game, training=False, seed=game_seeds[eval_game], backend=env_backend
+                )
+                try:
+                    episode_eval_rewards = run_evaluation_episodes(
+                        agent, eval_env, eval_episodes, eval_max_steps
+                    )
+                finally:
+                    eval_env.close()
             stage_rewards[eval_game] = episode_eval_rewards
             avg_eval_reward = sum(episode_eval_rewards) / len(episode_eval_rewards)
-            eval_env.close()
 
             eval_history[eval_game].append((game_idx + 1, avg_eval_reward))
             print(
                 f"[Eval] After task {game_name}, on {eval_game}: avg reward {avg_eval_reward:.2f}"
             )
 
-        stage_episode_rewards.append({"stage": game_idx + 1, "rewards": stage_rewards})
+        stage_episode_rewards.append(
+            {
+                "stage": game_idx + 1,
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "rewards": stage_rewards,
+            }
+        )
 
         if video_recorder is not None:
             video_recorder.save(format="mp4")
@@ -497,6 +525,7 @@ def train_continual(
                 agent,
                 num_envs=num_envs,
                 env_backend=env_backend,
+                env_threads=env_threads,
                 seed=seed + 20000 + game_idx * 1000,
                 collection_steps=gpm_collection_steps,
                 samples=gpm_samples,
@@ -511,6 +540,7 @@ def train_continual(
             )
             gpm_diagnostics[game_name] = {
                 "boundary_collection_transitions": gpm_collection_steps,
+                "boundary_num_envs": num_envs,
                 "boundary_policy": "greedy" if algorithm == "dqn" else "stochastic",
                 "sample_count": len(states),
                 "projection": projection.metrics() if projection is not None else None,
@@ -573,8 +603,15 @@ def train_continual(
         "task_steps": dict(zip(games, budgets, strict=True)),
         "batch_size": batch_size,
         "num_envs": num_envs,
-        "env_backend": env_backend if algorithm == "ppo" else None,
+        "env_backend": env_backend,
+        "env_threads": env_threads,
+        "environment_protocol": observation_protocol(env_backend),
+        "replay_sampler": "independent_pcg64_without_replacement" if algorithm == "dqn" else None,
+        "replay_seeds": {game: [seed, index, 1] for index, game in enumerate(games)}
+        if algorithm == "dqn"
+        else None,
         "compile_ppo": compile_ppo if algorithm == "ppo" else None,
+        "compile_dqn": compile_dqn if algorithm == "dqn" else None,
         "eval_episodes": eval_episodes,
         "eval_interval": eval_interval,
         "eval_max_steps": eval_max_steps,
@@ -623,8 +660,10 @@ if __name__ == "__main__":
     parser.add_argument("--gpm-collection-steps", type=int, default=32768)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-envs", type=int, default=1)
-    parser.add_argument("--env-backend", choices=("sync", "async"), default="sync")
+    parser.add_argument("--env-backend", choices=("sync", "async", "ale"), default="sync")
+    parser.add_argument("--env-threads", type=int, default=4)
     parser.add_argument("--compile-ppo", action="store_true")
+    parser.add_argument("--compile-dqn", action="store_true")
     parser.add_argument("--eval-episodes", type=int, default=5)
     parser.add_argument("--eval-max-steps", type=int, default=DEFAULT_MAX_EPISODE_STEPS)
     parser.add_argument("--seed", type=int, default=0)
@@ -645,7 +684,9 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         num_envs=args.num_envs,
         env_backend=args.env_backend,
+        env_threads=args.env_threads,
         compile_ppo=args.compile_ppo,
+        compile_dqn=args.compile_dqn,
         eval_episodes=args.eval_episodes,
         eval_max_steps=args.eval_max_steps,
         save_video=args.save_video,

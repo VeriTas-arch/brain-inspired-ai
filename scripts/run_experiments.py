@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +40,7 @@ class Job:
     arguments: tuple[str, ...]
     log_name: str
     capture_output: bool
+    depends_on: tuple[str, ...] = ()
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -66,7 +71,9 @@ def build_jobs(
     seed: int = 0,
     num_envs: int = 1,
     env_backend: str = "sync",
+    env_threads: int = 4,
     compile_ppo: bool = False,
+    compile_dqn: bool = False,
     deterministic: bool = False,
     method: str | None = None,
     task_steps: Sequence[int] | None = None,
@@ -80,8 +87,8 @@ def build_jobs(
         raise ValueError("seed must be between 0 and 2**32 - 1")
     if num_envs <= 0:
         raise ValueError("num_envs must be positive")
-    if env_backend not in {"sync", "async"}:
-        raise ValueError("env_backend must be 'sync' or 'async'")
+    if env_backend not in {"sync", "async", "ale"}:
+        raise ValueError("env_backend must be sync, async, or ale")
     if method is not None and (suite != "continual" or method not in {"finetune", "ewc", "gpm"}):
         raise ValueError("method selects finetune, ewc, or gpm in the continual suite")
     if method is not None and ewc_mode != "both":
@@ -98,22 +105,22 @@ def build_jobs(
         if method
         else tuple("ewc" if flag else "finetune" for flag in _ewc_variants(ewc_mode))
     )
-    if num_envs > 1 and (phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)):
-        raise ValueError("num_envs greater than one supports PPO single/continual training only")
-    if env_backend != "sync" and (
-        phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)
-    ):
-        raise ValueError("optimized PPO runtime options support single/continual PPO training only")
-    if compile_ppo and (phase != "train" or tuple(algorithms) != ("ppo",)):
-        raise ValueError("compile_ppo supports PPO training only")
+    if phase != "train" and (num_envs != 1 or env_backend != "sync"):
+        raise ValueError("Evaluation reads its observation protocol from the checkpoint")
+    if env_threads <= 0:
+        raise ValueError("env_threads must be positive")
+    if compile_ppo and tuple(algorithms) != ("ppo",):
+        raise ValueError("compile_ppo supports PPO only")
+    if compile_dqn and tuple(algorithms) != ("dqn",):
+        raise ValueError("compile_dqn supports DQN only")
     if phase == "train":
         training_steps = steps if steps is not None else DEFAULT_TRAINING_STEPS[suite]
         if training_steps <= 0:
             raise ValueError("steps must be positive")
         budgets = task_steps if task_steps is not None else (training_steps,)
-        if suite in {"single", "continual"} and "ppo" in algorithms:
+        if num_envs > 1:
             if any(value % num_envs for value in budgets):
-                raise ValueError("PPO task budgets must be divisible by num_envs")
+                raise ValueError("Task budgets must be divisible by num_envs")
         jobs = _build_training_jobs(
             suite,
             games,
@@ -129,6 +136,13 @@ def build_jobs(
             compile_ppo,
             task_steps,
         )
+        if env_threads != 4:
+            jobs = [
+                replace(job, arguments=(*job.arguments, "--env-threads", str(env_threads)))
+                for job in jobs
+            ]
+        if compile_dqn:
+            jobs = [replace(job, arguments=(*job.arguments, "--compile-dqn")) for job in jobs]
         if deterministic:
             jobs = [replace(job, arguments=(*job.arguments, "--deterministic")) for job in jobs]
         return jobs
@@ -136,6 +150,10 @@ def build_jobs(
     jobs = _build_evaluation_jobs(
         suite, games, algorithms, episodes, max_steps, ewc_lambda, methods, seed
     )
+    if compile_dqn:
+        jobs = [replace(job, arguments=(*job.arguments, "--compile-dqn")) for job in jobs]
+    if compile_ppo:
+        jobs = [replace(job, arguments=(*job.arguments, "--compile-ppo")) for job in jobs]
     if deterministic:
         jobs = [replace(job, arguments=(*job.arguments, "--deterministic")) for job in jobs]
     return jobs
@@ -174,7 +192,7 @@ def _build_training_jobs(
                 ]
                 if num_envs > 1:
                     arguments.extend(("--num-envs", str(num_envs)))
-                if algorithm == "ppo" and env_backend != "sync":
+                if env_backend != "sync":
                     arguments.extend(("--env-backend", env_backend))
                 if algorithm == "ppo" and compile_ppo:
                     arguments.append("--compile-ppo")
@@ -213,7 +231,7 @@ def _build_training_jobs(
                     arguments.extend(("--task-steps", *(str(value) for value in task_steps)))
                 if num_envs > 1:
                     arguments.extend(("--num-envs", str(num_envs)))
-                if algorithm == "ppo" and env_backend != "sync":
+                if env_backend != "sync":
                     arguments.extend(("--env-backend", env_backend))
                 if algorithm == "ppo" and compile_ppo:
                     arguments.append("--compile-ppo")
@@ -241,6 +259,8 @@ def _build_training_jobs(
                         "--steps",
                         str(steps),
                         *(("--compile-ppo",) if compile_ppo else ()),
+                        *(("--num-envs", str(num_envs)) if num_envs != 1 else ()),
+                        *(("--env-backend", env_backend) if env_backend != "sync" else ()),
                     ),
                     f"multitask_{algorithm}_seed{seed}.log",
                     True,
@@ -365,8 +385,12 @@ def build_teaching_jobs(
     ewc_lambda: float = 0.4,
     num_envs: int = 8,
     env_backend: str = "async",
+    dqn_num_envs: int = 1,
+    env_threads: int = 4,
     compile_ppo: bool = True,
+    compile_dqn: bool = True,
     deterministic: bool = True,
+    smoke: bool = False,
 ) -> list[Job]:
     """Run all ten configurations; training includes a final evaluation of each job.
 
@@ -374,8 +398,12 @@ def build_teaching_jobs(
     transition budget as the original three-task protocol. Without a uniform steps
     override, Pong single-task uses 2M and continual PPO uses the verified budgets.
     """
+    if smoke and steps is not None:
+        raise ValueError("smoke defines its own algorithm-specific budgets; omit steps")
     if steps is not None and steps <= 0:
         raise ValueError("steps must be positive")
+    if smoke:
+        episodes = 1
     training, evaluation = [], []
     for algorithm in ("ppo", "dqn"):
         for suite, method in (
@@ -393,15 +421,24 @@ def build_teaching_jobs(
                 max_steps=max_steps,
                 method=method,
                 ewc_lambda=ewc_lambda,
+                compile_dqn=compile_dqn and algorithm == "dqn",
+                compile_ppo=compile_ppo and algorithm == "ppo",
             )
             if phase == "train":
-                vector = algorithm == "ppo" and suite != "multitask"
+                case_envs = num_envs if algorithm == "ppo" else dqn_num_envs
+                case_backend = (
+                    env_backend
+                    if algorithm == "ppo" or dqn_num_envs > 1 or env_backend == "ale"
+                    else "sync"
+                )
                 budgets = (
                     (1_000_448, 500_000, 500_000)
-                    if (steps is None and suite == "continual" and algorithm == "ppo")
+                    if (steps is None and not smoke and suite == "continual" and algorithm == "ppo")
                     else None
                 )
-                case_steps = steps or 500_000
+                case_steps = (
+                    (10_032 if algorithm == "dqn" else 2_048) if smoke else (steps or 500_000)
+                )
                 if suite == "multitask":
                     case_steps *= len(DEFAULT_GAMES[suite])
                 training.extend(
@@ -411,14 +448,24 @@ def build_teaching_jobs(
                         **options,
                         steps=None if budgets else case_steps,
                         task_steps=budgets,
-                        num_envs=num_envs if vector else 1,
-                        env_backend=env_backend if vector else "sync",
-                        compile_ppo=compile_ppo and algorithm == "ppo",
+                        num_envs=case_envs,
+                        env_backend=case_backend,
+                        env_threads=env_threads,
                         deterministic=deterministic,
                     )
                 )
             evaluation.extend(build_jobs("evaluate", suite, **options, deterministic=deterministic))
-    if steps is None:
+    if smoke:
+        training = [
+            replace(
+                job,
+                arguments=(*job.arguments, "--gpm-samples", "16", "--gpm-collection-steps", "32"),
+            )
+            if "--method" in job.arguments and "gpm" in job.arguments
+            else job
+            for job in training
+        ]
+    if steps is None and not smoke:
         updated = []
         for job in training:
             arguments = list(job.arguments)
@@ -430,6 +477,11 @@ def build_teaching_jobs(
                     arguments.extend(("--eval-episodes", str(episodes)))
             updated.append(replace(job, arguments=tuple(arguments)))
         training = updated
+    if training:
+        evaluation = [
+            replace(evaluate, depends_on=(train.log_name,))
+            for train, evaluate in zip(training, evaluation, strict=True)
+        ]
     return [replace(job, capture_output=True) for job in training + evaluation]
 
 
@@ -459,110 +511,188 @@ def _print_job(job: Job, index: int, total: int, device: str) -> None:
     print(f"  {shlex.join(job.command)}")
 
 
+def _freeze_source(destination: Path) -> Path:
+    """Keep the exact maintained Python source and its hash beside each new run."""
+    destination.mkdir(parents=True, exist_ok=False)
+    # Frozen checkouts must remain runnable and snapshot-able without .git.
+    files = [
+        str(path.relative_to(PROJECT_ROOT))
+        for directory in ("algorithms", "environments", "training", "scripts", "tests")
+        for path in (PROJECT_ROOT / directory).rglob("*.py")
+    ]
+    files.extend(
+        path.name
+        for path in PROJECT_ROOT.iterdir()
+        if path.is_file() and path.suffix in {".py", ".md", ".toml", ".ipynb", ".json"}
+    )
+    manifest = {}
+    for name in sorted(set(files)):
+        source = PROJECT_ROOT / name
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        manifest[name] = hashlib.sha256(target.read_bytes()).hexdigest()
+    (destination.parent / "source_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return destination
+
+
 def run_jobs(
     jobs: Sequence[Job],
     *,
     device: str,
     parallel: bool,
     log_dir: Path,
+    max_workers: int | None = None,
+    cpus_per_job: int | None = None,
+    run_dir: Path | None = None,
 ) -> None:
-    """Execute jobs sequentially or concurrently and fail on any child error."""
+    """Bound concurrency, respect checkpoint dependencies, and record every child outcome."""
+    workers = max_workers if max_workers is not None else (2 if parallel else 1)
+    if workers <= 0 or (cpus_per_job is not None and cpus_per_job <= 0):
+        raise ValueError("Worker and CPU counts must be positive")
+    identifiers = {job.log_name for job in jobs}
+    if len(identifiers) != len(jobs):
+        raise ValueError("Job log names must be unique")
+    if any(dependency not in identifiers for job in jobs for dependency in job.depends_on):
+        raise ValueError("Job dependency is missing from this matrix")
     device_count = _cuda_device_count(device)
-    if not log_dir.is_absolute():
-        log_dir = PROJECT_ROOT / log_dir
+    cwd, source = PROJECT_ROOT, PROJECT_ROOT
+    if run_dir is not None:
+        cwd = run_dir.resolve()
+        source = cwd / "source"
+        if any(job.arguments[0].startswith("scripts/train_") for job in jobs):
+            if cwd.exists():
+                raise ValueError(f"Training requires a new run directory: {cwd}")
+            source = _freeze_source(source)
+        elif not source.is_dir():
+            raise ValueError(f"Evaluation requires an existing run source: {source}")
+        jobs = [
+            replace(job, arguments=(str(source / job.arguments[0]), *job.arguments[1:]))
+            if job.arguments[0].startswith("scripts/")
+            else job
+            for job in jobs
+        ]
+    log_dir = log_dir.resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
+    available_cpus = sorted(os.sched_getaffinity(0))
+    cpu_count = cpus_per_job or (
+        max(1, len(available_cpus) // workers) if workers > 1 else len(available_cpus)
+    )
+    if cpu_count * workers > len(available_cpus):
+        raise ValueError("Requested CPU allocation exceeds the available affinity set")
+    status_path = log_dir / "status.json"
+    status = {
+        "cwd": str(cwd),
+        "source": str(source),
+        "pid": os.getpid(),
+        "max_workers": workers,
+        "jobs": [
+            {
+                "name": job.name,
+                "command": list(job.command),
+                "log": str(log_dir / job.log_name),
+                "depends_on": list(job.depends_on),
+                "state": "pending",
+            }
+            for job in jobs
+        ],
+    }
 
-    if not parallel:
-        status_path = log_dir / "status.json"
-        status = {
-            "cwd": str(PROJECT_ROOT),
-            "pid": os.getpid(),
-            "jobs": [
-                {
-                    "name": job.name,
-                    "command": list(job.command),
-                    "log": str(log_dir / job.log_name),
-                    "state": "pending",
-                }
-                for job in jobs
-            ],
-        }
+    def write_status():
+        temporary = status_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(status, indent=2) + "\n")
+        temporary.replace(status_path)
 
-        def write_status():
-            temporary = status_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(status, indent=2) + "\n")
-            temporary.replace(status_path)
-
-        write_status()
-        for index, job in enumerate(jobs):
-            record = status["jobs"][index]
-            record.update(state="running", started_at=datetime.now(timezone.utc).isoformat())
-            write_status()
-            environment = _job_environment(device_count, index, parallel=False)
-            device_label = "cpu" if device_count == 0 else "cuda:0"
-            _print_job(job, index + 1, len(jobs), device_label)
-            if job.capture_output:
-                log_path = log_dir / job.log_name
-                with log_path.open("w", encoding="utf-8") as log_file:
-                    result = subprocess.run(
-                        job.command,
-                        cwd=PROJECT_ROOT,
+    pending, running, completed = list(enumerate(jobs)), {}, set()
+    write_status()
+    try:
+        while pending or running:
+            for slot, (index, job, process, log_file) in list(running.items()):
+                code = process.poll()
+                if code is None:
+                    continue
+                if log_file is not None:
+                    log_file.close()
+                del running[slot]
+                status["jobs"][index].update(
+                    state="completed" if code == 0 else "failed",
+                    exit_code=code,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                )
+                write_status()
+                if code:
+                    raise RuntimeError(f"Job failed with exit code {code}: {job.name}")
+                completed.add(job.log_name)
+            for slot in range(workers):
+                if slot in running:
+                    continue
+                ready = next(
+                    ((i, job) for i, job in pending if set(job.depends_on) <= completed), None
+                )
+                if ready is None:
+                    continue
+                index, job = ready
+                pending.remove(ready)
+                environment = _job_environment(device_count, slot, parallel=workers > 1)
+                environment.update(
+                    PYTHONPATH=str(source),
+                    OMP_NUM_THREADS="1",
+                    MKL_NUM_THREADS="1",
+                    OPENBLAS_NUM_THREADS="1",
+                )
+                cpus = available_cpus[slot * cpu_count : (slot + 1) * cpu_count]
+                command = ("taskset", "-c", ",".join(map(str, cpus)), *job.command)
+                log_file = (
+                    (log_dir / job.log_name).open("w")
+                    if job.capture_output or workers > 1
+                    else None
+                )
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=cwd,
                         env=environment,
                         stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                        check=False,
+                        stderr=subprocess.STDOUT if log_file is not None else None,
+                        start_new_session=True,
                     )
-            else:
-                result = subprocess.run(
-                    job.command,
-                    cwd=PROJECT_ROOT,
-                    env=environment,
-                    check=False,
+                except BaseException:
+                    if log_file is not None:
+                        log_file.close()
+                    raise
+                running[slot] = (index, job, process, log_file)
+                status["jobs"][index].update(
+                    state="running",
+                    pid=process.pid,
+                    cpus=cpus,
+                    started_at=datetime.now(timezone.utc).isoformat(),
                 )
-            record.update(
-                state="completed" if result.returncode == 0 else "failed",
-                exit_code=result.returncode,
-                finished_at=datetime.now(timezone.utc).isoformat(),
-            )
-            write_status()
-            if result.returncode != 0:
-                raise RuntimeError(f"Job failed with exit code {result.returncode}: {job.name}")
-        return
-
-    running = []
-    try:
-        for index, job in enumerate(jobs):
-            environment = _job_environment(device_count, index, parallel=True)
-            gpu_index = index % device_count if device_count else None
-            device_label = "cpu" if gpu_index is None else f"cuda:{gpu_index}"
-            _print_job(job, index + 1, len(jobs), device_label)
-            log_path = log_dir / job.log_name
-            log_file = log_path.open("w", encoding="utf-8")
-            process = subprocess.Popen(
-                job.command,
-                cwd=PROJECT_ROOT,
-                env=environment,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-            )
-            running.append((job, process, log_file))
-
-        failures = []
-        for job, process, _ in running:
-            return_code = process.wait()
-            if return_code != 0:
-                failures.append(f"{job.name} (exit {return_code})")
-        if failures:
-            raise RuntimeError("Failed jobs: " + ", ".join(failures))
-    except KeyboardInterrupt:
-        for _, process, _ in running:
-            process.terminate()
-        for _, process, _ in running:
-            process.wait()
-        raise
+                _print_job(
+                    job,
+                    index + 1,
+                    len(jobs),
+                    "cpu" if not device_count else f"cuda:{slot % device_count}",
+                )
+                write_status()
+            if pending and not running:
+                raise ValueError("Job dependencies contain a cycle")
+            if running:
+                time.sleep(0.1)
     finally:
-        for _, _, log_file in running:
-            log_file.close()
+        for index, _, process, log_file in running.values():
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            if log_file is not None:
+                log_file.close()
+            status["jobs"][index].update(state="cancelled", exit_code=process.returncode)
+        write_status()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -604,24 +734,82 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=1,
-        help="Environments used for batched PPO policy inference",
+        default=None,
+        help="Environments per game (teaching PPO: 8; other suites: 1)",
     )
     parser.add_argument(
         "--env-backend",
-        choices=("sync", "async"),
-        default="sync",
-        help="PPO environment execution backend",
+        choices=("sync", "async", "ale"),
+        default=None,
+        help="Environment backend; ALE is a distinct preprocessing protocol",
     )
     parser.add_argument(
         "--compile-ppo",
-        action="store_true",
-        help="Compile PPO rollout and learner policy evaluation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Compile PPO rollout and learner policy evaluation (enabled for teaching)",
     )
-    parser.add_argument("--parallel", action="store_true", help="Run all jobs concurrently")
-    parser.add_argument("--log-dir", type=Path, default=Path("logs"))
+    parser.add_argument(
+        "--compile-dqn",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Compile DQN inference and TD loss (enabled for teaching)",
+    )
+    parser.add_argument(
+        "--dqn-num-envs", type=int, default=1, help="DQN environments in the teaching matrix"
+    )
+    parser.add_argument("--env-threads", type=int, default=4, help="Native ALE threads per game")
+    parser.add_argument("--parallel", action="store_true", help="Run at most two jobs concurrently")
+    parser.add_argument("--max-workers", type=int, help="Maximum simultaneous jobs (default: 1)")
+    parser.add_argument(
+        "--cpus-per-job", type=int, help="Disjoint CPU cores assigned to each worker"
+    )
+    parser.add_argument(
+        "--run-dir", type=Path, help="New directory for training, or existing run to evaluate"
+    )
+    parser.add_argument("--log-dir", type=Path)
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Short teaching runs covering learning and all boundaries",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running")
     return parser
+
+
+def _dispatch_jobs(jobs, args):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_dir = args.run_dir
+    if args.phase == "train" and run_dir is None:
+        run_dir = PROJECT_ROOT / "outputs" / "runs" / f"{stamp}-{args.suite}"
+    if args.phase == "evaluate" and run_dir is not None:
+        updated = []
+        for job in jobs:
+            arguments = list(job.arguments)
+            output_index = arguments.index("--json-out") + 1
+            arguments[output_index] = str(
+                run_dir.resolve() / "evaluations" / stamp / arguments[output_index]
+            )
+            updated.append(replace(job, arguments=tuple(arguments)))
+        jobs = updated
+    if args.dry_run:
+        if run_dir is not None:
+            print(f"Run directory: {run_dir}")
+        for index, job in enumerate(jobs, start=1):
+            _print_job(job, index, len(jobs), args.device)
+        return
+    log_dir = args.log_dir or (
+        (run_dir / "logs" / stamp) if run_dir is not None else Path("logs") / stamp
+    )
+    run_jobs(
+        jobs,
+        device=args.device,
+        parallel=args.parallel,
+        log_dir=log_dir,
+        max_workers=args.max_workers,
+        cpus_per_job=args.cpus_per_job,
+        run_dir=run_dir,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -631,14 +819,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         seeds = args.seeds or (args.seed,)
         if args.suite == "teaching":
-            if (
-                args.games
-                or args.method
-                or args.task_steps
-                or args.ewc_mode != "both"
-                or args.parallel
-            ):
-                raise ValueError("teaching uses fixed games/methods and sequential execution")
+            if args.games or args.method or args.task_steps or args.ewc_mode != "both":
+                raise ValueError("teaching uses fixed games and methods")
             if tuple(args.algorithms) != ("dqn", "ppo"):
                 raise ValueError("teaching includes both DQN and PPO")
             jobs = []
@@ -646,23 +828,25 @@ def main(argv: Sequence[str] | None = None) -> None:
                 jobs.extend(
                     build_teaching_jobs(
                         phase=args.phase,
+                        smoke=args.smoke,
                         seed=seed,
                         steps=args.steps,
                         episodes=args.episodes,
                         max_steps=args.max_steps,
                         ewc_lambda=args.ewc_lambda,
-                        num_envs=args.num_envs,
-                        env_backend=args.env_backend,
-                        compile_ppo=args.compile_ppo,
+                        num_envs=8 if args.num_envs is None else args.num_envs,
+                        env_backend=args.env_backend or "async",
+                        dqn_num_envs=args.dqn_num_envs,
+                        env_threads=args.env_threads,
+                        compile_ppo=True if args.compile_ppo is None else args.compile_ppo,
+                        compile_dqn=True if args.compile_dqn is None else args.compile_dqn,
                         deterministic=True if args.deterministic is None else args.deterministic,
                     )
                 )
-            if args.dry_run:
-                for index, job in enumerate(jobs, start=1):
-                    _print_job(job, index, len(jobs), args.device)
-            else:
-                run_jobs(jobs, device=args.device, parallel=False, log_dir=args.log_dir)
+            _dispatch_jobs(jobs, args)
             return
+        if args.smoke:
+            raise ValueError("smoke is defined for the teaching suite")
         games = args.games or DEFAULT_GAMES[args.suite]
         jobs = []
         for seed in seeds:
@@ -678,19 +862,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                     ewc_lambda=args.ewc_lambda,
                     ewc_mode=args.ewc_mode,
                     seed=seed,
-                    num_envs=args.num_envs,
-                    env_backend=args.env_backend,
-                    compile_ppo=args.compile_ppo,
+                    num_envs=1 if args.num_envs is None else args.num_envs,
+                    env_backend=args.env_backend or "sync",
+                    env_threads=args.env_threads,
+                    compile_ppo=bool(args.compile_ppo),
+                    compile_dqn=bool(args.compile_dqn),
                     deterministic=args.deterministic,
                     method=args.method,
                     task_steps=args.task_steps,
                 )
             )
-        if args.dry_run:
-            for index, job in enumerate(jobs, start=1):
-                _print_job(job, index, len(jobs), args.device)
-            return
-        run_jobs(jobs, device=args.device, parallel=args.parallel, log_dir=args.log_dir)
+        _dispatch_jobs(jobs, args)
     except (RuntimeError, ValueError) as error:
         parser.exit(1, f"error: {error}\n")
 

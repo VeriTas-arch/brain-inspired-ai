@@ -18,6 +18,24 @@ import numpy as np
 cv2.ocl.setUseOpenCL(False)
 
 
+class GrayscaleObservation(gym.ObservationWrapper):
+    """Match Gymnasium grayscale pixels without an RGB-sized float temporary."""
+
+    def __init__(self, env: gym.Env) -> None:
+        super().__init__(env)
+        self.observation_space = gym.spaces.Box(
+            0, 255, shape=env.observation_space.shape[:2], dtype=np.uint8
+        )
+
+    def observation(self, observation: np.ndarray) -> np.ndarray:
+        # Preserve Gymnasium's coefficients, float64 arithmetic, summation order,
+        # and truncation to uint8. OpenCV's grayscale conversion has different pixels.
+        gray = observation[..., 0] * 0.2125
+        gray += observation[..., 1] * 0.7154
+        gray += observation[..., 2] * 0.0721
+        return gray.astype(np.uint8)
+
+
 class NoopResetEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
     """
     Sample initial states by taking random number of no-ops on reset.

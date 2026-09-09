@@ -21,6 +21,73 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int) -> floa
     return max(slope * t + start_e, end_e)
 
 
+def _clip_dqn_gradients(parameter_groups, max_norm):
+    """Preserve the separate backbone/head clipping used by multi-task DQN."""
+    for parameters in parameter_groups:
+        torch.nn.utils.clip_grad_norm_(parameters, max_norm)
+
+
+class _DQNComputation:
+    """Tensor-only inference and TD loss; modules keep their checkpoint identities."""
+
+    def __init__(self, online, target, gamma, *, head=None, target_head=None, compiled=False):
+        self.compiled = compiled
+
+        def greedy(states):
+            values = online(states)
+            if head is not None:
+                values = head(values)
+            return values.argmax(dim=1)
+
+        def loss(states, actions, rewards, next_states, dones, regularizer):
+            values = online(states)
+            if head is not None:
+                values = head(values)
+            selected = values.gather(1, actions.unsqueeze(1)).squeeze(1)
+            with torch.no_grad():
+                next_values = target(next_states)
+                if target_head is not None:
+                    next_values = target_head(next_values)
+                expected = rewards.flatten() + gamma * next_values.max(dim=1)[0] * (
+                    1 - dones.flatten()
+                )
+            td_loss = F.mse_loss(expected, selected)
+            penalty = td_loss.new_zeros(()) if regularizer is None else regularizer()
+            return td_loss + penalty, torch.stack(
+                (td_loss.detach(), values.detach().mean(), penalty.detach())
+            )
+
+        self.greedy = (
+            torch.compile(greedy, mode="reduce-overhead", fullgraph=True) if compiled else greedy
+        )
+        self.loss = (
+            torch.compile(loss, mode="reduce-overhead", fullgraph=True) if compiled else loss
+        )
+
+    def begin_step(self):
+        # Inference outputs are consumed immediately; a TD step finishes its backward and metrics
+        # before another invocation. Declare that lifetime explicitly to CUDA Graph Trees.
+        if self.compiled:
+            torch.compiler.cudagraph_mark_step_begin()
+
+
+def epsilon_greedy_batch(compute, states, epsilon, action_dim, device, deterministic=False):
+    """Use one fixed-shape inference batch and independent exploration per environment."""
+    random_mask = (
+        np.zeros(len(states), dtype=np.bool_)
+        if deterministic
+        else np.random.random(len(states)) < epsilon
+    )
+    random_actions = np.random.randint(action_dim, size=int(random_mask.sum()))
+    if random_mask.all():
+        return torch.from_numpy(random_actions)
+    with torch.inference_mode():
+        compute.begin_step()
+        actions = compute.greedy(states.to(device, non_blocking=True)).cpu()
+        actions[torch.from_numpy(random_mask)] = torch.from_numpy(random_actions)
+    return actions
+
+
 class DQNAgent(BaseAgent):
     """DQN Agent for Atari games."""
 
@@ -58,6 +125,19 @@ class DQNAgent(BaseAgent):
         self.update_count = 0
         self.global_step = 0
         self.q_value_history = []
+        self.configure_runtime(compile_enabled=False)
+
+    def configure_runtime(self, *, compile_enabled: bool = False) -> None:
+        """Select eager or compiled tensor computation without wrapping saved modules."""
+        self._compute = _DQNComputation(
+            self.network, self.target_network, self.gamma, compiled=compile_enabled
+        )
+        self._gradient_groups = (tuple(self.network.parameters()),)
+        self._clip_gradients = (
+            torch.compile(_clip_dqn_gradients, mode="reduce-overhead", fullgraph=True)
+            if compile_enabled
+            else _clip_dqn_gradients
+        )
 
     def select_action(self, state: torch.Tensor, deterministic: bool = False) -> int:
         """Select action using epsilon-greedy policy."""
@@ -71,10 +151,21 @@ class DQNAgent(BaseAgent):
         if not deterministic and np.random.random() < epsilon:
             return np.random.randint(self.action_dim)
 
-        with torch.no_grad():
-            state = state.unsqueeze(0).to(self.device)
-            q_values = self.network(state)
-            return q_values.argmax(dim=1).item()
+        with torch.inference_mode():
+            self._compute.begin_step()
+            state = state.unsqueeze(0).to(self.device, non_blocking=True)
+            return self._compute.greedy(state).item()
+
+    def select_actions(self, states: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+        epsilon = linear_schedule(
+            self.epsilon_start,
+            self.epsilon_end,
+            int(self.epsilon_fraction * self.total_timesteps),
+            self.global_step,
+        )
+        return epsilon_greedy_batch(
+            self._compute, states, epsilon, self.action_dim, self.device, deterministic
+        )
 
     def update(
         self,
@@ -82,32 +173,15 @@ class DQNAgent(BaseAgent):
         regularizer: Callable[[], torch.Tensor] | None = None,
     ) -> dict[str, float]:
         """Update DQN with a batch of experiences."""
-        states = batch["states"].to(self.device)
-        actions = batch["actions"].to(self.device)
-        rewards = batch["rewards"].to(self.device)
-        next_states = batch["next_states"].to(self.device)
-        dones = batch["dones"].to(self.device)
-
-        q_values = self.network(states)
-        q_values_selected = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
-
-        with torch.no_grad():
-            target_max, _ = self.target_network(next_states).max(dim=1)
-            td_target = rewards.flatten() + self.gamma * target_max * (1 - dones.flatten())
-
-        loss = F.mse_loss(td_target, q_values_selected)
-
-        with torch.no_grad():
-            self.q_value_history.append(q_values.mean().item())
-            if len(self.q_value_history) > 1000:
-                self.q_value_history.pop(0)
-
-        regularization_loss = regularizer() if regularizer is not None else None
-        total_loss = loss if regularization_loss is None else loss + regularization_loss
+        self._compute.begin_step()
+        device_batch = {
+            name: value.to(self.device, non_blocking=True) for name, value in batch.items()
+        }
+        total_loss, diagnostics = self._compute.loss(**device_batch, regularizer=regularizer)
 
         self.optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.network.parameters(), 10.0)
+        self._clip_gradients(self._gradient_groups, 10.0)
         self.optimizer.step()
 
         self.update_count += 1
@@ -125,18 +199,24 @@ class DQNAgent(BaseAgent):
             self.global_step,
         )
 
+        # Read all diagnostics together, after backward/Adam rather than synchronizing mid-step.
+        loss_value, mean_q_value, penalty_value = diagnostics.tolist()
+        self.q_value_history.append(mean_q_value)
+        if len(self.q_value_history) > 1000:
+            self.q_value_history.pop(0)
         avg_q = (
             sum(self.q_value_history) / len(self.q_value_history) if self.q_value_history else 0.0
         )
 
-        metrics = {"loss": loss.item(), "epsilon": epsilon, "q_value": avg_q}
-        if regularization_loss is not None:
-            metrics["regularization_loss"] = regularization_loss.detach().item()
+        metrics = {"loss": loss_value, "epsilon": epsilon, "q_value": avg_q}
+        if regularizer is not None:
+            metrics["regularization_loss"] = penalty_value
         return metrics
 
     def checkpoint_state(self) -> dict:
         """Return all state needed to resume DQN training."""
         return {
+            "environment_protocol": self.environment_protocol,
             "network": self.network.state_dict(),
             "target_network": self.target_network.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -146,6 +226,7 @@ class DQNAgent(BaseAgent):
 
     def load_checkpoint_state(self, checkpoint: dict) -> None:
         """Restore a DQN checkpoint, including optimizer and counters when present."""
+        self.environment_protocol = checkpoint.get("environment_protocol", "gymnasium_wrappers_v1")
         if "network" not in checkpoint:
             self.network.load_state_dict(checkpoint)
             self.target_network.load_state_dict(checkpoint)
@@ -194,9 +275,37 @@ class MultiHeadDQNAgent(BaseAgent):
         self.task_epsilons: dict[str, float] = {}
         self.update_count = 0
         self.target_update_freq = 1000
-        self.loss_fn = nn.MSELoss()
         self.optimizer = None
         self.current_task = None
+        self.configure_runtime(compile_enabled=False)
+
+    def configure_runtime(self, *, compile_enabled: bool = False) -> None:
+        """Cache separate callables for task heads with different action dimensions."""
+        self._compiled = compile_enabled
+        self._computations = {}
+        self._gradient_groups = (
+            tuple(self.backbone.parameters()),
+            *(tuple(head.parameters()) for head in self.heads.values()),
+        )
+        self._clip_gradients = (
+            torch.compile(_clip_dqn_gradients, mode="reduce-overhead", fullgraph=True)
+            if compile_enabled
+            else _clip_dqn_gradients
+        )
+
+    def _computation(self):
+        task = self.current_task
+        if task not in self._computations:
+            head, target_head = self._current_heads()
+            self._computations[task] = _DQNComputation(
+                self.backbone,
+                self.target_backbone,
+                self.gamma,
+                head=head,
+                target_head=target_head,
+                compiled=self._compiled,
+            )
+        return self._computations[task]
 
     def _rebuild_optimizer(self):
         """Recreate optimizer over backbone and all heads."""
@@ -216,6 +325,10 @@ class MultiHeadDQNAgent(BaseAgent):
 
         self.heads[task_id] = head
         self.target_heads[task_id] = target_head
+        self._gradient_groups = (
+            tuple(self.backbone.parameters()),
+            *(tuple(task_head.parameters()) for task_head in self.heads.values()),
+        )
         self.task_epsilons[task_id] = self.initial_epsilon
         if self.optimizer is None:
             self._rebuild_optimizer()
@@ -243,12 +356,21 @@ class MultiHeadDQNAgent(BaseAgent):
         if not deterministic and np.random.random() < epsilon:
             return np.random.randint(self.action_dim)
 
-        with torch.no_grad():
-            state = state.unsqueeze(0).to(self.device)
-            features = self.backbone(state)
-            head, _ = self._current_heads()
-            q_values = head(features)
-            return q_values.argmax(dim=1).item()
+        with torch.inference_mode():
+            compute = self._computation()
+            compute.begin_step()
+            state = state.unsqueeze(0).to(self.device, non_blocking=True)
+            return compute.greedy(state).item()
+
+    def select_actions(self, states: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+        return epsilon_greedy_batch(
+            self._computation(),
+            states,
+            self.task_epsilons[self.current_task],
+            self.action_dim,
+            self.device,
+            deterministic,
+        )
 
     def update(
         self,
@@ -261,33 +383,16 @@ class MultiHeadDQNAgent(BaseAgent):
         if self.optimizer is None:
             raise RuntimeError("Optimizer has not been initialized; call register_task() first.")
 
-        states = batch["states"].to(self.device)
-        actions = batch["actions"].to(self.device)
-        rewards = batch["rewards"].to(self.device)
-        next_states = batch["next_states"].to(self.device)
-        dones = batch["dones"].to(self.device)
-
-        head, target_head = self._current_heads()
-
-        features = self.backbone(states)
-        q_values = head(features)
-        q_values = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
-
-        with torch.no_grad():
-            next_features = self.target_backbone(next_states)
-            next_q_values = target_head(next_features).max(dim=1)[0]
-            target_q_values = rewards + self.gamma * next_q_values * (1 - dones)
-
-        loss = self.loss_fn(q_values, target_q_values)
-
-        regularization_loss = regularizer() if regularizer is not None else None
-        total_loss = loss if regularization_loss is None else loss + regularization_loss
+        compute = self._computation()
+        compute.begin_step()
+        device_batch = {
+            name: value.to(self.device, non_blocking=True) for name, value in batch.items()
+        }
+        total_loss, diagnostics = compute.loss(**device_batch, regularizer=regularizer)
 
         self.optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.backbone.parameters(), 1.0)
-        for head in self.heads.values():
-            torch.nn.utils.clip_grad_norm_(head.parameters(), 1.0)
+        self._clip_gradients(self._gradient_groups, 1.0)
         self.optimizer.step()
 
         self.update_count += 1
@@ -302,14 +407,16 @@ class MultiHeadDQNAgent(BaseAgent):
         )
         self.task_epsilons[self.current_task] = epsilon
 
-        metrics = {"loss": loss.item(), "epsilon": epsilon}
-        if regularization_loss is not None:
-            metrics["regularization_loss"] = regularization_loss.detach().item()
+        loss_value, _, penalty_value = diagnostics.tolist()
+        metrics = {"loss": loss_value, "epsilon": epsilon}
+        if regularizer is not None:
+            metrics["regularization_loss"] = penalty_value
         return metrics
 
     def checkpoint_state(self) -> dict:
         """Return the shared network, all task heads, and training state."""
         return {
+            "environment_protocol": self.environment_protocol,
             "backbone": self.backbone.state_dict(),
             "target_backbone": self.target_backbone.state_dict(),
             "heads": {name: head.state_dict() for name, head in self.heads.items()},
@@ -323,6 +430,7 @@ class MultiHeadDQNAgent(BaseAgent):
 
     def load_checkpoint_state(self, checkpoint: dict) -> None:
         """Restore a multi-head DQN checkpoint."""
+        self.environment_protocol = checkpoint.get("environment_protocol", "gymnasium_wrappers_v1")
         if "backbone" not in checkpoint:
             # Compatibility with the old, incomplete backbone-only checkpoint.
             self.backbone.load_state_dict(checkpoint)
@@ -333,6 +441,8 @@ class MultiHeadDQNAgent(BaseAgent):
         self.target_heads = nn.ModuleDict()
         self.optimizer = None
         self.current_task = None
+        self._computations.clear()
+        self._gradient_groups = (tuple(self.backbone.parameters()),)
 
         for task_id, action_dim in checkpoint.get("task_action_dims", {}).items():
             self.register_task(task_id, action_dim)

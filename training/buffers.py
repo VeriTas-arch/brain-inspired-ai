@@ -1,25 +1,29 @@
 """Replay and rollout buffers for off-policy and on-policy training."""
 
-from collections import deque
+from collections.abc import Sequence
 
 import numpy as np
 import torch
 
 
 class ReplayBuffer:
-    """Experience replay buffer for RL."""
+    """Uniform replay backed by contiguous CPU arrays and an independent RNG."""
 
-    def __init__(self, capacity: int = 100000) -> None:
+    def __init__(self, capacity: int = 100000, *, seed: int | Sequence[int] = 0) -> None:
         """
         Initialize replay buffer.
 
         Args:
             capacity: Maximum number of experiences to store
+            seed: Independent replay RNG seed; sampling never advances exploration/task RNGs
         """
         if capacity <= 0:
             raise ValueError("capacity must be positive")
         self.capacity = capacity
-        self.buffer = deque(maxlen=capacity)
+        self._storage: dict[str, np.ndarray] = {}
+        self._length = 0
+        self._next_index = 0
+        self._rng = np.random.default_rng(seed)
 
     def add(
         self,
@@ -30,56 +34,81 @@ class ReplayBuffer:
         done: bool,
     ) -> None:
         """Add experience to buffer."""
-        self.buffer.append(
-            {
-                "state": state.detach().cpu().numpy().copy(),
-                "action": action,
-                "reward": reward,
-                "next_state": next_state.detach().cpu().numpy().copy(),
-                "done": done,
+        transition = {
+            "states": state.detach().cpu().numpy(),
+            "actions": np.int64(action),
+            "rewards": np.float32(reward),
+            "next_states": next_state.detach().cpu().numpy(),
+            "dones": np.float32(done),
+        }
+        if not self._storage:
+            self._storage = {
+                key: np.empty((self.capacity, *np.shape(value)), dtype=np.asarray(value).dtype)
+                for key, value in transition.items()
             }
-        )
+        for key, value in transition.items():
+            self._storage[key][self._next_index] = value
+        self._next_index = (self._next_index + 1) % self.capacity
+        self._length = min(self.capacity, self._length + 1)
+
+    def add_batch(self, states, actions, rewards, next_states, dones) -> None:
+        """Copy simultaneous transitions before an environment reuses shared memory."""
+        columns = {
+            "states": states.detach().cpu().numpy(),
+            "actions": np.asarray(actions, dtype=np.int64),
+            "rewards": np.asarray(rewards, dtype=np.float32),
+            "next_states": next_states.detach().cpu().numpy(),
+            "dones": np.asarray(dones, dtype=np.float32),
+        }
+        count = len(states)
+        if not count or any(len(value) != count for value in columns.values()):
+            raise ValueError("Replay columns must have the same nonempty leading dimension")
+        if not self._storage:
+            self._storage = {
+                key: np.empty((self.capacity, *value.shape[1:]), dtype=value.dtype)
+                for key, value in columns.items()
+            }
+        kept = min(count, self.capacity)
+        start = (self._next_index + count - kept) % self.capacity
+        first = min(kept, self.capacity - start)
+        for key, value in columns.items():
+            tail = value[-kept:]
+            self._storage[key][start : start + first] = tail[:first]
+            self._storage[key][: kept - first] = tail[first:]
+        self._next_index = (self._next_index + count) % self.capacity
+        self._length = min(self.capacity, self._length + count)
 
     def sample(
         self,
         batch_size: int,
         *,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator | np.random.RandomState | None = None,
     ) -> dict[str, torch.Tensor]:
         """Sample a batch of experiences."""
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if not self.buffer:
+        if not self._length:
             raise ValueError("Cannot sample from an empty replay buffer")
-
-        actual_batch_size = min(batch_size, len(self.buffer))
-        choice = np.random.choice if rng is None else rng.choice
-        indices = choice(len(self.buffer), actual_batch_size, replace=False)
-        batch = [self.buffer[i] for i in indices]
-
-        states = torch.from_numpy(np.stack([b["state"] for b in batch]))
-        actions = torch.from_numpy(np.array([b["action"] for b in batch])).long()
-        rewards = torch.from_numpy(np.array([b["reward"] for b in batch])).float()
-        next_states = torch.from_numpy(np.stack([b["next_state"] for b in batch]))
-        dones = torch.from_numpy(np.array([b["done"] for b in batch])).float()
-
+        actual_batch_size = min(batch_size, self._length)
+        choice = self._rng.choice if rng is None else rng.choice
+        indices = choice(self._length, actual_batch_size, replace=False)
+        # Logical indices run oldest to newest, including after ring wraparound.
+        if self._length == self.capacity:
+            indices = (indices + self._next_index) % self.capacity
         return {
-            "states": states,
-            "actions": actions,
-            "rewards": rewards,
-            "next_states": next_states,
-            "dones": dones,
+            key: torch.from_numpy(np.take(array, indices, axis=0))
+            for key, array in self._storage.items()
         }
 
     def __len__(self) -> int:
         """Return buffer size."""
-        return len(self.buffer)
+        return self._length
 
     def is_ready(self, batch_size: int) -> bool:
         """Check if buffer has enough samples."""
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        return len(self.buffer) >= batch_size
+        return self._length >= batch_size
 
 
 class RolloutBuffer:
@@ -144,13 +173,14 @@ class RolloutBuffer:
         if self._pending_step:
             raise RuntimeError("Previous rollout step has not been completed")
 
-        state = state.detach().to("cpu")
+        state = state.detach()
         if self.num_envs > 1 and (state.ndim == 0 or state.shape[0] != self.num_envs):
             raise ValueError(f"Expected states from {self.num_envs} environments")
         if self.states is None:
             self.states = torch.empty(
                 (self.capacity, *state.shape),
                 dtype=state.dtype,
+                device=state.device,
             )
         elif state.shape != self.states.shape[1:] or state.dtype != self.states.dtype:
             raise ValueError("Rollout states must have a consistent shape and dtype")

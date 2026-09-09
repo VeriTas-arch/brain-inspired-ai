@@ -43,8 +43,15 @@
   separately along each environment's trajectory.
 - Maintain a working synchronous/eager PPO path. Formal profiles use `--compile-ppo` and async
   environments where supported. Compile hot paths with `mode="reduce-overhead"` and use
-  `fullgraph=True` wherever possible. DQN currently runs eagerly.
-- Measure PPO speed with `scripts/benchmark_ppo_runtime.py`, keeping training semantics and
+  `fullgraph=True` wherever possible. Formal DQN profiles use `--compile-dqn` for inference, TD loss,
+  gradient clipping, and GPM projection; keep fused Adam and an eager DQN path.
+- Native ALE is an explicit alternative observation protocol. Record it in checkpoints and use
+  it in evaluation; never silently evaluate wrapper-trained weights with native preprocessing.
+  DQN batching must preserve the protocol's cumulative update count and final-observation semantics.
+- Keep replay sampling uniform without replacement, with a seeded private generator separate from
+  exploration, task selection, and EWC sampling. Do not transfer the entire replay store to CUDA.
+- Measure PPO speed with `scripts/benchmark_ppo_runtime.py` and DQN speed with
+  `scripts/benchmark_dqn_runtime.py`, keeping training semantics and
   minibatch size fixed. Report warmup, timed transitions, minibatch size, hardware, throughput, and
   PyTorch allocated/reserved memory. Use throughput to assess speed, episode scores to assess
   learning, and GPU utilization to help diagnose stalls.
@@ -59,6 +66,9 @@
   budgets match. Check these conditions directly as well as setting the seed.
 - Give each run a new directory. Preserve earlier artifacts and frozen source snapshots. Before
   reusing a result, verify the source code, resolved configuration, and checkpoint it came from.
+- The experiment runner freezes source in each run directory and bounds job concurrency. Preserve
+  training-to-evaluation dependencies and disjoint CPU quotas when adding configurations. Use
+  `--smoke` to cover all teaching configurations before a full-budget run.
 - Store small summaries and figures in `results/`. Large artifacts belong in the ignored
   `outputs/`, `checkpoints/`, and `logs/` directories; historical material belongs in `archive/`.
 - Report old-task retention, new-task learning, and the stage-by-task score matrix. EWC penalizes

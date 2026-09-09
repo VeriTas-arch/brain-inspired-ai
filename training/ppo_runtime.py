@@ -11,8 +11,15 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import torch
+import torch.nn as nn
+import torch.optim as optim
 
-from algorithms.ppo import ppo_minibatch_loss
+from algorithms.ppo import (
+    PolicyEvaluator,
+    PPOMinibatchLoss,
+    generalized_advantage_estimate,
+    ppo_minibatch_loss,
+)
 from environments import VectorStep
 
 from .buffers import RolloutBuffer
@@ -84,8 +91,157 @@ def flatten_rollout_data(
 
 def configure_ppo_runtime(environment_backend: str) -> None:
     """Avoid CPU thread-pool overhead with CUDA policies or environment workers."""
-    if environment_backend == "async" or torch.cuda.is_available():
+    import cv2
+
+    cv2.setNumThreads(1)
+    if environment_backend in {"async", "ale"} or torch.cuda.is_available():
         torch.set_num_threads(1)
+
+
+def _clip_ppo_gradients(parameters, max_norm):
+    nn.utils.clip_grad_norm_(parameters, max_norm)
+
+
+def indexed_ppo_loss(
+    states,
+    actions,
+    old_log_probs,
+    advantages,
+    returns,
+    old_values,
+    indices,
+    regularizer,
+    *,
+    policy_evaluator,
+    clip_coef,
+    ent_coef,
+    vf_coef,
+):
+    """Gather a minibatch and compute its objective and owned, detached diagnostics."""
+    loss, *metrics = ppo_minibatch_loss(
+        states[indices],
+        actions[indices],
+        old_log_probs[indices],
+        advantages[indices],
+        returns[indices],
+        old_values[indices],
+        policy_evaluator=policy_evaluator,
+        clip_coef=clip_coef,
+        ent_coef=ent_coef,
+        vf_coef=vf_coef,
+    )
+    penalty = loss.new_zeros(()) if regularizer is None else regularizer()
+    return loss + penalty, torch.stack([value.detach() for value in (*metrics, penalty)])
+
+
+def optimize_ppo(
+    rollout_data: dict[str, torch.Tensor],
+    next_value: torch.Tensor,
+    *,
+    device: torch.device,
+    optimizer: optim.Optimizer,
+    parameters: list[nn.Parameter],
+    policy_evaluator: PolicyEvaluator,
+    gamma: float,
+    gae_lambda: float,
+    clip_coef: float,
+    ent_coef: float,
+    vf_coef: float,
+    max_grad_norm: float,
+    update_epochs: int,
+    minibatch_size: int,
+    regularizer: Callable[[], torch.Tensor] | None = None,
+    minibatch_loss: PPOMinibatchLoss | None = None,
+    clip_gradients: Callable | None = None,
+) -> dict[str, float]:
+    """Run the PPO learner shared by single-head and multi-head agents."""
+    if update_epochs <= 0:
+        raise ValueError("update_epochs must be positive")
+    if minibatch_size <= 0:
+        raise ValueError("minibatch_size must be positive")
+    if len(rollout_data["states"]) == 0:
+        raise ValueError("PPO update requires a non-empty rollout")
+
+    states = rollout_data["states"].to(device, non_blocking=True)
+    actions = rollout_data["actions"].to(device, non_blocking=True)
+    old_log_probs = rollout_data["log_probs"].to(device, non_blocking=True)
+    # The collector already keeps rewards on CPU. Run the short time-axis recurrence
+    # there rather than launching many tiny CUDA kernels; GPU-native rollouts stay on GPU.
+    rewards = rollout_data["rewards"]
+    dones = rollout_data["dones"].to(rewards.device)
+    old_values = rollout_data["values"].to(rewards.device)
+
+    with torch.no_grad():
+        advantages, returns = generalized_advantage_estimate(
+            rewards,
+            old_values,
+            dones,
+            next_value.to(rewards.device),
+            gamma,
+            gae_lambda,
+        )
+        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+    advantages = advantages.to(device)
+    returns = returns.to(device)
+    old_values = old_values.to(device)
+
+    batch_states = states.flatten(0, 1) if states.ndim == 5 else states
+    batch_actions = actions.flatten()
+    batch_log_probs = old_log_probs.flatten()
+    batch_advantages = advantages.flatten()
+    batch_returns = returns.flatten()
+    batch_values = old_values.flatten()
+    loss_arguments = (
+        batch_states,
+        batch_actions,
+        batch_log_probs,
+        batch_advantages,
+        batch_returns,
+        batch_values,
+    )
+    clip_gradients = clip_gradients or nn.utils.clip_grad_norm_
+
+    metric_sums = torch.zeros(6, device=device)
+    update_count = 0
+    used_regularizer = regularizer is not None
+
+    for _ in range(update_epochs):
+        batch_indices = torch.randperm(len(batch_states), device=device)
+        for start in range(0, len(batch_states), minibatch_size):
+            minibatch_indices = batch_indices[start : start + minibatch_size]
+            if minibatch_loss is None or len(minibatch_indices) < minibatch_size:
+                loss, diagnostics = indexed_ppo_loss(
+                    *loss_arguments,
+                    minibatch_indices,
+                    regularizer,
+                    policy_evaluator=policy_evaluator,
+                    clip_coef=clip_coef,
+                    ent_coef=ent_coef,
+                    vf_coef=vf_coef,
+                )
+            else:
+                loss, diagnostics = minibatch_loss(*loss_arguments, minibatch_indices, regularizer)
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            clip_gradients(parameters, max_grad_norm)
+            optimizer.step()
+
+            with torch.no_grad():
+                metric_sums += diagnostics
+                update_count += 1
+
+    averages = (metric_sums / update_count).tolist()
+    metrics = dict(
+        zip(
+            ("policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac"),
+            averages[:5],
+            strict=True,
+        )
+    )
+    if used_regularizer:
+        metrics["regularization_loss"] = averages[5]
+    return metrics
 
 
 class PPOLearner:
@@ -115,7 +271,7 @@ class PPOLearner:
         if configure_regularizer is not None and regularizer is not None:
             raise ValueError("Use only one PPO regularizer")
         if configure_regularizer is not None:
-            configure_regularizer(compile_regularizer=compile_policy)
+            configure_regularizer(compile_regularizer=False)
 
         policy_agent = getattr(agent, "agent", agent)
         sampler = policy_agent.sample_action_and_value
@@ -127,14 +283,18 @@ class PPOLearner:
             advantages: torch.Tensor,
             returns: torch.Tensor,
             old_values: torch.Tensor,
+            indices: torch.Tensor,
+            regularizer: Callable | None,
         ):
-            return ppo_minibatch_loss(
+            return indexed_ppo_loss(
                 states,
                 actions,
                 old_log_probs,
                 advantages,
                 returns,
                 old_values,
+                indices,
+                regularizer,
                 policy_evaluator=policy_agent.get_action_and_value,
                 clip_coef=policy_agent.clip_coef,
                 ent_coef=policy_agent.ent_coef,
@@ -145,7 +305,16 @@ class PPOLearner:
             sampler = torch.compile(sampler, mode="reduce-overhead", fullgraph=True)
             minibatch_loss = torch.compile(minibatch_loss, mode="reduce-overhead", fullgraph=True)
         self._sample_action_and_value = sampler
-        self._minibatch_loss = minibatch_loss
+        self._loss = minibatch_loss
+        self._clip_gradients = (
+            # Parameter shapes are fixed within a task. Symbolic generalization of
+            # parameter.grad across different task heads loses shape sources in PyTorch 2.14.
+            torch.compile(
+                _clip_ppo_gradients, mode="reduce-overhead", fullgraph=True, dynamic=False
+            )
+            if compile_policy
+            else _clip_ppo_gradients
+        )
         self._policy_evaluator = policy_agent.get_action_and_value
 
     @property
@@ -162,7 +331,14 @@ class PPOLearner:
         self, state: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample actions through the eager or compiled rollout policy."""
+        if self.compiled:
+            torch.compiler.cudagraph_mark_step_begin()
         return self._sample_action_and_value(state)
+
+    def _minibatch_loss(self, *args):
+        if self.compiled:
+            torch.compiler.cudagraph_mark_step_begin()
+        return self._loss(*args)
 
     def get_value(self, state: torch.Tensor) -> torch.Tensor:
         """Evaluate bootstrap values through the underlying policy."""
@@ -178,6 +354,7 @@ class PPOLearner:
             self.minibatch_size,
             policy_evaluator=self._policy_evaluator,
             minibatch_loss=self._minibatch_loss,
+            clip_gradients=self._clip_gradients,
             **extra,
         )
 
@@ -220,7 +397,7 @@ class PPOCollector:
 
         for _ in range(vector_steps):
             with torch.inference_mode():
-                device_state = self.state.to(self.learner.device)
+                device_state = self.state.to(self.learner.device, non_blocking=True)
                 actions, log_probs, values = self.learner.sample_action_and_value(device_state)
             cpu_actions = actions.cpu()
 
@@ -229,14 +406,14 @@ class PPOCollector:
 
             if self.num_envs == 1:
                 self.buffer.start_step(
-                    self.state[0],
+                    device_state[0],
                     cpu_actions.item(),
                     log_probs.flatten()[0],
                     values.flatten()[0],
                 )
             else:
                 self.buffer.start_step(
-                    self.state,
+                    device_state,
                     cpu_actions,
                     log_probs,
                     values.flatten(),

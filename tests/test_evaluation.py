@@ -58,6 +58,53 @@ def test_set_agent_eval_switches_owned_modules() -> None:
     assert not agent.network.training
 
 
+@pytest.mark.parametrize("use_ewc", (False, True))
+def test_multihead_evaluation_records_the_loaded_inner_agents_protocol(
+    monkeypatch, tmp_path, use_ewc
+):
+    from algorithms import EWCWrapper
+    from scripts import evaluate
+
+    class Agent(_FakeAgent):
+        def load(self, path):
+            self.environment_protocol = "ale_native_v1"
+
+        def set_task(self, game):
+            pass
+
+    class Env(_FakeEnv):
+        def __init__(self, game, *, render_mode, training, seed, backend):
+            super().__init__()
+            assert backend == "ale"
+            assert training is False
+
+        def close(self):
+            pass
+
+    agent = Agent()
+    if use_ewc:
+        agent = EWCWrapper(agent)
+        monkeypatch.setattr(EWCWrapper, "load", lambda self, path: self.agent.load(path))
+    monkeypatch.setattr(evaluate, "_build_multihead_agent", lambda *args: agent)
+    monkeypatch.setattr(evaluate, "AtariEnv", Env)
+    monkeypatch.setattr(evaluate, "_record_example_video", lambda *args, **kwargs: None)
+    monkeypatch.setattr(evaluate, "_plot_multi_game_results", lambda *args: tmp_path / "plot.png")
+
+    result = evaluate.evaluate_continual(
+        model_path="native.pt",
+        games=["game"],
+        algorithm="dqn",
+        episodes=2,
+        max_steps=10,
+        use_ewc=use_ewc,
+        ewc_lambda=0.4,
+        output_dir=tmp_path,
+    )
+
+    assert result["environment_protocol"] == "ale_native_v1"
+    assert result["games"]["game"]["rewards"] == [3.0, 3.0]
+
+
 def test_seed_checkpoint_path_maps_to_seed_evaluation_directory() -> None:
     output = _infer_eval_dir_from_model_path(
         "checkpoints/continual/ppo_ewcTrue/seed-17.pt",
@@ -65,6 +112,13 @@ def test_seed_checkpoint_path_maps_to_seed_evaluation_directory() -> None:
     )
 
     assert output == Path("outputs/continual/ppo_ewcTrue/seed-17/eval")
+
+
+def test_absolute_run_checkpoint_keeps_evaluation_inside_its_run(tmp_path):
+    checkpoint = tmp_path / "checkpoints/single/Pong-v5_ppo/seed-0.pt"
+    assert _infer_eval_dir_from_model_path(str(checkpoint), "single") == (
+        tmp_path / "outputs/single/Pong-v5_ppo/seed-0/eval"
+    )
 
 
 def test_report_keeps_task_scores_separate_and_computes_forgetting() -> None:

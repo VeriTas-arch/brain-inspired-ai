@@ -76,8 +76,8 @@ def test_three_task_gpm_starts_fresh_accumulates_and_saves_an_evaluable_checkpoi
             agents.append(self)
 
     class RecordedProjection(projection_type):
-        def __init__(self, *args):
-            super().__init__(*args)
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
             projections.append(self)
 
     def make_environment(game, num_envs, **kwargs):
@@ -208,6 +208,65 @@ def test_boundary_sampling_preserves_weights_rng_and_closes_environment(monkeypa
         torch.testing.assert_close(value, weights["backbone"][name], rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("algorithm", ("ppo", "dqn"))
+def test_selective_boundary_retention_matches_full_trajectory_selection(monkeypatch, algorithm):
+    class IndexedEnvironment(TinyEnvironment):
+        def observations(self):
+            values = torch.arange(self.transitions, self.transitions + self.num_envs) % 256
+            return values.to(torch.uint8)[:, None, None, None].expand(-1, 4, 1, 1).clone()
+
+    if algorithm == "ppo":
+        agent = TinyPPO()
+    else:
+        from algorithms import MultiHeadDQNAgent
+
+        agent = MultiHeadDQNAgent(4, device="cpu")
+        agent.backbone.network = nn.Sequential(nn.Flatten(), nn.Linear(4, 512))
+        agent.target_backbone = copy.deepcopy(agent.backbone)
+    agent.register_task("pong", 2)
+    agent.set_task("pong")
+    environment = IndexedEnvironment("pong", 2)
+    monkeypatch.setattr(training, "make_vector_atari_env", lambda *args, **kwargs: environment)
+    states = training.collect_gpm_states(
+        agent, num_envs=2, env_backend="sync", seed=23, collection_steps=300, samples=17
+    )
+    indices = torch.randperm(300, generator=torch.Generator().manual_seed(23))[:17]
+    torch.testing.assert_close(states[:, 0, 0, 0], (indices % 256).to(torch.uint8), rtol=0, atol=0)
+    assert environment.transitions == 300
+
+
+def test_stage_evaluation_reuses_only_the_current_final_periodic_result(monkeypatch, tmp_path):
+    calls = []
+
+    class Evaluation(TinyEvaluationEnvironment):
+        def step(self, action):
+            calls.append(self.game)
+            return super().step(action)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(training, "MultiHeadPPOAgent", TinyPPO)
+    monkeypatch.setattr(training, "AtariEnv", Evaluation)
+    monkeypatch.setattr(
+        training,
+        "make_vector_atari_env",
+        lambda game, num_envs, **kwargs: TinyEnvironment(game, num_envs),
+    )
+    training.train_continual(
+        games=list(TASKS),
+        algorithm="ppo",
+        steps_per_game=4,
+        batch_size=2,
+        eval_interval=4,
+        eval_episodes=2,
+    )
+    # Earlier tasks are reevaluated at every later boundary; the current task is evaluated once.
+    assert [calls.count(game) for game in TASKS] == [6, 4, 2]
+    report = json.loads(
+        (tmp_path / "outputs/continual/ppo_ewcFalse/seed-0/continual_evaluation.json").read_text()
+    )
+    assert report["score_matrix"][-1]["scores"] == dict(zip(TASKS, (1.0, 2.0, 3.0), strict=True))
+
+
 def test_failed_new_task_update_removes_projection_hooks_and_closes_environment(
     monkeypatch, tmp_path
 ):
@@ -251,7 +310,7 @@ def test_failed_new_task_update_removes_projection_hooks_and_closes_environment(
 @pytest.mark.parametrize(
     "options, message",
     [
-        ({"algorithm": "dqn", "num_envs": 2}, "only for PPO"),
+        ({"algorithm": "dqn", "num_envs": 0}, "num_envs must be positive"),
         ({"use_ewc": True}, "another method"),
         ({"task_steps": [2]}, "one positive"),
         ({"task_steps": [2, 0, 2]}, "one positive"),
@@ -290,6 +349,10 @@ def test_dqn_gpm_projects_before_target_sync_and_preserves_old_heads(monkeypatch
             # Each new task uses a fresh replay buffer.
             assert torch.all(batch["states"][:, TASKS.index(self.current_task)] == 255)
             metrics = super().update(batch, **kwargs)
+            gradients = torch.cat(
+                [parameter.grad.flatten() for parameter in self.backbone.parameters()]
+            )
+            assert gradients.norm() <= 1.000001
             for name, value in self.backbone.state_dict().items():
                 torch.testing.assert_close(
                     self.target_backbone.state_dict()[name], value, rtol=0, atol=0
@@ -306,8 +369,8 @@ def test_dqn_gpm_projects_before_target_sync_and_preserves_old_heads(monkeypatch
             return self.reset(), 1.0, False, True
 
     class Projection(projection_type):
-        def __init__(self, *args):
-            super().__init__(*args)
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
             projections.append(self)
 
     def boundary(backbone, states, **kwargs):

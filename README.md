@@ -30,17 +30,33 @@ Notebook 中的训练调用默认带有 `--dry-run`，只打印命令。也可�
 
 ```bash
 python scripts/run_experiments.py train teaching \
-  --seed 0 --num-envs 8 --env-backend async --compile-ppo --dry-run
+  --seed 0 --num-envs 8 --env-backend async --compile-ppo --compile-dqn --dry-run
 ```
 
-移除 `--dry-run` 后开始训练。模型、结果和日志分别保存在 `checkpoints/`、`outputs/`、`logs/`；重新运行相同配置前，请先另存已有记录。其他选项见 `python scripts/run_experiments.py --help`。
+先加上 `--smoke` 运行短流程检查；移除 `--smoke` 和 `--dry-run` 后运行完整预算。实验调度器每次在 `outputs/runs/` 新建目录，其中保存源码快照、哈希、`checkpoints/`、`outputs/` 和 `logs/`。也可用 `--run-dir` 指定新目录；评估已有运行时传入同一目录。其他选项见 `python scripts/run_experiments.py --help`。
+
+教学配置默认启用 PPO/DQN 编译，使用 `reduce-overhead`；可用 `--no-compile-ppo`、`--no-compile-dqn` 对照 eager 路径。PPO 三种训练协议均支持同一游戏的批量采样，DQN 批量采样仍按累计 transition 数安排更新。
+
+原生 ALE 将模拟器推进和图像预处理放在 C++ 中，可用以下命令先检查全部案例：
+
+```bash
+python scripts/run_experiments.py train teaching --seed 0 --smoke \
+  --env-backend ale --num-envs 8 --dqn-num-envs 8 --env-threads 4
+```
+
+ALE 的灰度、最大池化和堆帧初始化与 wrapper 路径不同，因此它是独立的训练配置。checkpoint 记录这一协议，独立评估自动采用匹配的预处理和原始奖励；ALE 视频显示智能体看到的灰度画面。默认仍使用 wrapper 路径。
+
+`--max-workers 2 --cpus-per-job 4` 可让两个独立作业共享 GPU，并为它们分配互不重叠的 CPU 核；每个模型的独立评估等待对应训练完成。单个 PPO 作业始终先收集 rollout，再更新参数。
 
 ## 阅读代码与结果
 
 - `algorithms/`：DQN、PPO、EWC 与 GPM。
 - `environments/`：Atari 环境与图像预处理。
-- `training/`：数据缓冲、PPO 采样与更新、回合评估。
+- `training/`：数据缓冲、DQN/PPO 采样与更新、回合评估。
 - `scripts/`：训练、评估和实验调度入口。
 - `tests/`：采样、更新与评估的测试。
 
 各案例的训练步数、已有得分和图表见 [结果记录](results/README.md)。
+计算性能、参数比较和测速命令见 [运行性能记录](results/performance.md)。
+DQN 编译与满容量回放的测速结果见 [DQN 计算性能](results/dqn_performance.md)。
+本轮完整计算流程、原生 ALE 与批量采样的比较见 [综合计算优化](results/computation_performance.md)。

@@ -8,13 +8,21 @@ import matplotlib.pyplot as plt
 import torch
 
 from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
-from environments import AtariEnv
+from environments import AtariEnv, observation_protocol
 from training import (
     DEFAULT_MAX_EPISODE_STEPS,
     VideoRecorder,
     run_evaluation_episodes,
     seed_everything,
 )
+
+
+def _evaluation_backend(agent):
+    inner = agent.agent if isinstance(agent, EWCWrapper) else agent
+    protocol = getattr(inner, "environment_protocol", "gymnasium_wrappers_v1")
+    if protocol not in {"gymnasium_wrappers_v1", "ale_native_v1"}:
+        raise ValueError(f"Unknown checkpoint observation protocol: {protocol}")
+    return "ale" if protocol == "ale_native_v1" else "sync"
 
 
 def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:
@@ -24,7 +32,7 @@ def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:
     for index in range(len(parts) - 1):
         if parts[index : index + 2] == ("checkpoints", mode):
             relative_checkpoint = Path(*parts[index + 2 :]).with_suffix("")
-            return Path("outputs") / mode / relative_checkpoint / "eval"
+            return Path(*parts[:index]) / "outputs" / mode / relative_checkpoint / "eval"
     return Path("outputs") / mode / model.stem / "eval"
 
 
@@ -103,7 +111,9 @@ def _record_example_video(
     seed: int = 0,
 ) -> None:
     """Record one deterministic evaluation episode."""
-    env = AtariEnv(game, render_mode="rgb_array", training=False, seed=seed)
+    env = AtariEnv(
+        game, render_mode="rgb_array", training=False, seed=seed, backend=_evaluation_backend(agent)
+    )
     recorder = VideoRecorder(str(output_path), fps=30)
     if hasattr(agent, "set_task"):
         agent.set_task(game)
@@ -132,8 +142,14 @@ def evaluate_single(
     output_dir: Path | None = None,
     seed: int = 0,
     deterministic: bool = False,
+    compile_dqn: bool = False,
+    compile_ppo: bool = False,
 ) -> dict:
     """Evaluate a single-task agent checkpoint on one game."""
+    if compile_ppo and algorithm != "ppo":
+        raise ValueError("compile_ppo requires PPO")
+    if compile_dqn and algorithm != "dqn":
+        raise ValueError("compile_dqn requires DQN")
     seed_everything(seed, deterministic=deterministic)
     output_dir = _prepare_output_dir(output_dir, model_path, "single")
     env = AtariEnv(game, render_mode=None, training=False, seed=seed)
@@ -143,6 +159,11 @@ def evaluate_single(
         else:
             agent = PPOAgent(state_dim=4, action_dim=env.action_space)
         agent.load(model_path)
+        if _evaluation_backend(agent) == "ale":
+            env.close()
+            env = AtariEnv(game, training=False, seed=seed, backend="ale")
+        if compile_dqn or compile_ppo:
+            agent.configure_runtime(compile_enabled=True)
         _set_agent_eval(agent)
         episode_rewards = run_evaluation_episodes(agent, env, episodes, max_steps)
     finally:
@@ -157,6 +178,9 @@ def evaluate_single(
     result = {
         "mode": "single",
         "deterministic": deterministic,
+        "compile_dqn": compile_dqn if algorithm == "dqn" else None,
+        "compile_ppo": compile_ppo if algorithm == "ppo" else None,
+        "environment_protocol": observation_protocol(_evaluation_backend(agent)),
         "game": game,
         "algorithm": algorithm,
         "episodes": episodes,
@@ -213,7 +237,13 @@ def _evaluate_games(
 
     for game_index, game in enumerate(games):
         print(f"\n[{label}] Evaluating on {game} ...")
-        env = AtariEnv(game, render_mode=None, training=False, seed=seed + game_index)
+        env = AtariEnv(
+            game,
+            render_mode=None,
+            training=False,
+            seed=seed + game_index,
+            backend=_evaluation_backend(agent),
+        )
         try:
             agent.set_task(game)
             episode_rewards = run_evaluation_episodes(agent, env, episodes, max_steps)
@@ -244,18 +274,29 @@ def _evaluate_multihead_checkpoint(
     output_dir: Path | None,
     seed: int,
     deterministic: bool = False,
+    compile_dqn: bool = False,
+    compile_ppo: bool = False,
 ) -> dict:
     """Shared evaluation workflow for continual and joint multi-task checkpoints."""
     label = "multi-task" if mode == "multitask" else "continual"
     print(f"Loading {label} agent from {model_path}...")
+    if compile_ppo and algorithm != "ppo":
+        raise ValueError("compile_ppo requires PPO")
+    if compile_dqn and algorithm != "dqn":
+        raise ValueError("compile_dqn requires DQN")
     seed_everything(seed, deterministic=deterministic)
     output_dir = _prepare_output_dir(output_dir, model_path, mode)
     agent = _build_multihead_agent(algorithm, games, use_ewc, ewc_lambda)
     agent.load(model_path)
+    if compile_dqn or compile_ppo:
+        agent.configure_runtime(compile_enabled=True)
     _set_agent_eval(agent)
 
     results = _evaluate_games(agent, games, mode, algorithm, episodes, max_steps, seed)
+    results["environment_protocol"] = observation_protocol(_evaluation_backend(agent))
     results["deterministic"] = deterministic
+    results["compile_ppo"] = compile_ppo if algorithm == "ppo" else None
+    results["compile_dqn"] = compile_dqn if algorithm == "dqn" else None
     plot_path = _plot_multi_game_results(results, output_dir)
     print(f"\n[{label.title()}] Raw reward plot saved to: {plot_path}")
 
@@ -283,6 +324,8 @@ def evaluate_continual(
     output_dir: Path | None = None,
     seed: int = 0,
     deterministic: bool = False,
+    compile_dqn: bool = False,
+    compile_ppo: bool = False,
 ) -> dict:
     """Evaluate a continual-learning checkpoint on each game."""
     return _evaluate_multihead_checkpoint(
@@ -297,6 +340,8 @@ def evaluate_continual(
         output_dir,
         seed,
         deterministic,
+        compile_dqn,
+        compile_ppo,
     )
 
 
@@ -309,6 +354,8 @@ def evaluate_multitask(
     output_dir: Path | None = None,
     seed: int = 0,
     deterministic: bool = False,
+    compile_dqn: bool = False,
+    compile_ppo: bool = False,
 ) -> dict:
     """Evaluate a jointly trained multi-task checkpoint on each game."""
     return _evaluate_multihead_checkpoint(
@@ -323,6 +370,8 @@ def evaluate_multitask(
         output_dir,
         seed,
         deterministic,
+        compile_dqn,
+        compile_ppo,
     )
 
 
@@ -343,6 +392,8 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--compile-dqn", action="store_true")
+    parser.add_argument("--compile-ppo", action="store_true")
     parser.add_argument("--ewc", action="store_true", help="Use EWC wrapper in continual mode")
     parser.add_argument("--ewc-lambda", type=float, default=0.4, help="EWC lambda (if --ewc)")
     parser.add_argument("--json-out", help="Optional path to write JSON results")
@@ -365,6 +416,8 @@ def main() -> None:
             output_dir,
             args.seed,
             deterministic=args.deterministic,
+            compile_dqn=args.compile_dqn,
+            compile_ppo=args.compile_ppo,
         )
     elif args.mode == "multitask":
         if not args.games:
@@ -378,6 +431,8 @@ def main() -> None:
             output_dir,
             args.seed,
             deterministic=args.deterministic,
+            compile_dqn=args.compile_dqn,
+            compile_ppo=args.compile_ppo,
         )
     else:
         if not args.games:
@@ -393,6 +448,8 @@ def main() -> None:
             output_dir,
             args.seed,
             deterministic=args.deterministic,
+            compile_dqn=args.compile_dqn,
+            compile_ppo=args.compile_ppo,
         )
 
     if args.json_out:

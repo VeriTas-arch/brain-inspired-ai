@@ -12,9 +12,42 @@ from algorithms.ppo import (
     PPOAgent,
     bootstrap_truncated_reward,
     generalized_advantage_estimate,
-    optimize_ppo,
-    ppo_minibatch_loss,
 )
+from training.ppo_runtime import indexed_ppo_loss, optimize_ppo
+
+
+@pytest.mark.parametrize("vectorized", (False, True))
+def test_gae_matches_torchrl_on_batched_trajectories_with_boundaries(vectorized) -> None:
+    from torchrl.objectives.value.functional import (
+        generalized_advantage_estimate as torchrl_gae,
+    )
+    from torchrl.objectives.value.functional import vec_generalized_advantage_estimate
+
+    rng = torch.Generator().manual_seed(27)
+    rewards = torch.randn(11, 3, generator=rng, dtype=torch.float64)
+    values = torch.randn(11, 3, generator=rng, dtype=torch.float64)
+    next_value = torch.randn(3, generator=rng, dtype=torch.float64)
+    dones = torch.zeros(11, 3, dtype=torch.bool)
+    dones[0, 0] = dones[4, 1] = dones[-1, 2] = True
+    # PPOCollector has already added V(final_obs) to truncated rewards. GAE must
+    # cut the segment at that boundary, without bootstrapping the reset observation.
+    rewards[4, 1] += 0.99 * 7.0
+    expected = generalized_advantage_estimate(
+        rewards, values, dones.double(), next_value, 0.99, 0.95
+    )
+    reference = vec_generalized_advantage_estimate if vectorized else torchrl_gae
+    actual = reference(
+        torch.tensor(0.99, dtype=torch.float64),
+        torch.tensor(0.95, dtype=torch.float64),
+        values.unsqueeze(-1),
+        torch.cat((values[1:], next_value.unsqueeze(0))).unsqueeze(-1),
+        rewards.unsqueeze(-1),
+        dones.unsqueeze(-1),
+        terminated=dones.unsqueeze(-1),
+        time_dim=0,
+    )
+    for left, right in zip(actual, expected, strict=True):
+        torch.testing.assert_close(left.squeeze(-1), right, rtol=1e-10, atol=1e-10)
 
 
 @pytest.mark.parametrize("device", ("cpu", "cuda"))
@@ -282,7 +315,7 @@ def test_ppo_metrics_average_all_minibatches() -> None:
 
     def minibatch_loss(*args):
         loss = agent.actor.weight.sum() * 0
-        return (loss, *(torch.tensor(value) for value in next(diagnostics)))
+        return loss, torch.tensor((*next(diagnostics), 0.0))
 
     metrics = agent.update(
         {
@@ -329,8 +362,8 @@ def test_partial_final_minibatch_uses_eager_loss_shape() -> None:
     compiled_batch_sizes = []
 
     def compiled_loss(*arguments):
-        compiled_batch_sizes.append(len(arguments[0]))
-        return ppo_minibatch_loss(
+        compiled_batch_sizes.append(len(arguments[6]))
+        return indexed_ppo_loss(
             *arguments,
             policy_evaluator=evaluate,
             clip_coef=0.1,

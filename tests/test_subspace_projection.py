@@ -11,8 +11,29 @@ from algorithms.subspace_projection import (
     AdamSubspaceProjection,
     affine_matrix,
     build_input_subspaces,
+    sample_conv_inputs,
 )
 from training.ppo_runtime import CollectedRollout, PPOLearner
+
+
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize(
+    "kernel,stride,padding,dilation", ((8, 4, 0, 1), (4, 2, 0, 1), (3, 1, 2, 2))
+)
+def test_sampled_conv_inputs_equal_selected_unfold_patches(
+    device, kernel, stride, padding, dilation
+):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    layer = nn.Conv2d(4, 8, kernel, stride=stride, padding=padding, dilation=dilation)
+    x = torch.arange(2 * 4 * 32 * 32, device=device, dtype=torch.float32).reshape(2, 4, 32, 32)
+    full = torch.nn.functional.unfold(x, kernel, dilation, padding, stride).transpose(1, 2)
+    indices = torch.randint(full.shape[1], (2, 16), generator=torch.Generator().manual_seed(7)).to(
+        device
+    )
+    expected = full.gather(1, indices[..., None].expand(-1, -1, full.shape[-1]))
+    actual = sample_conv_inputs(x, layer, 16, torch.Generator().manual_seed(7))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 def tiny_agent(device="cpu"):

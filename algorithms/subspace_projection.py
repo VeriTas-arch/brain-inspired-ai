@@ -17,6 +17,23 @@ def affine_layers(backbone: nn.Module) -> dict[str, nn.Module]:
     }
 
 
+def sample_conv_inputs(x, layer, count, generator):
+    """Select receptive fields from a strided view before materializing patch data."""
+    kh, kw = layer.kernel_size
+    dh, dw = layer.dilation
+    ph, pw = layer.padding
+    if ph or pw:
+        x = F.pad(x, (pw, pw, ph, ph))
+    windows = x.unfold(2, dh * (kh - 1) + 1, layer.stride[0]).unfold(
+        3, dw * (kw - 1) + 1, layer.stride[1]
+    )
+    height, width = windows.shape[2:4]
+    indices = torch.randint(height * width, (len(x), count), generator=generator).to(x.device)
+    batches = torch.arange(len(x), device=x.device)[:, None]
+    patches = windows[batches, :, indices // width, indices % width]
+    return patches[..., ::dh, ::dw].reshape(len(x), count, -1)
+
+
 @torch.no_grad()
 def build_input_subspaces(
     backbone: nn.Module,
@@ -48,13 +65,7 @@ def build_input_subspaces(
     def capture(name, layer, inputs):
         x = inputs[0]
         if isinstance(layer, nn.Conv2d):
-            x = F.unfold(
-                x, layer.kernel_size, layer.dilation, layer.padding, layer.stride
-            ).transpose(1, 2)
-            indices = torch.randint(
-                x.shape[1], (len(x), patches_per_observation), generator=generator
-            ).to(device)
-            x = x.gather(1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+            x = sample_conv_inputs(x, layer, patches_per_observation, generator)
         x = x.reshape(-1, x.shape[-1]).double()
         if layer.bias is not None:
             x = torch.cat((x, torch.ones(len(x), 1, device=device, dtype=x.dtype)), dim=1)
@@ -86,17 +97,18 @@ def build_input_subspaces(
             # Reorthogonalize rounded stored bases without changing their span.
             old = torch.linalg.qr(old, mode="reduced").Q
         covered = (old * (moment @ old)).sum().clamp(min=0, max=total)
-        residual = moment - old @ (old.T @ moment)
-        residual = residual - (residual @ old) @ old.T
-        residual = (residual + residual.T) / 2
-        eigenvalues, vectors = torch.linalg.eigh(residual)
-        energy = eigenvalues.flip(0).clamp_min(0)
         required = (threshold * total - covered).clamp_min(0)
         available = len(moment) - old.shape[1]
         rank = 0
+        added, energy = old[:, :0], moment.new_empty(0)
         if float(required) > float(total) * 1e-12 and available:
+            residual = moment - old @ (old.T @ moment)
+            residual = residual - (residual @ old) @ old.T
+            residual = (residual + residual.T) / 2
+            eigenvalues, vectors = torch.linalg.eigh(residual)
+            energy = eigenvalues.flip(0).clamp_min(0)
             rank = min(int(torch.searchsorted(energy.cumsum(0), required)) + 1, available)
-        added = vectors.flip(1)[:, :rank]
+            added = vectors.flip(1)[:, :rank]
         if old.shape[1] and rank:
             added = added - old @ (old.T @ added)
             added = torch.linalg.qr(added, mode="reduced").Q
@@ -129,13 +141,21 @@ class AdamSubspaceProjection:
     affine layers are projected, including their biases.
     """
 
-    def __init__(self, optimizer, backbone: nn.Module, subspaces: dict):
+    def __init__(
+        self, optimizer, backbone: nn.Module, subspaces: dict, *, compile_projection: bool = False
+    ):
         self.layers = affine_layers(backbone)
         self.bases, self.before, self.sums = {}, {}, {}
         self.steps = 0
         for name, layer in self.layers.items():
             self.bases[name] = subspaces[name]["basis"].to(layer.weight)
+            self.before[name] = torch.empty_like(affine_matrix(layer))
             self.sums[name] = torch.zeros(4, device=layer.weight.device, dtype=torch.float64)
+        self._project = (
+            torch.compile(self._project_step, mode="reduce-overhead", fullgraph=True)
+            if compile_projection
+            else self._project_step
+        )
         self.handles = (
             optimizer.register_step_pre_hook(self._before_step),
             optimizer.register_step_post_hook(self._after_step),
@@ -143,10 +163,19 @@ class AdamSubspaceProjection:
 
     @torch.no_grad()
     def _before_step(self, optimizer, args, kwargs):
-        self.before = {name: affine_matrix(layer).clone() for name, layer in self.layers.items()}
+        for name, layer in self.layers.items():
+            self.before[name].copy_(affine_matrix(layer))
 
     @torch.no_grad()
     def _after_step(self, optimizer, args, kwargs):
+        statistics = self._project()
+        for name, values in zip(self.layers, statistics):
+            self.sums[name].add_(values)
+        self.steps += 1
+
+    @torch.no_grad()
+    def _project_step(self):
+        statistics = []
         for name, layer in self.layers.items():
             before, basis = self.before[name], self.bases[name]
             delta = affine_matrix(layer) - before
@@ -160,11 +189,10 @@ class AdamSubspaceProjection:
             applied = affine_matrix(layer) - before
             protected = applied @ basis
             error = protected
-            self.sums[name] += torch.stack(
-                [x.square().sum().double() for x in (delta, applied, protected, error)]
+            statistics.append(
+                torch.stack([x.square().sum().double() for x in (delta, applied, protected, error)])
             )
-        self.steps += 1
-        self.before.clear()
+        return tuple(statistics)
 
     def metrics(self) -> dict:
         result = {}

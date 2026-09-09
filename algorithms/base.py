@@ -26,6 +26,7 @@ class BaseAgent(ABC):
         """
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.environment_protocol = "gymnasium_wrappers_v1"
 
         if device == "cuda" and not torch.cuda.is_available():
             import warnings

@@ -1,10 +1,98 @@
 """Integration tests for the Atari preprocessing contract."""
 
+import gymnasium as gym
 import numpy as np
 import pytest
 import torch
 
 from environments import AsyncVectorAtariEnv, AtariEnv, SyncVectorAtariEnv
+from environments.atari_wrappers import GrayscaleObservation
+
+
+def test_fast_grayscale_is_pixel_exact_with_gymnasium() -> None:
+    rng = np.random.default_rng(7)
+    image = rng.integers(256, size=(84, 84, 3), dtype=np.uint8)
+    # Include every gray level and saturated primary colors, where truncation matters.
+    image[:4] = np.resize(np.arange(256, dtype=np.uint8), (4, 84, 1))
+    image[4:7] = np.eye(3, dtype=np.uint8)[:, None, :] * 255
+    env = gym.Env()
+    env.observation_space = gym.spaces.Box(0, 255, shape=image.shape, dtype=np.uint8)
+    reference = gym.wrappers.GrayscaleObservation(env)
+    candidate = GrayscaleObservation(env)
+    before = image.copy()
+    np.testing.assert_array_equal(candidate.observation(image), reference.observation(image))
+    np.testing.assert_array_equal(image, before)
+
+
+@pytest.mark.parametrize("game", ("Pong-v5", "Breakout-v5", "SpaceInvaders-v5"))
+def test_native_backend_preserves_final_frames_and_repeats_seeds(monkeypatch, game) -> None:
+    from environments import NativeVectorAtariEnv
+
+    make_vec = gym.make_vec
+
+    def short_episodes(env_id, **kwargs):
+        return make_vec(env_id, **(kwargs | {"max_num_frames_per_episode": 16}))
+
+    monkeypatch.setattr(gym, "make_vec", short_episodes)
+    traces = []
+    for _ in range(2):
+        env = NativeVectorAtariEnv(game, 2, seed=7, num_threads=2)
+        try:
+            trace = [env.reset().clone()]
+            truncated_count = 0
+            for _ in range(8):
+                transition = env.step_and_reset(torch.zeros(2, dtype=torch.long))
+                assert transition.observations.shape == (2, 4, 84, 84)
+                assert transition.observations.dtype == torch.uint8
+                if transition.truncated.any():
+                    truncated_count += 1
+                    assert not torch.equal(
+                        transition.observations[transition.truncated],
+                        transition.transition_observations[transition.truncated],
+                    )
+                trace.extend(
+                    value.clone()
+                    for value in (
+                        transition.observations,
+                        transition.transition_observations,
+                        transition.rewards,
+                        transition.terminated,
+                        transition.truncated,
+                    )
+                )
+            assert truncated_count > 0
+            traces.append(trace)
+        finally:
+            env.close()
+    for first, second in zip(*traces, strict=True):
+        torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+
+def test_native_evaluation_keeps_raw_rewards_full_episodes_and_cached_autoreset(monkeypatch):
+    options = []
+    make_vec = gym.make_vec
+
+    def short_episodes(env_id, **kwargs):
+        options.append(kwargs)
+        return make_vec(env_id, **(kwargs | {"max_num_frames_per_episode": 16}))
+
+    monkeypatch.setattr(gym, "make_vec", short_episodes)
+    env = AtariEnv("SpaceInvaders-v5", seed=7, training=False, backend="ale")
+    try:
+        env.reset()
+        assert not options[-1]["reward_clipping"] and not options[-1]["episodic_life"]
+        for _ in range(20):
+            _, _, terminated, truncated = env.step(0)
+            if terminated or truncated:
+                expected = env._autoreset_observation.clone()
+                torch.testing.assert_close(env.reset(), expected, rtol=0, atol=0)
+                assert env._autoreset_observation is None
+                break
+        else:
+            raise AssertionError("Short native episode did not truncate")
+        assert env.env.render().shape == (84, 84)
+    finally:
+        env.close()
 
 
 def wrapper_names(env: AtariEnv) -> list[str]:
@@ -42,8 +130,9 @@ def test_train_and_eval_use_one_frame_skip_and_different_episode_semantics() -> 
         eval_env.close()
 
 
-def test_invalid_action_is_not_silently_clipped() -> None:
-    env = AtariEnv("Pong-v5", seed=7)
+@pytest.mark.parametrize("backend", ("sync", "ale"))
+def test_invalid_action_is_not_silently_clipped(backend) -> None:
+    env = AtariEnv("Pong-v5", seed=7, backend=backend)
     try:
         env.reset()
         with pytest.raises(ValueError, match="outside"):
@@ -67,6 +156,7 @@ def test_step_preserves_terminated_and_truncated_flags() -> None:
 
     env = AtariEnv.__new__(AtariEnv)
     env.env = _TruncatedEnv()
+    env.backend = "sync"
 
     _, reward, terminated, truncated = env.step(0)
 
@@ -122,8 +212,11 @@ def test_async_vector_environment_recovers_final_observation_after_autoreset() -
 
     class _FakeAsyncEnvironment:
         @staticmethod
-        def step(actions):
+        def step_async(actions):
             np.testing.assert_array_equal(actions, np.array([0, 1]))
+
+        @staticmethod
+        def step_wait():
             return (
                 reset_observations,
                 np.array([1.0, 2.0]),
@@ -154,7 +247,11 @@ def test_async_vector_environment_recovers_final_observation_after_autoreset() -
 def test_async_vector_environment_rejects_missing_final_observation() -> None:
     class _BrokenAsyncEnvironment:
         @staticmethod
-        def step(actions):
+        def step_async(actions):
+            pass
+
+        @staticmethod
+        def step_wait():
             return (
                 np.zeros((2, 4, 84, 84), dtype=np.uint8),
                 np.zeros(2),

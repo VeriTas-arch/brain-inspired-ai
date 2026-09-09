@@ -8,6 +8,53 @@ import torch.nn as nn
 from algorithms import DQNAgent, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
 
 
+@pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
+def test_compiled_greedy_batches_match_scalar_actions_without_consuming_rng(algorithm):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    torch.compiler.reset()
+    agent = (MultiHeadDQNAgent if algorithm == "dqn" else MultiHeadPPOAgent)(4, device="cuda")
+    for task, actions in (("old", 6), ("new", 4)):
+        agent.register_task(task, actions)
+    states = torch.randint(256, (8, 4, 84, 84), dtype=torch.uint8)
+    expected = {}
+    for task in ("old", "new"):
+        agent.set_task(task)
+        expected[task] = [agent.select_action(state, deterministic=True) for state in states]
+    agent.configure_runtime(compile_enabled=True)
+    rng = torch.get_rng_state().clone()
+    cuda_rng = torch.cuda.get_rng_state().clone()
+    numpy_rng = np.random.get_state()
+    for task in ("old", "new", "old"):
+        agent.set_task(task)
+        actions = (
+            agent.select_actions(states, deterministic=True)
+            if algorithm == "dqn"
+            else agent.select_actions(states)
+        )
+        assert actions.tolist() == expected[task]
+    torch.testing.assert_close(torch.get_rng_state(), rng, rtol=0, atol=0)
+    torch.testing.assert_close(torch.cuda.get_rng_state(), cuda_rng, rtol=0, atol=0)
+    for first, second in zip(np.random.get_state(), numpy_rng, strict=True):
+        np.testing.assert_equal(first, second)
+    torch.compiler.reset()
+
+
+@pytest.mark.parametrize("agent_type", (DQNAgent, PPOAgent, MultiHeadDQNAgent, MultiHeadPPOAgent))
+def test_checkpoint_restores_native_observation_protocol(agent_type, tmp_path):
+    options = {"action_dim": 2} if agent_type in (DQNAgent, PPOAgent) else {}
+    agent = agent_type(4, device="cpu", **options)
+    if hasattr(agent, "register_task"):
+        agent.register_task("pong", 2)
+        agent.set_task("pong")
+    agent.environment_protocol = "ale_native_v1"
+    path = tmp_path / "model.pt"
+    agent.save(str(path))
+    restored = agent_type(4, device="cpu", **options)
+    restored.load(str(path))
+    assert restored.environment_protocol == "ale_native_v1"
+
+
 def test_dqn_deterministic_action_ignores_epsilon() -> None:
     agent = DQNAgent(
         state_dim=4,

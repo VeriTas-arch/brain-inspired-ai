@@ -9,12 +9,15 @@ import os
 import platform
 import time
 from dataclasses import asdict, dataclass
+from importlib.metadata import version
+from pathlib import Path
 
+import numpy as np
 import torch
 
 from algorithms import PPOAgent
 from environments import make_vector_atari_env
-from training import PPOCollector, PPOLearner, seed_everything
+from training import PPOCollector, PPOLearner, configure_ppo_runtime, seed_everything
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,37 @@ class BenchmarkResult:
     peak_reserved_mib: float | None
 
 
+def benchmark_environment(environment, *, transitions, warmup_transitions, seed, backend):
+    """Time only simulation, preprocessing, and delivery, with pre-generated actions."""
+    environment.reset()
+    actions = torch.from_numpy(
+        np.random.default_rng(seed).integers(
+            environment.action_space,
+            size=((transitions + warmup_transitions) // environment.num_envs, environment.num_envs),
+        )
+    )
+    warmup_steps = warmup_transitions // environment.num_envs
+    warmup_start = time.perf_counter()
+    for step, action in enumerate(actions):
+        if step == warmup_steps:
+            start = time.perf_counter()
+            warmup_seconds = start - warmup_start
+        environment.step_and_reset(action)
+    seconds = time.perf_counter() - start
+    return BenchmarkResult(
+        backend,
+        False,
+        transitions,
+        seconds,
+        seconds,
+        0.0,
+        warmup_seconds,
+        transitions / seconds,
+        None,
+        None,
+    )
+
+
 def benchmark_configuration(
     *,
     game: str,
@@ -44,30 +78,43 @@ def benchmark_configuration(
     batch_size: int,
     seed: int,
     device: str,
+    deterministic: bool = True,
+    environment_only: bool = False,
+    env_threads: int = 4,
+    torch_threads: int = 1,
 ) -> BenchmarkResult:
     """Warm the real training path, then time complete collect-update cycles."""
-    if transitions <= 0 or warmup_transitions <= 0:
-        raise ValueError("transition budgets must be positive")
+    if min(transitions, warmup_transitions, num_envs, batch_size, env_threads, torch_threads) <= 0:
+        raise ValueError("transition budgets, environment counts, and batch size must be positive")
     if transitions % num_envs != 0 or warmup_transitions % num_envs != 0:
         raise ValueError("transition budgets must be divisible by num_envs")
 
-    seed_everything(seed)
+    configure_ppo_runtime(backend)
+    seed_everything(seed, deterministic=deterministic)
     environment = make_vector_atari_env(
-        game,
-        num_envs,
-        backend=backend,
-        seed=seed,
+        game, num_envs, backend=backend, seed=seed, num_threads=env_threads
     )
-    agent = PPOAgent(state_dim=4, action_dim=environment.action_space, device=device)
-    learner = PPOLearner(
-        agent,
-        update_epochs=4,
-        minibatch_size=batch_size,
-        compile_policy=compile_policy,
-    )
-    collector = PPOCollector(environment, learner, rollout_length=128)
-
+    torch.set_num_threads(torch_threads)
+    if environment_only:
+        try:
+            return benchmark_environment(
+                environment,
+                transitions=transitions,
+                warmup_transitions=warmup_transitions,
+                seed=seed,
+                backend=backend,
+            )
+        finally:
+            environment.close()
     try:
+        agent = PPOAgent(state_dim=4, action_dim=environment.action_space, device=device)
+        learner = PPOLearner(
+            agent,
+            update_epochs=4,
+            minibatch_size=batch_size,
+            compile_policy=compile_policy,
+        )
+        collector = PPOCollector(environment, learner, rollout_length=128)
         warmup_start = time.perf_counter()
         warmup_remaining = warmup_transitions
         while warmup_remaining:
@@ -131,26 +178,30 @@ def main() -> None:
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--torch-threads", type=int, default=1)
+    parser.add_argument("--env-threads", type=int, default=4, help="Native ALE worker threads")
+    parser.add_argument("--environment-only", action="store_true")
+    parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument(
         "--configuration",
-        choices=("baseline", "optimized", "both"),
+        choices=("baseline", "optimized", "ale", "both", "all"),
         default="both",
     )
     args = parser.parse_args()
 
-    if args.batch_size <= 0 or args.num_envs <= 0 or args.torch_threads <= 0:
-        parser.error("batch-size, num-envs, and torch-threads must be positive")
-    if args.device == "cuda" and not torch.cuda.is_available():
+    if min(args.batch_size, args.num_envs, args.torch_threads, args.env_threads) <= 0:
+        parser.error("batch-size, num-envs, torch-threads, and env-threads must be positive")
+    if not args.environment_only and args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA is unavailable; use --device cpu for a CPU benchmark")
 
-    torch.set_num_threads(args.torch_threads)
     configurations = []
-    if args.configuration in {"baseline", "both"}:
+    if args.configuration in {"baseline", "both", "all"}:
         configurations.append(("sync", False))
-    if args.configuration in {"optimized", "both"}:
+    if args.configuration in {"optimized", "both", "all"}:
         configurations.append(("async", True))
+    if args.configuration in {"ale", "all"}:
+        configurations.append(("ale", True))
 
     results = []
     for backend, compile_policy in configurations:
@@ -164,6 +215,10 @@ def main() -> None:
             batch_size=args.batch_size,
             seed=args.seed,
             device=args.device,
+            deterministic=args.deterministic,
+            environment_only=args.environment_only,
+            env_threads=args.env_threads,
+            torch_threads=args.torch_threads,
         )
         results.append(result)
         gc.collect()
@@ -173,6 +228,9 @@ def main() -> None:
     output = {
         "game": args.game,
         "seed": args.seed,
+        "deterministic": args.deterministic,
+        "measurement": "environment" if args.environment_only else "collect_and_update",
+        "native_ale_note": "Different preprocessing/reset protocol; throughput is not learning speed.",
         "num_envs": args.num_envs,
         "batch_size": args.batch_size,
         "rollout_length": 128,
@@ -180,13 +238,28 @@ def main() -> None:
         "warmup_transitions": args.warmup_transitions,
         "timed_transitions": args.transitions,
         "torch_version": torch.__version__,
+        "gymnasium_version": version("gymnasium"),
+        "ale_version": version("ale-py"),
         "cuda_version": torch.version.cuda,
-        "device": torch.cuda.get_device_name() if args.device == "cuda" else "cpu",
+        "device": torch.cuda.get_device_name()
+        if args.device == "cuda" and not args.environment_only
+        else "cpu",
         "cpu": platform.processor(),
+        "cpu_model": next(
+            (
+                line.split(":", 1)[1].strip()
+                for line in Path("/proc/cpuinfo").read_text().splitlines()
+                if line.startswith("model name")
+            ),
+            platform.processor(),
+        )
+        if Path("/proc/cpuinfo").exists()
+        else platform.processor(),
         "cpu_affinity": sorted(os.sched_getaffinity(0))
         if hasattr(os, "sched_getaffinity")
         else None,
         "torch_threads": torch.get_num_threads(),
+        "env_threads": args.env_threads,
         "compile_mode": "reduce-overhead",
         "compile_fullgraph": True,
         "results": [asdict(result) for result in results],

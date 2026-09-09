@@ -130,20 +130,23 @@ def test_vector_environment_count_is_forwarded_only_to_supported_ppo_training() 
         assert job.arguments[env_index + 1] == "8"
 
 
-def test_vector_environments_reject_unsupported_training_matrices() -> None:
-    for suite, algorithms in (("single", ("dqn",)), ("multitask", ("ppo",))):
-        try:
-            build_jobs(
-                "train",
-                suite,
-                games=DEFAULT_GAMES[suite],
-                algorithms=algorithms,
-                num_envs=8,
-            )
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("unsupported vector environment matrix must be rejected")
+@pytest.mark.parametrize(
+    "suite,algorithm", (("single", "dqn"), ("multitask", "ppo"), ("multitask", "dqn"))
+)
+def test_vector_environment_options_reach_all_training_protocols(suite, algorithm):
+    jobs = build_jobs(
+        "train",
+        suite,
+        games=DEFAULT_GAMES[suite],
+        algorithms=(algorithm,),
+        num_envs=8,
+        env_backend="ale",
+        env_threads=2,
+    )
+    for job in jobs:
+        assert job.arguments[job.arguments.index("--num-envs") + 1] == "8"
+        assert job.arguments[job.arguments.index("--env-backend") + 1] == "ale"
+        assert job.arguments[job.arguments.index("--env-threads") + 1] == "2"
 
 
 def test_optimized_ppo_runtime_options_are_forwarded() -> None:
@@ -177,19 +180,16 @@ def test_continual_training_forwards_complete_episode_step_limit() -> None:
         assert job.arguments[limit_index + 1] == "12345"
 
 
-def test_optimized_ppo_runtime_rejects_mixed_algorithm_matrix() -> None:
-    try:
+def test_compilation_flags_reject_mixed_algorithm_matrix() -> None:
+    with pytest.raises(ValueError, match="PPO only"):
         build_jobs(
             "train",
             "single",
             games=DEFAULT_GAMES["single"],
             algorithms=("dqn", "ppo"),
             env_backend="async",
+            compile_ppo=True,
         )
-    except ValueError as error:
-        assert "optimized PPO runtime" in str(error)
-    else:
-        raise AssertionError("optimized PPO options must not leak into DQN jobs")
 
 
 @pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
@@ -266,10 +266,8 @@ def test_ppo_vector_training_requires_divisible_step_budgets() -> None:
 
 
 @pytest.mark.parametrize("train", (train_single_game, train_continual))
-def test_optimized_runtime_options_are_ppo_only(train) -> None:
-    with pytest.raises(ValueError, match="only for PPO"):
-        train(algorithm="dqn", env_backend="async")
-    with pytest.raises(ValueError, match="only for PPO"):
+def test_compile_ppo_requires_ppo(train) -> None:
+    with pytest.raises(ValueError, match="compile_ppo requires PPO"):
         train(algorithm="dqn", compile_ppo=True)
 
 
@@ -346,6 +344,7 @@ def test_joint_ppo_uses_shared_learner_and_preserves_budget(monkeypatch, tmp_pat
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(joint, "AtariEnv", TinyEnvironment)
+    monkeypatch.setattr("environments.atari_env.AtariEnv", TinyEnvironment)
     monkeypatch.setattr(joint, "MultiHeadPPOAgent", TinyAgent)
     monkeypatch.setattr(joint.PPOLearner, "update", record_update)
     monkeypatch.setattr(
@@ -384,6 +383,29 @@ def test_teaching_matrix_covers_ten_configurations_and_matching_evaluation():
     assert all("scripts/evaluate.py" in job.arguments for job in evaluation)
 
 
+@pytest.mark.parametrize("optimized", (False, True))
+def test_teaching_cli_preserves_formal_defaults_and_explicit_eager_override(monkeypatch, optimized):
+    from scripts import run_experiments
+
+    recorded = []
+    monkeypatch.setattr(run_experiments, "run_jobs", lambda jobs, **kwargs: recorded.extend(jobs))
+    options = (
+        ()
+        if optimized
+        else ("--num-envs", "1", "--env-backend", "sync", "--no-compile-ppo", "--no-compile-dqn")
+    )
+    main(("train", "teaching", *options))
+    assert len(recorded) == 24
+    for job in recorded[:12]:
+        algorithm = job.arguments[job.arguments.index("--algorithm") + 1]
+        assert (f"--compile-{algorithm}" in job.arguments) == optimized
+        if algorithm == "ppo" and "multitask" not in job.name:
+            assert ("--num-envs" in job.arguments) == optimized
+            if optimized:
+                assert job.arguments[job.arguments.index("--num-envs") + 1] == "8"
+                assert job.arguments[job.arguments.index("--env-backend") + 1] == "async"
+
+
 def test_sequential_runner_records_completion_failure_and_pending_jobs(tmp_path):
     import json
 
@@ -401,6 +423,68 @@ def test_sequential_runner_records_completion_failure_and_pending_jobs(tmp_path)
     assert status["jobs"][0]["exit_code"] == 0
     assert status["jobs"][1]["exit_code"] == 3
     assert (tmp_path / "ok.log").read_text().strip() == "done"
+
+
+def test_bounded_runner_enforces_dependencies_and_cpu_quotas(tmp_path):
+    import json
+
+    from scripts.run_experiments import Job, run_jobs
+
+    script = "import os,time,json; print(json.dumps({'cpus':len(os.sched_getaffinity(0))})); time.sleep(0.2)"
+    jobs = [
+        Job("eval a", ("-c", script), "eval-a.log", True, ("train-a.log",)),
+        Job("train a", ("-c", script), "train-a.log", True),
+        Job("train b", ("-c", script), "train-b.log", True),
+        Job("eval b", ("-c", script), "eval-b.log", True, ("train-b.log",)),
+    ]
+    run_jobs(jobs, device="cpu", parallel=True, max_workers=2, cpus_per_job=1, log_dir=tmp_path)
+    records = json.loads((tmp_path / "status.json").read_text())["jobs"]
+    assert all(record["state"] == "completed" for record in records)
+    assert records[0]["started_at"] >= records[1]["finished_at"]
+    assert records[3]["started_at"] >= records[2]["finished_at"]
+    events = sorted(
+        [(r["started_at"], 1) for r in records] + [(r["finished_at"], -1) for r in records]
+    )
+    active = peak = 0
+    for _, change in events:
+        active += change
+        peak = max(peak, active)
+    assert peak == 2 and active == 0
+    assert all(json.loads((tmp_path / job.log_name).read_text())["cpus"] == 1 for job in jobs)
+
+
+def test_new_runs_freeze_source_and_keep_artifacts_separate(monkeypatch, tmp_path):
+    import hashlib
+    import json
+
+    from scripts import run_experiments as runner
+
+    project = tmp_path / "project"
+    (project / "scripts").mkdir(parents=True)
+    script = project / "scripts/train_example.py"
+    monkeypatch.setattr(runner, "PROJECT_ROOT", project)
+    job = runner.Job("example", ("scripts/train_example.py",), "example.log", True)
+    for value in ("first", "second"):
+        script.write_text(f"from pathlib import Path\nPath('result.txt').write_text('{value}')\n")
+        directory = tmp_path / value
+        runner.run_jobs(
+            [job], device="cpu", parallel=False, log_dir=directory / "logs", run_dir=directory
+        )
+        manifest = json.loads((directory / "source_manifest.json").read_text())
+        assert (
+            manifest["scripts/train_example.py"] == hashlib.sha256(script.read_bytes()).hexdigest()
+        )
+    assert (tmp_path / "first/result.txt").read_text() == "first"
+    assert (tmp_path / "second/result.txt").read_text() == "second"
+    assert "first" in (tmp_path / "first/source/scripts/train_example.py").read_text()
+    with pytest.raises(ValueError, match="new run directory"):
+        runner.run_jobs(
+            [job],
+            device="cpu",
+            parallel=False,
+            log_dir=tmp_path / "logs",
+            run_dir=tmp_path / "first",
+        )
 
 
 def test_deterministic_training_option_is_forwarded_and_can_be_reset() -> None:
@@ -445,6 +529,7 @@ def test_joint_records_actual_environment_steps(monkeypatch, tmp_path, algorithm
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "AtariEnv", CountingEnvironment)
+    monkeypatch.setattr("environments.atari_env.AtariEnv", CountingEnvironment)
     module.train_multitask(games=["a", "b"], algorithm=algorithm, total_steps=131)
     summary = json.loads(
         (tmp_path / f"outputs/multitask/{algorithm}/seed-0/training_summary.json").read_text()
@@ -480,6 +565,7 @@ def test_single_periodic_evaluation_keeps_training_budget(monkeypatch, tmp_path)
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "AtariEnv", CountingEnvironment)
+    monkeypatch.setattr("environments.atari_env.AtariEnv", CountingEnvironment)
     module.train_single_game(algorithm="dqn", num_steps=10, eval_interval=4, eval_episodes=2)
     data = json.loads(
         (tmp_path / "outputs/single/Pong-v5_dqn/seed-0/learning_evaluation.json").read_text()

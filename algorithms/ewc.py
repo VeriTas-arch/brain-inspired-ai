@@ -145,15 +145,24 @@ class EWCWrapper:
         indices = torch.randperm(
             len(batch["states"]),
             generator=sampling_generator,
-        )[:sample_count].tolist()
+        )[:sample_count]
         is_dqn = "next_states" in batch
+        keys = (
+            ("states", "actions", "rewards", "next_states", "dones")
+            if is_dqn
+            else ("states", "actions")
+        )
+        samples = {
+            key: batch[key][indices.to(batch[key].device)].to(self.agent.device, non_blocking=True)
+            for key in keys
+        }
 
-        for index in indices:
+        for index in range(sample_count):
             self.agent.optimizer.zero_grad(set_to_none=True)
             loss = (
-                self._dqn_sample_loss(batch, index)
+                self._dqn_sample_loss(samples, index)
                 if is_dqn
-                else self._ppo_sample_loss(batch, index)
+                else self._ppo_sample_loss(samples, index)
             )
             loss.backward()
             for name, parameter in params.items():
@@ -277,6 +286,11 @@ class EWCWrapper:
             else regularizer
         )
 
+    def configure_runtime(self, *, compile_enabled: bool = False) -> None:
+        """Include the cached penalty in DQN's compiled TD objective."""
+        self.agent.configure_runtime(compile_enabled=compile_enabled)
+        self.configure_regularizer(compile_regularizer=False)
+
     def compute_ewc_loss(self) -> torch.Tensor:
         """Compute all consolidated penalties from task-independent sufficient statistics."""
         current_params = self._collect_regularized_params()
@@ -315,6 +329,9 @@ class EWCWrapper:
     def get_action_and_value(self, state: torch.Tensor, action: torch.Tensor | None = None):
         """Delegate PPO action/value computation."""
         return self.agent.get_action_and_value(state, action)
+
+    def select_actions(self, states: torch.Tensor, **kwargs):
+        return self.agent.select_actions(states, **kwargs)
 
     def sample_action_and_value(self, state: torch.Tensor):
         """Delegate rollout sampling without unnecessary policy statistics."""

@@ -1,10 +1,21 @@
 """Tests for the PPO runtime shared by training protocols."""
 
+import copy
+
 import pytest
 import torch
 
 from environments import VectorStep
-from training import PPOCollector, PPOLearner, flatten_rollout_data
+from training import CollectedRollout, PPOCollector, PPOLearner, flatten_rollout_data
+
+
+@pytest.fixture
+def fresh_compiler_state():
+    # Independent jobs start fresh Python processes. Isolate their compiler caches
+    # here too; task switches and repeated updates inside each test still share a cache.
+    torch.compiler.reset()
+    yield
+    torch.compiler.reset()
 
 
 class _FakeAgent:
@@ -94,13 +105,19 @@ class _ConfigurableFakeAgent(_FakeAgent):
         self.compile_regularizer = compile_regularizer
 
 
-def test_collector_preserves_vector_trajectories_and_time_limit_bootstrap() -> None:
-    learner = PPOLearner(_FakeAgent(), update_epochs=3, minibatch_size=32)
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+def test_collector_preserves_vector_trajectories_and_time_limit_bootstrap(device) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    agent = _FakeAgent()
+    agent.device = torch.device(device)
+    learner = PPOLearner(agent, update_epochs=3, minibatch_size=32)
     collector = PPOCollector(_FakeVectorEnvironment(), learner, rollout_length=8)
 
     rollout = collector.collect(transition_budget=4)
 
     assert rollout.transition_count == 4
+    assert rollout.data["states"].device.type == device
     assert rollout.episode_returns == (1.0, 6.0)
     assert collector.episode_count == 2
     torch.testing.assert_close(
@@ -113,7 +130,7 @@ def test_collector_preserves_vector_trajectories_and_time_limit_bootstrap() -> N
     )
     assert rollout.data["states"][0, 0, 0, 0, 0].item() == 1
     assert rollout.data["states"][1, 0, 0, 0, 0].item() == 100
-    torch.testing.assert_close(rollout.next_value, torch.tensor([4.0, 200.0]))
+    torch.testing.assert_close(rollout.next_value.cpu(), torch.tensor([4.0, 200.0]))
 
     metrics = learner.update(rollout)
     assert metrics == {
@@ -147,11 +164,12 @@ def test_compiled_learner_compiles_only_policy_hot_paths(monkeypatch) -> None:
     learner = PPOLearner(_FakeAgent(), compile_policy=True)
 
     assert learner.compiled
-    assert len(compiled_functions) == 2
+    assert len(compiled_functions) == 3
     assert all(
-        options == {"mode": "reduce-overhead", "fullgraph": True}
+        options["mode"] == "reduce-overhead" and options["fullgraph"]
         for _, options in compiled_functions
     )
+    assert compiled_functions[-1][1]["dynamic"] is False
 
 
 def test_learner_configures_optional_regularizer_for_same_runtime() -> None:
@@ -159,7 +177,8 @@ def test_learner_configures_optional_regularizer_for_same_runtime() -> None:
 
     PPOLearner(agent, compile_policy=True)
 
-    assert agent.compile_regularizer is True
+    # The cached eager penalty is captured together with the PPO objective.
+    assert agent.compile_regularizer is False
 
 
 def test_flatten_rollout_data_keeps_time_before_environment_order() -> None:
@@ -176,7 +195,9 @@ def test_flatten_rollout_data_keeps_time_before_environment_order() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("multi_head", (False, True))
-def test_fullgraph_cuda_policy_loss_and_task_switching(multi_head, monkeypatch):
+def test_fullgraph_cuda_policy_loss_and_task_switching(
+    multi_head, monkeypatch, fresh_compiler_state
+):
     from algorithms.ppo import MultiHeadPPOAgent, PPOAgent
 
     # Compare graph semantics at IEEE precision; production keeps backend defaults.
@@ -212,6 +233,8 @@ def test_fullgraph_cuda_policy_loss_and_task_switching(multi_head, monkeypatch):
             torch.randn(4, device="cuda"),
             values.flatten() + 0.2,
             values.flatten(),
+            torch.arange(4, device="cuda"),
+            None,
         )
         expected = eager._minibatch_loss(*inputs)
         actual = compiled._minibatch_loss(*inputs)
@@ -225,3 +248,107 @@ def test_fullgraph_cuda_policy_loss_and_task_switching(multi_head, monkeypatch):
                 assert left is None
                 continue
             torch.testing.assert_close(left, right, atol=1e-5, rtol=1e-4)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("variant", ("single", "multi", "ewc", "gpm"))
+def test_compiled_ppo_optimizer_matches_eager_with_regularization_and_projection(
+    variant, monkeypatch, fresh_compiler_state
+):
+    from algorithms import EWCWrapper, MultiHeadPPOAgent, PPOAgent
+    from algorithms.subspace_projection import AdamSubspaceProjection, affine_layers
+
+    monkeypatch.setattr(torch.backends.cuda.matmul, "fp32_precision", "ieee")
+    monkeypatch.setattr(torch.backends.cudnn.conv, "fp32_precision", "ieee")
+    torch.manual_seed(83)
+    if variant == "single":
+        base = PPOAgent(4, 3, device="cuda")
+    else:
+        base = MultiHeadPPOAgent(4, device="cuda")
+        base.register_task("old", 2)
+        base.register_task("new", 3)
+        base.set_task("new")
+    reference = EWCWrapper(base, ewc_lambda=0.2) if variant == "ewc" else base
+    if variant == "ewc":
+        for name, parameter in reference._collect_regularized_params().items():
+            reference.aggregated_fisher[name] = torch.full_like(parameter, 0.01)
+            reference.aggregated_mean[name] = parameter.detach().clone() + 0.1
+            reference.aggregated_correction[name] = torch.zeros((), device="cuda")
+    actual = copy.deepcopy(reference)
+    actual_base = actual.agent if variant == "ewc" else actual
+    learners = [
+        PPOLearner(reference, update_epochs=2, minibatch_size=4),
+        PPOLearner(actual, update_epochs=2, minibatch_size=4, compile_policy=True),
+    ]
+    projections = []
+    if variant == "gpm":
+        for agent, compiled in ((base, False), (actual_base, True)):
+            subspaces = {}
+            for name, layer in affine_layers(agent.backbone).items():
+                basis = torch.zeros(layer.weight[0].numel() + 1, 1)
+                basis[0, 0] = 1
+                subspaces[name] = {"basis": basis}
+            projections.append(
+                AdamSubspaceProjection(
+                    agent.optimizer, agent.backbone, subspaces, compile_projection=compiled
+                )
+            )
+    states = torch.randint(256, (8, 4, 84, 84), device="cuda", dtype=torch.uint8)
+    with torch.no_grad():
+        actions, logs, values = base.sample_action_and_value(states)
+    rollout = CollectedRollout(
+        dict(
+            states=states,
+            actions=actions,
+            log_probs=logs,
+            values=values.flatten(),
+            rewards=torch.arange(8, dtype=torch.float32) / 8,
+            dones=torch.tensor([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+        ),
+        torch.zeros(1, device="cuda"),
+        8,
+        (),
+    )
+    try:
+        for update in range(2):
+            metrics = []
+            for learner in learners:
+                torch.manual_seed(100 + update)
+                metrics.append(learner.update(rollout))
+            assert metrics[1] == pytest.approx(metrics[0], rel=1e-3, abs=3e-5)
+            if variant == "ewc":
+                assert metrics[1]["ewc_loss"] > 0
+            for expected_group, actual_group in zip(
+                base.optimizer.param_groups, actual_base.optimizer.param_groups, strict=True
+            ):
+                for expected, observed in zip(
+                    expected_group["params"], actual_group["params"], strict=True
+                ):
+                    torch.testing.assert_close(observed, expected, rtol=1e-3, atol=3e-6)
+    finally:
+        for projection in projections:
+            projection.close()
+
+
+def test_ppo_benchmark_honors_explicit_torch_thread_count():
+    from scripts.benchmark_ppo_runtime import benchmark_configuration
+
+    previous = torch.get_num_threads()
+    try:
+        result = benchmark_configuration(
+            game="Pong-v5",
+            backend="async",
+            compile_policy=False,
+            transitions=2,
+            warmup_transitions=1,
+            num_envs=1,
+            batch_size=32,
+            seed=0,
+            device="cpu",
+            environment_only=True,
+            torch_threads=2,
+        )
+        assert torch.get_num_threads() == 2
+        assert result.transitions == 2
+    finally:
+        torch.set_num_threads(previous)

@@ -15,6 +15,7 @@ from .atari_wrappers import (
     ClipRewardEnv,
     EpisodicLifeEnv,
     FireResetEnv,
+    GrayscaleObservation,
     MaxAndSkipEnv,
     NoopResetEnv,
 )
@@ -54,7 +55,7 @@ def make_atari_env(
     if training:
         env = ClipRewardEnv(env)
     env = gym.wrappers.ResizeObservation(env, (84, 84))
-    env = gym.wrappers.GrayscaleObservation(env)
+    env = GrayscaleObservation(env)
     env = gym.wrappers.FrameStackObservation(env, frame_stack)
 
     if seed is not None:
@@ -84,6 +85,7 @@ class AtariEnv:
         seed: int | None = None,
         training: bool = True,
         frame_skip: int = 4,
+        backend: str = "sync",
     ) -> None:
         """
         Initialize Atari environment with cleanrl-style wrappers.
@@ -101,6 +103,19 @@ class AtariEnv:
         self.training = training
         self.frame_skip = frame_skip
         self._reset_seed = seed
+        self.backend = backend
+        self._autoreset_observation = None
+
+        if backend == "ale":
+            if frame_stack != 4 or frame_skip != 4:
+                raise ValueError("Native ALE uses the fixed four-frame teaching protocol")
+            self.env = NativeVectorAtariEnv(
+                game_name, 1, seed=seed, training=training, num_threads=1
+            )
+            self.action_space = self.env.action_space
+            return
+        if backend not in {"sync", "async"}:
+            raise ValueError(f"Unknown Atari backend: {backend!r}")
 
         self.env = make_atari_env(
             game_name,
@@ -115,6 +130,12 @@ class AtariEnv:
 
     def reset(self) -> torch.Tensor:
         """Reset environment and return initial state."""
+        if self.backend == "ale":
+            if self._autoreset_observation is not None:
+                state = self._autoreset_observation
+                self._autoreset_observation = None
+                return state
+            return self.env.reset()[0]
         obs, _ = self.env.reset(seed=self._reset_seed)
         self._reset_seed = None
         return torch.as_tensor(np.asarray(obs))
@@ -131,6 +152,19 @@ class AtariEnv:
             terminated: Whether the transition reached an MDP terminal state
             truncated: Whether an external time limit ended the episode
         """
+        if self.backend == "ale":
+            if not self.env.env.single_action_space.contains(action):
+                raise ValueError(f"Action {action!r} is outside {self.env.env.single_action_space}")
+            transition = self.env.step_and_reset(torch.tensor([action]))
+            terminated, truncated = bool(transition.terminated[0]), bool(transition.truncated[0])
+            if terminated or truncated:
+                self._autoreset_observation = transition.observations[0]
+            return (
+                transition.transition_observations[0],
+                float(transition.rewards[0]),
+                terminated,
+                truncated,
+            )
         if not self.env.action_space.contains(action):
             raise ValueError(f"Action {action!r} is outside {self.env.action_space}")
         obs, reward, terminated, truncated, _ = self.env.step(action)
@@ -261,11 +295,19 @@ class AsyncVectorAtariEnv:
 
     def step_and_reset(self, actions: torch.Tensor) -> VectorStep:
         """Step workers and recover final observations hidden by same-step autoreset."""
+        self.step_async(actions)
+        return self.step_wait()
+
+    def step_async(self, actions: torch.Tensor) -> None:
+        """Dispatch actions while the caller performs inference for another group."""
         actions = torch.as_tensor(actions, dtype=torch.long).flatten().cpu()
         if actions.numel() != self.num_envs:
             raise ValueError(f"Expected {self.num_envs} actions, received {actions.numel()}")
+        self.env.step_async(actions.numpy())
 
-        observations, rewards, terminated, truncated, infos = self.env.step(actions.numpy())
+    def step_wait(self) -> VectorStep:
+        """Wait for the dispatched step, retaining the true final observation."""
+        observations, rewards, terminated, truncated, infos = self.env.step_wait()
         observations = np.asarray(observations)
         terminated = np.asarray(terminated, dtype=np.bool_)
         truncated = np.asarray(truncated, dtype=np.bool_)
@@ -299,6 +341,99 @@ class AsyncVectorAtariEnv:
         self.env.close()
 
 
+class NativeVectorAtariEnv:
+    """ALE C++ simulation and preprocessing with explicit same-step autoreset.
+
+    This uses ALE grayscale/max-pooling and zero stack padding. It is a separate
+    observation protocol from our Gymnasium wrappers, for both training and evaluation.
+    """
+
+    def __init__(
+        self,
+        game_name,
+        num_envs,
+        *,
+        seed=None,
+        training=True,
+        num_threads=4,
+        render_mode=None,
+        max_episode_frames=108_000,
+    ):
+        if num_envs <= 0 or num_threads <= 0:
+            raise ValueError("num_envs and num_threads must be positive")
+        gym.register_envs(ale_py)
+        env_id = game_name if game_name.startswith("ALE/") else f"ALE/{game_name}"
+        self.env = gym.make_vec(
+            env_id,
+            num_envs=num_envs,
+            vectorization_mode="vector_entry_point",
+            num_threads=min(num_threads, num_envs),
+            autoreset_mode=AutoresetMode.SAME_STEP,
+            episodic_life=training,
+            life_loss_info=False,
+            reward_clipping=training,
+            repeat_action_probability=0.25,
+            frameskip=4,
+            stack_num=4,
+            img_height=84,
+            img_width=84,
+            grayscale=True,
+            maxpool=True,
+            noop_max=30,
+            use_fire_reset=True,
+            max_num_frames_per_episode=max_episode_frames,
+        )
+        self.num_envs = num_envs
+        self.action_space = int(self.env.single_action_space.n)
+        self._seed = seed
+        self._observations = None
+
+    def reset(self):
+        observations, _ = self.env.reset(seed=self._seed)
+        self._seed = None
+        self._observations = torch.as_tensor(observations)
+        return self._observations
+
+    def step_async(self, actions):
+        actions = torch.as_tensor(actions, dtype=torch.long).cpu().numpy()
+        if actions.shape != (self.num_envs,):
+            raise ValueError(f"Expected {self.num_envs} actions")
+        self.env.send(actions)
+
+    def step_wait(self):
+        observations, rewards, terminated, truncated, info = self.env.recv()
+        done = terminated | truncated
+        final_observations = observations
+        if done.any():
+            if "final_obs" not in info:
+                raise RuntimeError("Native ALE did not preserve final observations")
+            final_observations = observations.copy()
+            final_observations[done] = info["final_obs"][done]
+        self._observations = torch.as_tensor(observations)
+        return VectorStep(
+            self._observations,
+            torch.as_tensor(final_observations),
+            torch.as_tensor(rewards, dtype=torch.float32),
+            torch.as_tensor(terminated),
+            torch.as_tensor(truncated),
+        )
+
+    def step_and_reset(self, actions):
+        self.step_async(actions)
+        return self.step_wait()
+
+    def render(self):
+        """Show the first agent's latest grayscale observation for native-protocol videos."""
+        return self._observations[0, -1].numpy().copy()
+
+    def close(self):
+        self.env.close()
+
+
+def observation_protocol(backend: str) -> str:
+    return "ale_native_v1" if backend == "ale" else "gymnasium_wrappers_v1"
+
+
 def make_vector_atari_env(
     game_name: str,
     num_envs: int,
@@ -307,8 +442,18 @@ def make_vector_atari_env(
     render_mode: str | None = None,
     seed: int | None = None,
     training: bool = True,
-) -> SyncVectorAtariEnv | AsyncVectorAtariEnv:
+    num_threads: int = 4,
+) -> SyncVectorAtariEnv | AsyncVectorAtariEnv | NativeVectorAtariEnv:
     """Build a vector environment while keeping the backend choice explicit."""
+    if backend == "ale":
+        return NativeVectorAtariEnv(
+            game_name,
+            num_envs,
+            render_mode=render_mode,
+            seed=seed,
+            training=training,
+            num_threads=num_threads,
+        )
     environment_types = {
         "sync": SyncVectorAtariEnv,
         "async": AsyncVectorAtariEnv,
