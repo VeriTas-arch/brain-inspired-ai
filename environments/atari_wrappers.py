@@ -32,7 +32,7 @@ class NoopResetEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
         self.noop_max = noop_max
         self.override_num_noops = None
         self.noop_action = 0
-        assert env.unwrapped.get_action_meanings()[0] == "NOOP"  # type: ignore[attr-defined]
+        assert env.unwrapped.get_action_meanings()[0] == "NOOP"
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -57,8 +57,8 @@ class FireResetEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
 
     def __init__(self, env: gym.Env) -> None:
         super().__init__(env)
-        assert env.unwrapped.get_action_meanings()[1] == "FIRE"  # type: ignore[attr-defined]
-        assert len(env.unwrapped.get_action_meanings()) >= 3  # type: ignore[attr-defined]
+        assert env.unwrapped.get_action_meanings()[1] == "FIRE"
+        assert len(env.unwrapped.get_action_meanings()) >= 3
 
     def reset(self, **kwargs):
         _, info = self.env.reset(**kwargs)
@@ -89,7 +89,7 @@ class EpisodicLifeEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
         self.was_real_done = terminated or truncated
         # check current lives, make loss of life terminal,
         # then update lives to handle bonus lives
-        lives = self.env.unwrapped.ale.lives()  # type: ignore[attr-defined]
+        lives = self.env.unwrapped.ale.lives()
         if 0 < lives < self.lives:
             # for Qbert sometimes we stay in lives == 0 condition for a few frames
             # so its important to keep lives > 0, so that we only reset once
@@ -118,7 +118,7 @@ class EpisodicLifeEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
             # monitor.py `RuntimeError: Tried to step environment that needs reset`
             if terminated or truncated:
                 obs, info = self.env.reset(**kwargs)
-        self.lives = self.env.unwrapped.ale.lives()  # type: ignore[attr-defined]
+        self.lives = self.env.unwrapped.ale.lives()
         return obs, info
 
 

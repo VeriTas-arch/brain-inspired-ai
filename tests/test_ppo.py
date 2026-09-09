@@ -2,6 +2,7 @@
 
 import math
 
+import pytest
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
@@ -14,6 +15,83 @@ from algorithms.ppo import (
     optimize_ppo,
     ppo_minibatch_loss,
 )
+
+
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("multi_head", (False, True))
+def test_policy_sampling_and_gradients_match_validated_distribution(device, multi_head) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    if multi_head:
+        agent = MultiHeadPPOAgent(4, device=device)
+        agent.register_task("pong", 3)
+        agent.set_task("pong")
+        network, actor, critic = agent.backbone, agent.actors["pong"], agent.critics["pong"]
+    else:
+        agent = PPOAgent(4, 3, device=device)
+        network, actor, critic = agent.network, agent.actor, agent.critic
+    states = torch.randint(256, (3, 4, 84, 84), dtype=torch.uint8, device=device)
+    hidden = network(states / 255.0)
+    reference = Categorical(logits=actor(hidden), validate_args=True)
+    expected_value = critic(hidden)
+    torch.manual_seed(31)
+    expected_action = reference.sample()
+    expected_log_prob = reference.log_prob(expected_action)
+    parameters = [*network.parameters(), *actor.parameters(), *critic.parameters()]
+    expected_gradients = torch.autograd.grad(
+        expected_log_prob.mean() + reference.entropy().mean() + expected_value.mean(), parameters
+    )
+
+    torch.manual_seed(31)
+    action, log_prob, value = agent.sample_action_and_value(states)
+    torch.testing.assert_close(action, expected_action, rtol=0, atol=0)
+    torch.testing.assert_close(log_prob, expected_log_prob, rtol=0, atol=0)
+    torch.testing.assert_close(value, expected_value, rtol=0, atol=0)
+    _, log_prob, entropy, value = agent.get_action_and_value(states, action)
+    gradients = torch.autograd.grad(log_prob.mean() + entropy.mean() + value.mean(), parameters)
+    for expected, actual in zip(expected_gradients, gradients, strict=True):
+        # Parallel convolution reductions can differ at float32 rounding precision.
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+def test_cpu_and_device_rollouts_produce_matching_ppo_updates(device) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    torch.manual_seed(23)
+    agent = PPOAgent(4, 2, device=device)
+    reference = PPOAgent(4, 2, device=device)
+    reference.load_checkpoint_state(agent.checkpoint_state())
+    states = torch.randint(256, (4, 2, 4, 84, 84), dtype=torch.uint8)
+    with torch.no_grad():
+        actions, log_probs, values = agent.sample_action_and_value(states.flatten(0, 1).to(device))
+    rollout = {
+        "states": states,
+        "actions": actions.reshape(4, 2).cpu(),
+        "log_probs": log_probs.reshape(4, 2),
+        "values": values.reshape(4, 2),
+        "rewards": torch.randn(4, 2),
+        "dones": torch.tensor([[0.0, 1.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]]),
+    }
+    next_value = torch.tensor([0.3, -0.2], device=device)
+    torch.manual_seed(37)
+    actual = agent.update(rollout, next_value, update_epochs=2, minibatch_size=4)
+    torch.manual_seed(37)
+    expected = reference.update(
+        {name: value.to(device) for name, value in rollout.items()},
+        next_value,
+        update_epochs=2,
+        minibatch_size=4,
+    )
+    for name in actual:
+        assert actual[name] == pytest.approx(expected[name], abs=1e-5, rel=1e-4)
+    for module_name in ("network", "actor", "critic"):
+        for left, right in zip(
+            getattr(agent, module_name).parameters(),
+            getattr(reference, module_name).parameters(),
+            strict=True,
+        ):
+            torch.testing.assert_close(left, right, rtol=1e-4, atol=1e-6)
 
 
 def test_rollout_sampling_matches_full_policy_evaluation() -> None:
@@ -200,6 +278,12 @@ def test_ppo_metrics_average_all_minibatches() -> None:
     with torch.no_grad():
         actions, log_probs, _, values = agent.get_action_and_value(states)
 
+    diagnostics = iter(((1.0, 2.0, 3.0, 0.1, 0.2), (3.0, 4.0, 5.0, 0.3, 0.4)))
+
+    def minibatch_loss(*args):
+        loss = agent.actor.weight.sum() * 0
+        return (loss, *(torch.tensor(value) for value in next(diagnostics)))
+
     metrics = agent.update(
         {
             "states": states,
@@ -212,9 +296,12 @@ def test_ppo_metrics_average_all_minibatches() -> None:
         next_value=torch.zeros(1),
         update_epochs=1,
         minibatch_size=2,
+        minibatch_loss=minibatch_loss,
     )
 
-    assert abs(metrics["policy_loss"]) < 1e-6
+    assert metrics == pytest.approx(
+        {"policy_loss": 2.0, "value_loss": 3.0, "entropy": 4.0, "approx_kl": 0.2, "clipfrac": 0.3}
+    )
 
 
 def test_partial_final_minibatch_uses_eager_loss_shape() -> None:

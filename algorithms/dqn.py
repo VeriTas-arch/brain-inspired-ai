@@ -44,7 +44,9 @@ class DQNAgent(BaseAgent):
         self.target_network = SimpleNet(state_dim, action_dim).to(self.device)
         self.target_network.load_state_dict(self.network.state_dict())
 
-        self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
+        self.optimizer = optim.Adam(
+            self.network.parameters(), lr=lr, fused=self.device.type == "cuda"
+        )
 
         self.gamma = gamma
         self.epsilon_start = epsilon_start
@@ -201,7 +203,7 @@ class MultiHeadDQNAgent(BaseAgent):
         params = list(self.backbone.parameters())
         for head in self.heads.values():
             params += list(head.parameters())
-        self.optimizer = optim.Adam(params, lr=self.lr)
+        self.optimizer = optim.Adam(params, lr=self.lr, fused=self.device.type == "cuda")
 
     def register_task(self, task_id: str, action_dim: int):
         """Create a new output head for a task if it does not exist."""
@@ -312,7 +314,7 @@ class MultiHeadDQNAgent(BaseAgent):
             "target_backbone": self.target_backbone.state_dict(),
             "heads": {name: head.state_dict() for name, head in self.heads.items()},
             "target_heads": {name: head.state_dict() for name, head in self.target_heads.items()},
-            "task_action_dims": {name: head.out_features for name, head in self.heads.items()},
+            "task_action_dims": {name: int(head.out_features) for name, head in self.heads.items()},
             "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
             "current_task": self.current_task,
             "task_epsilons": self.task_epsilons,

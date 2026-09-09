@@ -147,20 +147,25 @@ def optimize_ppo(
     states = rollout_data["states"].to(device)
     actions = rollout_data["actions"].to(device)
     old_log_probs = rollout_data["log_probs"].to(device)
-    rewards = rollout_data["rewards"].to(device)
-    dones = rollout_data["dones"].to(device)
-    old_values = rollout_data["values"].to(device)
+    # The collector already keeps rewards on CPU. Run the short time-axis recurrence
+    # there rather than launching many tiny CUDA kernels; GPU-native rollouts stay on GPU.
+    rewards = rollout_data["rewards"]
+    dones = rollout_data["dones"].to(rewards.device)
+    old_values = rollout_data["values"].to(rewards.device)
 
     with torch.no_grad():
         advantages, returns = generalized_advantage_estimate(
             rewards,
             old_values,
             dones,
-            next_value.to(device),
+            next_value.to(rewards.device),
             gamma,
             gae_lambda,
         )
         advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+    advantages = advantages.to(device)
+    returns = returns.to(device)
+    old_values = old_values.to(device)
 
     batch_states = states.flatten(0, 1) if states.ndim == 5 else states
     batch_actions = actions.flatten()
@@ -289,6 +294,7 @@ class PPOAgent(BaseAgent):
             + list(self.critic.parameters()),
             lr=lr,
             eps=1e-5,
+            fused=self.device.type == "cuda",
         )
 
         self.gamma = gamma
@@ -321,7 +327,8 @@ class PPOAgent(BaseAgent):
 
     def _distribution_and_value(self, x: torch.Tensor) -> tuple[Categorical, torch.Tensor]:
         hidden = self.network(x / 255.0)
-        return Categorical(logits=self.actor(hidden)), self.critic(hidden)
+        # These logits and sampled actions are internal; validation synchronizes CUDA.
+        return Categorical(logits=self.actor(hidden), validate_args=False), self.critic(hidden)
 
     def sample_action_and_value(
         self, x: torch.Tensor
@@ -459,7 +466,7 @@ class MultiHeadPPOAgent(BaseAgent):
             params += list(actor.parameters())
         for critic in self.critics.values():
             params += list(critic.parameters())
-        self.optimizer = optim.Adam(params, lr=self.lr, eps=1e-5)
+        self.optimizer = optim.Adam(params, lr=self.lr, eps=1e-5, fused=self.device.type == "cuda")
 
     def register_task(self, task_id: str, action_dim: int):
         """Create new actor and critic heads for a task if they don't exist."""
@@ -506,7 +513,8 @@ class MultiHeadPPOAgent(BaseAgent):
             raise RuntimeError("Current task is not set before policy evaluation.")
         hidden = self.backbone(x / 255.0)
         actor, critic = self._current_heads()
-        return Categorical(logits=actor(hidden)), critic(hidden)
+        # These logits and sampled actions are internal; validation synchronizes CUDA.
+        return Categorical(logits=actor(hidden), validate_args=False), critic(hidden)
 
     def sample_action_and_value(
         self, x: torch.Tensor
@@ -601,7 +609,7 @@ class MultiHeadPPOAgent(BaseAgent):
             "actors": {task_id: actor.state_dict() for task_id, actor in self.actors.items()},
             "critics": {task_id: critic.state_dict() for task_id, critic in self.critics.items()},
             "task_action_dims": {
-                task_id: actor.out_features for task_id, actor in self.actors.items()
+                task_id: int(actor.out_features) for task_id, actor in self.actors.items()
             },
             "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
             "current_task": self.current_task,

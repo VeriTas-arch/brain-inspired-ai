@@ -1,4 +1,4 @@
-"""Boundary input subspaces and projection of actual Adam steps for continual PPO.
+"""Boundary input subspaces and projection of actual Adam steps for continual learning.
 
 GPM projects onto the complement of the stored input bases. Biases are
 included as an extra input coordinate, preserving the existing Atari network.
@@ -123,7 +123,7 @@ def affine_matrix(layer: nn.Module) -> torch.Tensor:
 class AdamSubspaceProjection:
     """Project optimizer displacements after Adam's moment scaling, not raw grads.
 
-    Hooks leave Adam's moments and the existing PPO learner unchanged. Computing
+    Hooks leave Adam's moments and the existing learner unchanged. Computing
     the displacement from pre/post weights introduces only floating-point rounding;
     the realized projection error is measured on every update. Only the shared
     affine layers are projected, including their biases.

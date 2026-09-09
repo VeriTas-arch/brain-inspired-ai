@@ -272,7 +272,7 @@ class EWCWrapper:
             return 0.5 * self.ewc_lambda * penalty
 
         self._runtime_regularizer = (
-            torch.compile(regularizer, mode="reduce-overhead")
+            torch.compile(regularizer, mode="reduce-overhead", fullgraph=True)
             if compile_regularizer
             else regularizer
         )
@@ -343,23 +343,24 @@ class EWCWrapper:
         self.agent.set_task(task_id)
         self._reset_runtime_regularizer()
 
+    def checkpoint_state(self) -> dict:
+        """Return the wrapped agent and EWC consolidation state."""
+        return {
+            "format": "ewc-v2",
+            "agent": self.agent.checkpoint_state(),
+            "ewc_lambda": self.ewc_lambda,
+            "task_weights": self.task_weights,
+            "task_fisher": self.task_fisher,
+            "task_fisher_summary": self.task_fisher_summary,
+            "aggregated_fisher": self.aggregated_fisher,
+            "aggregated_mean": self.aggregated_mean,
+            "aggregated_correction": self.aggregated_correction,
+            "current_task_id": self.current_task_id,
+        }
+
     def save(self, path: str) -> None:
         """Save both the wrapped agent and EWC consolidation state."""
-        torch.save(
-            {
-                "format": "ewc-v2",
-                "agent": self.agent.checkpoint_state(),
-                "ewc_lambda": self.ewc_lambda,
-                "task_weights": self.task_weights,
-                "task_fisher": self.task_fisher,
-                "task_fisher_summary": self.task_fisher_summary,
-                "aggregated_fisher": self.aggregated_fisher,
-                "aggregated_mean": self.aggregated_mean,
-                "aggregated_correction": self.aggregated_correction,
-                "current_task_id": self.current_task_id,
-            },
-            path,
-        )
+        torch.save(self.checkpoint_state(), path)
 
     def load(self, path: str) -> None:
         """Restore an EWC checkpoint, accepting old agent-only checkpoints."""

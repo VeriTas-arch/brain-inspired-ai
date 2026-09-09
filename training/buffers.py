@@ -85,13 +85,17 @@ class ReplayBuffer:
 class RolloutBuffer:
     """Rollout buffer for on-policy algorithms like PPO."""
 
-    def __init__(self, capacity: int = 128, num_envs: int = 1) -> None:
+    def __init__(
+        self, capacity: int = 128, num_envs: int = 1, policy_device: torch.device | str = "cpu"
+    ) -> None:
         """
         Initialize rollout buffer.
 
         Args:
             capacity: Number of time steps to collect before updating
             num_envs: Number of independent environments collected at each time step
+            policy_device: Store log probabilities and values beside the policy to avoid
+                copying them to the CPU at every environment step
         """
         if capacity <= 0:
             raise ValueError("capacity must be positive")
@@ -104,8 +108,8 @@ class RolloutBuffer:
         self.actions = torch.empty(scalar_shape, dtype=torch.long)
         self.rewards = torch.empty(scalar_shape, dtype=torch.float32)
         self.dones = torch.empty(scalar_shape, dtype=torch.float32)
-        self.log_probs = torch.empty(scalar_shape, dtype=torch.float32)
-        self.values = torch.empty(scalar_shape, dtype=torch.float32)
+        self.log_probs = torch.empty(scalar_shape, dtype=torch.float32, device=policy_device)
+        self.values = torch.empty(scalar_shape, dtype=torch.float32, device=policy_device)
         self.pos = 0
         self._pending_step = False
 

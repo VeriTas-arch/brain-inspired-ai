@@ -1,6 +1,7 @@
 """Train a single agent on a single Atari game."""
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -13,12 +14,14 @@ from algorithms import (
 )
 from environments import AtariEnv, make_vector_atari_env
 from training import (
+    DEFAULT_MAX_EPISODE_STEPS,
     MetricsPlotter,
     PPOCollector,
     PPOLearner,
     ReplayBuffer,
     VideoRecorder,
     configure_ppo_runtime,
+    run_evaluation_episodes,
     seed_everything,
 )
 
@@ -33,6 +36,9 @@ def train_single_game(
     compile_ppo: bool = False,
     save_video: bool = False,
     seed: int = 0,
+    deterministic: bool = False,
+    eval_interval: int = 0,
+    eval_episodes: int = 10,
 ):
     """Train agent on a single game."""
     if batch_size <= 0:
@@ -47,8 +53,10 @@ def train_single_game(
         raise ValueError("env_backend and compile_ppo options are supported only for PPO")
     if algorithm == "ppo" and num_steps % num_envs != 0:
         raise ValueError("PPO steps must be divisible by num_envs")
+    if eval_interval < 0 or eval_episodes <= 0:
+        raise ValueError("eval_interval must be nonnegative and eval_episodes positive")
     configure_ppo_runtime(env_backend)
-    seed_everything(seed)
+    seed_everything(seed, deterministic=deterministic)
     print(f"Training {algorithm.upper()} on {game_name}")
 
     env = (
@@ -138,6 +146,8 @@ def train_single_game(
 
     pbar = tqdm(total=num_steps, desc="Training")
     step = 0
+    evaluations = []
+    next_evaluation = eval_interval
 
     while step < num_steps:
         if algorithm == "dqn":
@@ -156,7 +166,7 @@ def train_single_game(
                 if buffer.is_ready(batch_size):
                     batch = buffer.sample(batch_size)
                     metrics = agent.update(batch)
-                    pbar.set_postfix(metrics)
+                    pbar.set_postfix(metrics, refresh=False)
 
                     if "loss" in metrics:
                         metrics_plotter.add_metric("loss", metrics["loss"])
@@ -184,11 +194,41 @@ def train_single_game(
             for reward_value in rollout.episode_returns:
                 metrics_plotter.add_metric("episode_reward", reward_value)
 
-            pbar.set_postfix({**metrics, "episodes": episode_count})
+            pbar.set_postfix({**metrics, "episodes": episode_count}, refresh=False)
             for metric_name in ("policy_loss", "value_loss", "entropy"):
                 if metric_name in metrics:
                     metrics_plotter.add_metric(metric_name, metrics[metric_name])
             pbar.update(rollout.transition_count)
+        if eval_interval and (step >= next_evaluation or step == num_steps):
+            evaluation_env = AtariEnv(game_name, seed=seed, training=False)
+            try:
+                rewards = run_evaluation_episodes(
+                    agent, evaluation_env, eval_episodes, DEFAULT_MAX_EPISODE_STEPS
+                )
+            finally:
+                evaluation_env.close()
+            boundary_path = (
+                Path("checkpoints") / "single" / run_name / f"seed-{seed}" / f"step-{step}.pt"
+            )
+            boundary_path.parent.mkdir(parents=True, exist_ok=True)
+            agent.save(str(boundary_path))
+            evaluations.append(
+                {
+                    "step": step,
+                    "rewards": rewards,
+                    "mean_raw_reward": sum(rewards) / len(rewards),
+                    "checkpoint": str(boundary_path),
+                }
+            )
+            (exp_dir / "learning_evaluation.json").write_text(
+                json.dumps(
+                    {"seed": seed, "deterministic": deterministic, "evaluations": evaluations},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(f"[Eval] step={step}, mean raw reward={evaluations[-1]['mean_raw_reward']}")
+            next_evaluation = (step // eval_interval + 1) * eval_interval
     pbar.close()
 
     if video_recorder is not None:
@@ -250,6 +290,9 @@ if __name__ == "__main__":
     parser.add_argument("--env-backend", choices=("sync", "async"), default="sync")
     parser.add_argument("--compile-ppo", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--eval-interval", type=int, default=0)
+    parser.add_argument("--eval-episodes", type=int, default=10)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
@@ -266,4 +309,7 @@ if __name__ == "__main__":
         compile_ppo=args.compile_ppo,
         save_video=args.save_video,
         seed=args.seed,
+        deterministic=args.deterministic,
+        eval_interval=args.eval_interval,
+        eval_episodes=args.eval_episodes,
     )

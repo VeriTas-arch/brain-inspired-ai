@@ -131,9 +131,10 @@ def evaluate_single(
     max_steps: int,
     output_dir: Path | None = None,
     seed: int = 0,
+    deterministic: bool = False,
 ) -> dict:
     """Evaluate a single-task agent checkpoint on one game."""
-    seed_everything(seed)
+    seed_everything(seed, deterministic=deterministic)
     output_dir = _prepare_output_dir(output_dir, model_path, "single")
     env = AtariEnv(game, render_mode=None, training=False, seed=seed)
     try:
@@ -155,6 +156,7 @@ def evaluate_single(
     )
     result = {
         "mode": "single",
+        "deterministic": deterministic,
         "game": game,
         "algorithm": algorithm,
         "episodes": episodes,
@@ -241,17 +243,19 @@ def _evaluate_multihead_checkpoint(
     ewc_lambda: float,
     output_dir: Path | None,
     seed: int,
+    deterministic: bool = False,
 ) -> dict:
     """Shared evaluation workflow for continual and joint multi-task checkpoints."""
     label = "multi-task" if mode == "multitask" else "continual"
     print(f"Loading {label} agent from {model_path}...")
-    seed_everything(seed)
+    seed_everything(seed, deterministic=deterministic)
     output_dir = _prepare_output_dir(output_dir, model_path, mode)
     agent = _build_multihead_agent(algorithm, games, use_ewc, ewc_lambda)
     agent.load(model_path)
     _set_agent_eval(agent)
 
     results = _evaluate_games(agent, games, mode, algorithm, episodes, max_steps, seed)
+    results["deterministic"] = deterministic
     plot_path = _plot_multi_game_results(results, output_dir)
     print(f"\n[{label.title()}] Raw reward plot saved to: {plot_path}")
 
@@ -278,6 +282,7 @@ def evaluate_continual(
     ewc_lambda: float,
     output_dir: Path | None = None,
     seed: int = 0,
+    deterministic: bool = False,
 ) -> dict:
     """Evaluate a continual-learning checkpoint on each game."""
     return _evaluate_multihead_checkpoint(
@@ -291,6 +296,7 @@ def evaluate_continual(
         ewc_lambda,
         output_dir,
         seed,
+        deterministic,
     )
 
 
@@ -302,6 +308,7 @@ def evaluate_multitask(
     max_steps: int,
     output_dir: Path | None = None,
     seed: int = 0,
+    deterministic: bool = False,
 ) -> dict:
     """Evaluate a jointly trained multi-task checkpoint on each game."""
     return _evaluate_multihead_checkpoint(
@@ -315,6 +322,7 @@ def evaluate_multitask(
         0.0,
         output_dir,
         seed,
+        deterministic,
     )
 
 
@@ -334,6 +342,7 @@ def main() -> None:
         help="Maximum agent steps per episode; incomplete episodes are rejected",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--ewc", action="store_true", help="Use EWC wrapper in continual mode")
     parser.add_argument("--ewc-lambda", type=float, default=0.4, help="EWC lambda (if --ewc)")
     parser.add_argument("--json-out", help="Optional path to write JSON results")
@@ -355,6 +364,7 @@ def main() -> None:
             args.max_steps,
             output_dir,
             args.seed,
+            deterministic=args.deterministic,
         )
     elif args.mode == "multitask":
         if not args.games:
@@ -367,6 +377,7 @@ def main() -> None:
             args.max_steps,
             output_dir,
             args.seed,
+            deterministic=args.deterministic,
         )
     else:
         if not args.games:
@@ -381,6 +392,7 @@ def main() -> None:
             args.ewc_lambda,
             output_dir,
             args.seed,
+            deterministic=args.deterministic,
         )
 
     if args.json_out:

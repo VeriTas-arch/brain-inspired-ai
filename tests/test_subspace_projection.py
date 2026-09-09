@@ -2,6 +2,7 @@
 
 import copy
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -14,9 +15,9 @@ from algorithms.subspace_projection import (
 from training.ppo_runtime import CollectedRollout, PPOLearner
 
 
-def tiny_agent():
-    agent = MultiHeadPPOAgent(4, device="cpu")
-    agent.backbone = nn.Sequential(nn.Linear(4, 512), nn.Tanh())
+def tiny_agent(device="cpu"):
+    agent = MultiHeadPPOAgent(4, device=device)
+    agent.backbone = nn.Sequential(nn.Linear(4, 512), nn.Tanh()).to(device)
     agent.network = agent.backbone
     agent.register_task("old", 3)
     agent.register_task("new", 2)
@@ -102,9 +103,12 @@ def test_projecting_raw_gradient_before_adam_does_not_preserve_orthogonality():
     assert abs(float(p.detach() @ basis)) > 0.001
 
 
-def test_projection_runs_once_per_ppo_minibatch_and_leaves_old_heads_unchanged():
-    agent = tiny_agent()
-    states = torch.randint(256, (8, 4), dtype=torch.uint8)
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+def test_projection_runs_once_per_ppo_minibatch_and_leaves_old_heads_unchanged(device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    agent = tiny_agent(device)
+    states = torch.randint(256, (8, 4), dtype=torch.uint8, device=device)
     with torch.no_grad():
         actions, logs, values = agent.sample_action_and_value(states)
     basis = torch.linalg.qr(torch.randn(5, 2)).Q

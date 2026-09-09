@@ -1,7 +1,7 @@
 """Shared PPO collection and optimization runtime.
 
 The protocol scripts remain responsible for task order, reporting, and checkpointing. This module
-owns only the mechanics that must be identical between single-task and continual PPO training.
+owns shared PPO optimization and the vector collector used by single-task and continual training.
 """
 
 from __future__ import annotations
@@ -83,8 +83,8 @@ def flatten_rollout_data(
 
 
 def configure_ppo_runtime(environment_backend: str) -> None:
-    """Avoid CPU thread-pool contention with asynchronous environment workers."""
-    if environment_backend == "async":
+    """Avoid CPU thread-pool overhead with CUDA policies or environment workers."""
+    if environment_backend == "async" or torch.cuda.is_available():
         torch.set_num_threads(1)
 
 
@@ -142,8 +142,8 @@ class PPOLearner:
             )
 
         if compile_policy:
-            sampler = torch.compile(sampler, mode="reduce-overhead")
-            minibatch_loss = torch.compile(minibatch_loss, mode="reduce-overhead")
+            sampler = torch.compile(sampler, mode="reduce-overhead", fullgraph=True)
+            minibatch_loss = torch.compile(minibatch_loss, mode="reduce-overhead", fullgraph=True)
         self._sample_action_and_value = sampler
         self._minibatch_loss = minibatch_loss
         self._policy_evaluator = policy_agent.get_action_and_value
@@ -198,7 +198,9 @@ class PPOCollector:
         self.environment = environment
         self.learner = learner
         self.num_envs = environment.num_envs
-        self.buffer = RolloutBuffer(capacity=rollout_length, num_envs=self.num_envs)
+        self.buffer = RolloutBuffer(
+            capacity=rollout_length, num_envs=self.num_envs, policy_device=learner.device
+        )
         self.state = environment.reset()
         self.episode_returns = torch.zeros(self.num_envs, dtype=torch.float64)
         self.transition_count = 0
@@ -229,15 +231,15 @@ class PPOCollector:
                 self.buffer.start_step(
                     self.state[0],
                     cpu_actions.item(),
-                    log_probs.item(),
-                    values.item(),
+                    log_probs.flatten()[0],
+                    values.flatten()[0],
                 )
             else:
                 self.buffer.start_step(
                     self.state,
                     cpu_actions,
-                    log_probs.cpu(),
-                    values.flatten().cpu(),
+                    log_probs,
+                    values.flatten(),
                 )
 
             transition = self.environment.step_and_reset(cpu_actions)

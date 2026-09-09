@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -210,7 +211,7 @@ def test_runtime_regularizer_matches_dynamic_penalty(monkeypatch) -> None:
     monkeypatch.setattr(torch, "compile", fake_compile)
     wrapper.configure_regularizer(compile_regularizer=True)
 
-    assert compile_calls == [{"mode": "reduce-overhead"}]
+    assert compile_calls == [{"mode": "reduce-overhead", "fullgraph": True}]
     torch.testing.assert_close(
         wrapper._runtime_regularizer(),
         wrapper.compute_ewc_loss(),
@@ -248,3 +249,29 @@ def test_legacy_ewc_checkpoint_rebuilds_aggregates(tmp_path) -> None:
     assert restored.aggregated_fisher.keys() == source.aggregated_fisher.keys()
     for name, expected in source.aggregated_fisher.items():
         torch.testing.assert_close(restored.aggregated_fisher[name], expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_fullgraph_cuda_regularizer_matches_penalty_and_gradients():
+    agent = TinyDQN()
+    agent.network.cuda()
+    agent.device = torch.device("cuda")
+    wrapper = EWCWrapper(agent, ewc_lambda=1.5)
+    for name, parameter in wrapper._collect_regularized_params().items():
+        wrapper.aggregated_fisher[name] = torch.full_like(parameter, 0.3)
+        wrapper.aggregated_mean[name] = parameter.detach().clone() + 0.25
+        wrapper.aggregated_correction[name] = torch.tensor(0.1, device="cuda")
+    wrapper.configure_regularizer(compile_regularizer=True)
+    parameters = list(agent.network.parameters())
+    for _ in range(2):
+        expected = wrapper.compute_ewc_loss()
+        actual = wrapper._runtime_regularizer()
+        torch.testing.assert_close(actual, expected)
+        for left, right in zip(
+            torch.autograd.grad(actual, parameters),
+            torch.autograd.grad(expected, parameters),
+            strict=True,
+        ):
+            torch.testing.assert_close(left, right)
+        with torch.no_grad():
+            agent.network.weight.add_(0.1)

@@ -192,16 +192,17 @@ def test_optimized_ppo_runtime_rejects_mixed_algorithm_matrix() -> None:
         raise AssertionError("optimized PPO options must not leak into DQN jobs")
 
 
+@pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
 @pytest.mark.parametrize("method", ("finetune", "ewc", "gpm"))
-def test_teaching_method_selects_one_matching_training_and_evaluation_job(method):
-    options = dict(games=DEFAULT_GAMES["continual"], algorithms=("ppo",), method=method)
+def test_teaching_method_selects_one_matching_training_and_evaluation_job(method, algorithm):
+    options = dict(games=DEFAULT_GAMES["continual"], algorithms=(algorithm,), method=method)
     training = build_jobs("train", "continual", task_steps=(1048576, 524288, 524288), **options)
     evaluation = build_jobs("evaluate", "continual", **options)
     assert len(training) == len(evaluation) == 1
     assert "scripts/train_continual.py" in training[0].arguments
     index = training[0].arguments.index("--task-steps")
     assert training[0].arguments[index + 1 : index + 4] == ("1048576", "524288", "524288")
-    variant = "ppo_gpm" if method == "gpm" else f"ppo_ewc{method == 'ewc'}"
+    variant = f"{algorithm}_gpm" if method == "gpm" else f"{algorithm}_ewc{method == 'ewc'}"
     assert f"checkpoints/continual/{variant}/seed-0.pt" in evaluation[0].arguments
     assert ("--ewc" in evaluation[0].arguments) == (method == "ewc")
 
@@ -216,7 +217,6 @@ def test_gpm_dry_run_uses_complete_teaching_entry_point(capsys):
 @pytest.mark.parametrize(
     "options",
     [
-        {"algorithms": ("dqn",), "method": "gpm"},
         {"method": "gpm", "ewc_mode": "on"},
         {"task_steps": (8, 8)},
         {"task_steps": (8, 0, 8)},
@@ -291,3 +291,231 @@ def test_seed_everything_reproduces_python_numpy_and_torch() -> None:
 def test_seed_everything_rejects_numpy_incompatible_seed() -> None:
     with pytest.raises(ValueError, match="seed"):
         seed_everything(2**32)
+
+
+def test_multitask_ppo_compile_option_reaches_training_job():
+    jobs = build_jobs(
+        phase="train", suite="multitask", games=("Pong-v5",), algorithms=("ppo",), compile_ppo=True
+    )
+    assert len(jobs) == 1
+    assert "--compile-ppo" in jobs[0].arguments
+
+
+@pytest.mark.parametrize("compile_ppo", (False, True))
+def test_joint_ppo_uses_shared_learner_and_preserves_budget(monkeypatch, tmp_path, compile_ppo):
+    from algorithms import MultiHeadPPOAgent
+    from scripts import train_multitask as joint
+
+    if compile_ppo and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    device = "cuda" if compile_ppo else "cpu"
+    environments, updates = {}, []
+
+    class TinyAgent(MultiHeadPPOAgent):
+        def __init__(self, state_dim, **kwargs):
+            super().__init__(state_dim, device=device, **kwargs)
+            self.backbone = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(4, 512)).to(
+                device
+            )
+            self.network = self.backbone
+
+    class TinyEnvironment:
+        action_space = 2
+
+        def __init__(self, game, **kwargs):
+            environments[game] = self
+            self.transitions = 0
+            self.closed = False
+
+        def reset(self):
+            return torch.ones(4, 1, 1, dtype=torch.uint8)
+
+        def step(self, action):
+            assert 0 <= action < self.action_space
+            self.transitions += 1
+            return self.reset(), 1.0, False, self.transitions % 3 == 0
+
+        def close(self):
+            self.closed = True
+
+    update = joint.PPOLearner.update
+
+    def record_update(learner, rollout):
+        updates.append((learner.agent.current_task, rollout.transition_count, learner.compiled))
+        return update(learner, rollout)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(joint, "AtariEnv", TinyEnvironment)
+    monkeypatch.setattr(joint, "MultiHeadPPOAgent", TinyAgent)
+    monkeypatch.setattr(joint.PPOLearner, "update", record_update)
+    monkeypatch.setattr(
+        joint.np.random,
+        "choice",
+        lambda games: np.str_("pong" if environments["pong"].transitions < 128 else "breakout"),
+    )
+    joint.train_multitask(
+        games=["pong", "breakout"],
+        algorithm="ppo",
+        total_steps=134,
+        batch_size=4,
+        compile_ppo=compile_ppo,
+    )
+    assert updates == [("pong", 128, compile_ppo), ("breakout", 6, compile_ppo)]
+    assert all(env.closed for env in environments.values())
+    assert sum(env.transitions for env in environments.values()) == 134
+    assert (tmp_path / "checkpoints/multitask/ppo/seed-0.pt").exists()
+
+
+def test_teaching_matrix_covers_ten_configurations_and_matching_evaluation():
+    from scripts.run_experiments import build_teaching_jobs
+
+    jobs = build_teaching_jobs(phase="train", seed=0)
+    training, evaluation = jobs[:12], jobs[12:]
+    assert len(training) == len(evaluation) == 12
+    assert len({job.log_name for job in jobs}) == 24
+    for job in training:
+        assert job.arguments[job.arguments.index("--seed") + 1] == "0"
+        algorithm = job.arguments[job.arguments.index("--algorithm") + 1]
+        assert ("--compile-ppo" in job.arguments) == (algorithm == "ppo")
+        if "multitask" in job.name:
+            assert job.arguments[job.arguments.index("--steps") + 1] == "1500000"
+    assert all(job.capture_output for job in jobs)
+    assert sum("--method" in j.arguments and "gpm" in j.arguments for j in training) == 2
+    assert all("scripts/evaluate.py" in job.arguments for job in evaluation)
+
+
+def test_sequential_runner_records_completion_failure_and_pending_jobs(tmp_path):
+    import json
+
+    from scripts.run_experiments import Job, run_jobs
+
+    jobs = [
+        Job("ok", ("-c", "print('done')"), "ok.log", True),
+        Job("fail", ("-c", "raise SystemExit(3)"), "fail.log", True),
+        Job("pending", ("-c", "print('not run')"), "pending.log", True),
+    ]
+    with pytest.raises(RuntimeError, match="exit code 3"):
+        run_jobs(jobs, device="cpu", parallel=False, log_dir=tmp_path)
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert [job["state"] for job in status["jobs"]] == ["completed", "failed", "pending"]
+    assert status["jobs"][0]["exit_code"] == 0
+    assert status["jobs"][1]["exit_code"] == 3
+    assert (tmp_path / "ok.log").read_text().strip() == "done"
+
+
+def test_deterministic_training_option_is_forwarded_and_can_be_reset() -> None:
+    jobs = build_jobs(
+        "train", "continual", games=("Pong-v5",), algorithms=("ppo",), deterministic=True
+    )
+    assert all("--deterministic" in job.arguments for job in jobs)
+    try:
+        seed_everything(0, deterministic=True)
+        assert torch.are_deterministic_algorithms_enabled()
+        assert torch.backends.cudnn.deterministic
+        seed_everything(0)
+        assert not torch.are_deterministic_algorithms_enabled()
+    finally:
+        seed_everything(0)
+
+
+@pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
+def test_joint_records_actual_environment_steps(monkeypatch, tmp_path, algorithm):
+    import importlib
+    import json
+
+    module = importlib.import_module("scripts.train_multitask")
+    environments = {}
+
+    class CountingEnvironment:
+        action_space = 2
+
+        def __init__(self, game, **kwargs):
+            self.steps = 0
+            environments[game] = self
+
+        def reset(self):
+            return torch.zeros(4, 84, 84, dtype=torch.uint8)
+
+        def step(self, action):
+            self.steps += 1
+            return self.reset(), 0.0, False, False
+
+        def close(self):
+            pass
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "AtariEnv", CountingEnvironment)
+    module.train_multitask(games=["a", "b"], algorithm=algorithm, total_steps=131)
+    summary = json.loads(
+        (tmp_path / f"outputs/multitask/{algorithm}/seed-0/training_summary.json").read_text()
+    )
+    assert summary["total_steps"] == 131
+    assert summary["task_steps"] == {game: env.steps for game, env in environments.items()}
+    assert sum(summary["task_steps"].values()) == 131
+
+
+def test_single_periodic_evaluation_keeps_training_budget(monkeypatch, tmp_path):
+    import importlib
+    import json
+
+    module = importlib.import_module("scripts.train_single")
+    environments = []
+
+    class CountingEnvironment:
+        action_space = 2
+
+        def __init__(self, game, training=True, **kwargs):
+            self.training, self.steps, self.closed = training, 0, False
+            environments.append(self)
+
+        def reset(self):
+            return torch.zeros(4, 84, 84, dtype=torch.uint8)
+
+        def step(self, action):
+            self.steps += 1
+            return self.reset(), 3.0, not self.training, False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "AtariEnv", CountingEnvironment)
+    module.train_single_game(algorithm="dqn", num_steps=10, eval_interval=4, eval_episodes=2)
+    data = json.loads(
+        (tmp_path / "outputs/single/Pong-v5_dqn/seed-0/learning_evaluation.json").read_text()
+    )
+    assert [e["step"] for e in data["evaluations"]] == [4, 8, 10]
+    assert all(e["rewards"] == [3.0, 3.0] for e in data["evaluations"])
+    assert all((tmp_path / e["checkpoint"]).is_file() for e in data["evaluations"])
+    assert environments[0].steps == 10
+    assert all(env.closed for env in environments)
+
+
+def test_teaching_defaults_use_qualified_budgets_and_keep_uniform_smoke_override():
+    from scripts.run_experiments import build_teaching_jobs
+
+    jobs = build_teaching_jobs(phase="train", seed=0)[:12]
+    for job in jobs:
+        args = job.arguments
+        assert "--deterministic" in args
+        if args[0] == "scripts/train_single.py":
+            expected = "2000000" if "Pong-v5" in args else "500000"
+            assert args[args.index("--steps") + 1] == expected
+            assert "--eval-interval" in args
+        elif args[0] == "scripts/train_continual.py":
+            if args[args.index("--algorithm") + 1] == "ppo":
+                index = args.index("--task-steps")
+                assert args[index + 1 : index + 4] == ("1000448", "500000", "500000")
+            else:
+                assert args[args.index("--steps-per-game") + 1] == "500000"
+    smoke = build_teaching_jobs(phase="train", seed=0, steps=1024)[:12]
+    assert all("--task-steps" not in j.arguments for j in smoke)
+    assert all("--eval-interval" not in j.arguments for j in smoke)
+
+
+def test_teaching_evaluations_keep_deterministic_kernels_enabled():
+    from scripts.run_experiments import build_teaching_jobs
+
+    jobs = build_teaching_jobs(phase="evaluate", seed=0)
+    assert len(jobs) == 12
+    assert all("--deterministic" in job.arguments for job in jobs)

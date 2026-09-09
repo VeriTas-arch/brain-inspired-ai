@@ -134,3 +134,59 @@ def test_plot_continual_results_reads_score_matrix_without_cross_game_average(tm
     output_path = plot_continual_results(tmp_path, tmp_path / "continual.png")
 
     assert output_path.is_file()
+
+
+@pytest.mark.parametrize("mode", ("single", "multitask", "continual"))
+def test_evaluation_preserves_requested_deterministic_kernels(monkeypatch, tmp_path, mode):
+    from scripts import evaluate
+    from training import seed_everything
+
+    class Agent(_FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+
+        def load(self, path):
+            pass
+
+        def set_task(self, game):
+            pass
+
+        def select_action(self, state, deterministic=False):
+            assert torch.are_deterministic_algorithms_enabled()
+            return super().select_action(state, deterministic)
+
+    class Env(_FakeEnv):
+        action_space = 2
+
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(evaluate, "DQNAgent", Agent)
+    monkeypatch.setattr(evaluate, "_build_multihead_agent", lambda *args: Agent())
+    monkeypatch.setattr(evaluate, "AtariEnv", Env)
+    monkeypatch.setattr(evaluate, "_record_example_video", lambda *args, **kwargs: None)
+    try:
+        kwargs = dict(
+            model_path="example.pt",
+            algorithm="dqn",
+            episodes=2,
+            max_steps=10,
+            output_dir=tmp_path,
+            deterministic=True,
+        )
+        if mode == "single":
+            result = evaluate.evaluate_single(game="game", **kwargs)
+        elif mode == "multitask":
+            result = evaluate.evaluate_multitask(games=["game"], **kwargs)
+        else:
+            result = evaluate.evaluate_continual(
+                games=["game"], use_ewc=False, ewc_lambda=0.4, **kwargs
+            )
+        assert result["deterministic"] is True
+        rewards = result["rewards"] if mode == "single" else result["games"]["game"]["rewards"]
+        assert rewards == [3.0, 3.0]
+    finally:
+        seed_everything(0)

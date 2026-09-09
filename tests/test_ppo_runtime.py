@@ -1,5 +1,6 @@
 """Tests for the PPO runtime shared by training protocols."""
 
+import pytest
 import torch
 
 from environments import VectorStep
@@ -147,7 +148,10 @@ def test_compiled_learner_compiles_only_policy_hot_paths(monkeypatch) -> None:
 
     assert learner.compiled
     assert len(compiled_functions) == 2
-    assert all(options == {"mode": "reduce-overhead"} for _, options in compiled_functions)
+    assert all(
+        options == {"mode": "reduce-overhead", "fullgraph": True}
+        for _, options in compiled_functions
+    )
 
 
 def test_learner_configures_optional_regularizer_for_same_runtime() -> None:
@@ -168,3 +172,56 @@ def test_flatten_rollout_data_keeps_time_before_environment_order() -> None:
 
     torch.testing.assert_close(flattened["states"].flatten(), torch.arange(4))
     torch.testing.assert_close(flattened["actions"], torch.arange(4))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("multi_head", (False, True))
+def test_fullgraph_cuda_policy_loss_and_task_switching(multi_head, monkeypatch):
+    from algorithms.ppo import MultiHeadPPOAgent, PPOAgent
+
+    # Compare graph semantics at IEEE precision; production keeps backend defaults.
+    monkeypatch.setattr(torch.backends.cuda.matmul, "fp32_precision", "ieee")
+    monkeypatch.setattr(torch.backends.cudnn.conv, "fp32_precision", "ieee")
+    torch.manual_seed(41)
+    if multi_head:
+        agent = MultiHeadPPOAgent(4, device="cuda")
+        agent.register_task("pong", 3)
+        agent.register_task("breakout", 4)
+        tasks = ("pong", "breakout", "pong")
+    else:
+        agent = PPOAgent(4, 3, device="cuda")
+        tasks = (None,)
+    eager = PPOLearner(agent, minibatch_size=4)
+    compiled = PPOLearner(agent, minibatch_size=4, compile_policy=True)
+    states = torch.randint(256, (4, 4, 84, 84), dtype=torch.uint8, device="cuda")
+    for task in tasks:
+        if task is not None:
+            agent.set_task(task)
+        with torch.no_grad():
+            # Match RolloutBuffer ownership: outputs must survive the next CUDA graph.
+            actions, log_probs, values = (
+                tensor.clone() for tensor in compiled.sample_action_and_value(states)
+            )
+            _, expected_log_probs, _, expected_values = agent.get_action_and_value(states, actions)
+        torch.testing.assert_close(log_probs, expected_log_probs, atol=1e-5, rtol=1e-4)
+        torch.testing.assert_close(values, expected_values, atol=1e-5, rtol=1e-4)
+        inputs = (
+            states,
+            actions,
+            log_probs,
+            torch.randn(4, device="cuda"),
+            values.flatten() + 0.2,
+            values.flatten(),
+        )
+        expected = eager._minibatch_loss(*inputs)
+        actual = compiled._minibatch_loss(*inputs)
+        for left, right in zip(actual, expected, strict=True):
+            torch.testing.assert_close(left, right, atol=1e-5, rtol=1e-4)
+        parameters = [p for group in agent.optimizer.param_groups for p in group["params"]]
+        expected_gradients = torch.autograd.grad(expected[0], parameters, allow_unused=True)
+        actual_gradients = torch.autograd.grad(actual[0], parameters, allow_unused=True)
+        for left, right in zip(actual_gradients, expected_gradients, strict=True):
+            if right is None:
+                assert left is None
+                continue
+            torch.testing.assert_close(left, right, atol=1e-5, rtol=1e-4)

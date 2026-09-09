@@ -103,3 +103,23 @@ def test_rollout_buffer_can_store_policy_output_before_environment_result() -> N
     batch = buffer.get_batch()
     torch.testing.assert_close(batch["states"][0], torch.arange(4).reshape(2, 2))
     torch.testing.assert_close(batch["rewards"][0], torch.tensor([1.0, 2.0]))
+
+
+@pytest.mark.parametrize("device", ("cpu", "cuda"))
+def test_rollout_buffer_owns_policy_outputs_before_sampler_storage_is_reused(device) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    buffer = RolloutBuffer(capacity=2, num_envs=2, policy_device=device)
+    log_probs = torch.tensor([-0.1, -0.2], device=device)
+    values = torch.tensor([1.0, 2.0], device=device)
+    states = torch.zeros(2, 4, 84, 84, dtype=torch.uint8)
+    buffer.start_step(states, torch.tensor([0, 1]), log_probs, values)
+    log_probs.fill_(-9.0)
+    values.fill_(99.0)
+    buffer.finish_step(torch.ones(2), torch.zeros(2))
+    batch = buffer.get_batch()
+
+    assert batch["states"].device.type == batch["rewards"].device.type == "cpu"
+    assert batch["log_probs"].device.type == batch["values"].device.type == device
+    torch.testing.assert_close(batch["log_probs"].cpu(), torch.tensor([[-0.1, -0.2]]))
+    torch.testing.assert_close(batch["values"].cpu(), torch.tensor([[1.0, 2.0]]))

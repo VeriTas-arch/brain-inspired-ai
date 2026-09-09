@@ -113,3 +113,44 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def teaching_results(case: str) -> str:
+    """Render the committed evaluation snapshot, without requiring local training outputs."""
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "results" / "teaching.json"
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    records = [record for record in snapshot["records"] if record["case"] == case]
+    if not records:
+        raise ValueError(f"Unknown teaching case: {case}")
+    lines = [
+        "| 算法 | 游戏 | 评估均分／阶段轨迹 | 证据状态 |",
+        "|---|---|---|---|",
+    ]
+    for record in records:
+        data = record["data"]
+        if case == "single":
+            scores = {
+                record["game"]: [e["mean_raw_reward"] for e in data["evaluations"]]
+                if "evaluations" in data
+                else [data["avg_reward"]]
+            }
+        elif case == "multitask":
+            scores = {game: [entry["avg_reward"]] for game, entry in data["games"].items()}
+        else:
+            scores = {
+                game: [
+                    stage["scores"][game]
+                    for stage in data["score_matrix"]
+                    if stage["scores"][game] is not None
+                ]
+                for game in data["games"]
+            }
+        for game, values in scores.items():
+            trajectory = " → ".join(f"{value:g}" for value in values)
+            lines.append(
+                f"| {record['algorithm'].upper()} | {game} | {trajectory} | {record['status']} |"
+            )
+    return "\n".join(lines)

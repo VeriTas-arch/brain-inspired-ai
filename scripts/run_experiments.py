@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -65,6 +67,7 @@ def build_jobs(
     num_envs: int = 1,
     env_backend: str = "sync",
     compile_ppo: bool = False,
+    deterministic: bool = False,
     method: str | None = None,
     task_steps: Sequence[int] | None = None,
 ) -> list[Job]:
@@ -83,8 +86,6 @@ def build_jobs(
         raise ValueError("method selects finetune, ewc, or gpm in the continual suite")
     if method is not None and ewc_mode != "both":
         raise ValueError("Use either method or ewc_mode")
-    if method == "gpm" and tuple(algorithms) != ("ppo",):
-        raise ValueError("GPM requires --algorithms ppo")
     if task_steps is not None:
         if phase != "train" or suite != "continual":
             raise ValueError("task_steps is supported only for continual training")
@@ -99,10 +100,12 @@ def build_jobs(
     )
     if num_envs > 1 and (phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)):
         raise ValueError("num_envs greater than one supports PPO single/continual training only")
-    if (env_backend != "sync" or compile_ppo) and (
+    if env_backend != "sync" and (
         phase != "train" or suite == "multitask" or tuple(algorithms) != ("ppo",)
     ):
         raise ValueError("optimized PPO runtime options support single/continual PPO training only")
+    if compile_ppo and (phase != "train" or tuple(algorithms) != ("ppo",)):
+        raise ValueError("compile_ppo supports PPO training only")
     if phase == "train":
         training_steps = steps if steps is not None else DEFAULT_TRAINING_STEPS[suite]
         if training_steps <= 0:
@@ -111,7 +114,7 @@ def build_jobs(
         if suite in {"single", "continual"} and "ppo" in algorithms:
             if any(value % num_envs for value in budgets):
                 raise ValueError("PPO task budgets must be divisible by num_envs")
-        return _build_training_jobs(
+        jobs = _build_training_jobs(
             suite,
             games,
             algorithms,
@@ -126,10 +129,16 @@ def build_jobs(
             compile_ppo,
             task_steps,
         )
+        if deterministic:
+            jobs = [replace(job, arguments=(*job.arguments, "--deterministic")) for job in jobs]
+        return jobs
 
-    return _build_evaluation_jobs(
+    jobs = _build_evaluation_jobs(
         suite, games, algorithms, episodes, max_steps, ewc_lambda, methods, seed
     )
+    if deterministic:
+        jobs = [replace(job, arguments=(*job.arguments, "--deterministic")) for job in jobs]
+    return jobs
 
 
 def _build_training_jobs(
@@ -231,6 +240,7 @@ def _build_training_jobs(
                         algorithm,
                         "--steps",
                         str(steps),
+                        *(("--compile-ppo",) if compile_ppo else ()),
                     ),
                     f"multitask_{algorithm}_seed{seed}.log",
                     True,
@@ -345,6 +355,84 @@ def _build_evaluation_jobs(
     return jobs
 
 
+def build_teaching_jobs(
+    *,
+    phase: str,
+    seed: int,
+    steps: int | None = None,
+    episodes: int = 10,
+    max_steps: int = DEFAULT_MAX_EPISODE_STEPS,
+    ewc_lambda: float = 0.4,
+    num_envs: int = 8,
+    env_backend: str = "async",
+    compile_ppo: bool = True,
+    deterministic: bool = True,
+) -> list[Job]:
+    """Run all ten configurations; training includes a final evaluation of each job.
+
+    Single-task uses the two teaching games. Joint training gets the same total
+    transition budget as the original three-task protocol. Without a uniform steps
+    override, Pong single-task uses 2M and continual PPO uses the verified budgets.
+    """
+    if steps is not None and steps <= 0:
+        raise ValueError("steps must be positive")
+    training, evaluation = [], []
+    for algorithm in ("ppo", "dqn"):
+        for suite, method in (
+            ("single", None),
+            ("multitask", None),
+            ("continual", "finetune"),
+            ("continual", "ewc"),
+            ("continual", "gpm"),
+        ):
+            options = dict(
+                games=DEFAULT_GAMES[suite],
+                algorithms=(algorithm,),
+                seed=seed,
+                episodes=episodes,
+                max_steps=max_steps,
+                method=method,
+                ewc_lambda=ewc_lambda,
+            )
+            if phase == "train":
+                vector = algorithm == "ppo" and suite != "multitask"
+                budgets = (
+                    (1_000_448, 500_000, 500_000)
+                    if (steps is None and suite == "continual" and algorithm == "ppo")
+                    else None
+                )
+                case_steps = steps or 500_000
+                if suite == "multitask":
+                    case_steps *= len(DEFAULT_GAMES[suite])
+                training.extend(
+                    build_jobs(
+                        "train",
+                        suite,
+                        **options,
+                        steps=None if budgets else case_steps,
+                        task_steps=budgets,
+                        num_envs=num_envs if vector else 1,
+                        env_backend=env_backend if vector else "sync",
+                        compile_ppo=compile_ppo and algorithm == "ppo",
+                        deterministic=deterministic,
+                    )
+                )
+            evaluation.extend(build_jobs("evaluate", suite, **options, deterministic=deterministic))
+    if steps is None:
+        updated = []
+        for job in training:
+            arguments = list(job.arguments)
+            if arguments[0] == "scripts/train_single.py" and "Pong-v5" in arguments:
+                arguments[arguments.index("--steps") + 1] = "2000000"
+            if arguments[0] in {"scripts/train_single.py", "scripts/train_continual.py"}:
+                arguments.extend(("--eval-interval", "250000"))
+                if arguments[0] == "scripts/train_single.py":
+                    arguments.extend(("--eval-episodes", str(episodes)))
+            updated.append(replace(job, arguments=tuple(arguments)))
+        training = updated
+    return [replace(job, capture_output=True) for job in training + evaluation]
+
+
 def _cuda_device_count(device: str) -> int:
     if device == "cpu":
         return 0
@@ -385,7 +473,31 @@ def run_jobs(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     if not parallel:
+        status_path = log_dir / "status.json"
+        status = {
+            "cwd": str(PROJECT_ROOT),
+            "pid": os.getpid(),
+            "jobs": [
+                {
+                    "name": job.name,
+                    "command": list(job.command),
+                    "log": str(log_dir / job.log_name),
+                    "state": "pending",
+                }
+                for job in jobs
+            ],
+        }
+
+        def write_status():
+            temporary = status_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(status, indent=2) + "\n")
+            temporary.replace(status_path)
+
+        write_status()
         for index, job in enumerate(jobs):
+            record = status["jobs"][index]
+            record.update(state="running", started_at=datetime.now(timezone.utc).isoformat())
+            write_status()
             environment = _job_environment(device_count, index, parallel=False)
             device_label = "cpu" if device_count == 0 else "cuda:0"
             _print_job(job, index + 1, len(jobs), device_label)
@@ -407,6 +519,12 @@ def run_jobs(
                     env=environment,
                     check=False,
                 )
+            record.update(
+                state="completed" if result.returncode == 0 else "failed",
+                exit_code=result.returncode,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+            write_status()
             if result.returncode != 0:
                 raise RuntimeError(f"Job failed with exit code {result.returncode}: {job.name}")
         return
@@ -450,7 +568,7 @@ def run_jobs(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("train", "evaluate"))
-    parser.add_argument("suite", choices=("single", "continual", "multitask"))
+    parser.add_argument("suite", choices=("single", "continual", "multitask", "teaching"))
     parser.add_argument("--games", nargs="+", help="Override the suite's default games")
     parser.add_argument(
         "--algorithms",
@@ -458,6 +576,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("dqn", "ppo"),
         default=("dqn", "ppo"),
     )
+    parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--steps", type=int, help="Training steps or steps per game")
     parser.add_argument("--task-steps", type=int, nargs="+", help="One budget per sequential task")
     parser.add_argument("--episodes", type=int, default=10, help="Evaluation episodes per game")
@@ -511,6 +630,39 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         seeds = args.seeds or (args.seed,)
+        if args.suite == "teaching":
+            if (
+                args.games
+                or args.method
+                or args.task_steps
+                or args.ewc_mode != "both"
+                or args.parallel
+            ):
+                raise ValueError("teaching uses fixed games/methods and sequential execution")
+            if tuple(args.algorithms) != ("dqn", "ppo"):
+                raise ValueError("teaching includes both DQN and PPO")
+            jobs = []
+            for seed in seeds:
+                jobs.extend(
+                    build_teaching_jobs(
+                        phase=args.phase,
+                        seed=seed,
+                        steps=args.steps,
+                        episodes=args.episodes,
+                        max_steps=args.max_steps,
+                        ewc_lambda=args.ewc_lambda,
+                        num_envs=args.num_envs,
+                        env_backend=args.env_backend,
+                        compile_ppo=args.compile_ppo,
+                        deterministic=True if args.deterministic is None else args.deterministic,
+                    )
+                )
+            if args.dry_run:
+                for index, job in enumerate(jobs, start=1):
+                    _print_job(job, index, len(jobs), args.device)
+            else:
+                run_jobs(jobs, device=args.device, parallel=False, log_dir=args.log_dir)
+            return
         games = args.games or DEFAULT_GAMES[args.suite]
         jobs = []
         for seed in seeds:
@@ -529,6 +681,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     num_envs=args.num_envs,
                     env_backend=args.env_backend,
                     compile_ppo=args.compile_ppo,
+                    deterministic=args.deterministic,
                     method=args.method,
                     task_steps=args.task_steps,
                 )

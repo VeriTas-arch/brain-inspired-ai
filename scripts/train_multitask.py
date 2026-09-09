@@ -1,6 +1,7 @@
 """Multi-task joint training on multiple Atari games."""
 
 import argparse
+import json
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,7 +16,16 @@ from algorithms import (
     bootstrap_truncated_reward,
 )
 from environments import AtariEnv
-from training import MetricsPlotter, ReplayBuffer, RolloutBuffer, VideoRecorder, seed_everything
+from training import (
+    CollectedRollout,
+    MetricsPlotter,
+    PPOLearner,
+    ReplayBuffer,
+    RolloutBuffer,
+    VideoRecorder,
+    configure_ppo_runtime,
+    seed_everything,
+)
 
 
 def train_multitask(
@@ -25,13 +35,18 @@ def train_multitask(
     batch_size: int = 32,
     save_video: bool = False,
     seed: int = 0,
+    deterministic: bool = False,
+    compile_ppo: bool = False,
 ):
     """Train agent on multiple games jointly (random task sampling per iteration)."""
+    if compile_ppo and algorithm != "ppo":
+        raise ValueError("compile_ppo requires PPO")
     if games is None:
         games = ["Pong-v5", "Breakout-v5", "SpaceInvaders-v5"]
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    seed_everything(seed)
+    configure_ppo_runtime("sync")
+    seed_everything(seed, deterministic=deterministic)
 
     print(f"Multi-task Joint Training: {algorithm.upper()} on {games}")
     print(f"Total steps: {total_steps}")
@@ -70,11 +85,22 @@ def train_multitask(
         rollout_length = 128
         update_epochs = 4
         minibatch_size = batch_size
-        buffers = {game: RolloutBuffer(capacity=rollout_length) for game in games}
+        buffers = {
+            game: RolloutBuffer(capacity=rollout_length, policy_device=agent.device)
+            for game in games
+        }
 
     # Register all tasks
     for game_name in games:
         agent.register_task(game_name, action_dims[game_name])
+
+    if algorithm == "ppo":
+        learner = PPOLearner(
+            agent,
+            update_epochs=update_epochs,
+            minibatch_size=minibatch_size,
+            compile_policy=compile_ppo,
+        )
 
     exp_dir = Path("outputs") / "multitask" / algorithm / f"seed-{seed}"
     exp_dir.mkdir(parents=True, exist_ok=True)
@@ -101,10 +127,12 @@ def train_multitask(
 
     pbar = tqdm(total=total_steps, desc="Multi-task Training")
     step = 0
+    task_steps = {game: 0 for game in games}
 
     while step < total_steps:
         # Randomly sample a task for this iteration
-        current_game = np.random.choice(games)
+        # Keep task metadata as Python strings outside the compiled policy.
+        current_game = str(np.random.choice(games))
         task_id = current_game
         agent.set_task(task_id)
         env = envs[current_game]
@@ -125,6 +153,7 @@ def train_multitask(
 
             states[current_game] = next_state
             step += 1
+            task_steps[current_game] += 1
             pbar.update(1)
 
             if episode_done:
@@ -141,7 +170,7 @@ def train_multitask(
                 if buffer.is_ready(batch_size):
                     batch = buffer.sample(batch_size)
                     metrics = agent.update(batch)
-                    pbar.set_postfix({**metrics, "game": current_game[:8]})
+                    pbar.set_postfix({**metrics, "game": current_game[:8]}, refresh=False)
 
                     if "loss" in metrics:
                         metrics_plotter.add_metric(f"{current_game}_loss", metrics["loss"])
@@ -169,10 +198,10 @@ def train_multitask(
                 # Collect one step
                 with torch.no_grad():
                     state_tensor = state.unsqueeze(0).to(agent.device)
-                    action_tensor, log_prob, value = agent.sample_action_and_value(state_tensor)
+                    action_tensor, log_prob, value = learner.sample_action_and_value(state_tensor)
                     action = action_tensor.item()
-                    log_prob_val = log_prob.item()
-                    value_val = value.item()
+                    log_prob_val = log_prob.flatten()[0]
+                    value_val = value.flatten()[0]
 
                 next_state, reward, terminated, truncated = env.step(action)
                 episode_done = terminated or truncated
@@ -205,6 +234,7 @@ def train_multitask(
 
                 states[current_game] = next_state
                 step += 1
+                task_steps[current_game] += 1
                 rollout_step += 1
                 pbar.update(1)
 
@@ -224,9 +254,12 @@ def train_multitask(
                     next_value = agent.get_value(next_state_tensor).flatten()
 
                 rollout_data = buffer.get_batch()
-                metrics = agent.update(rollout_data, next_value, update_epochs, minibatch_size)
+                metrics = learner.update(
+                    CollectedRollout(rollout_data, next_value, len(rollout_data["actions"]), ())
+                )
                 pbar.set_postfix(
-                    {**metrics, "game": current_game[:8], "episodes": episode_count[current_game]}
+                    {**metrics, "game": current_game[:8], "episodes": episode_count[current_game]},
+                    refresh=False,
                 )
 
                 if "policy_loss" in metrics:
@@ -267,6 +300,20 @@ def train_multitask(
     metrics_plotter.plot(str(metrics_output_path))
     print(f"\nMetrics plot saved: {metrics_output_path}")
 
+    (exp_dir / "training_summary.json").write_text(
+        json.dumps(
+            {
+                "algorithm": algorithm,
+                "seed": seed,
+                "deterministic": deterministic,
+                "total_steps": step,
+                "task_steps": task_steps,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
     # Save model checkpoint
     ckpt_root = Path("checkpoints") / "multitask"
     ckpt_root.mkdir(parents=True, exist_ok=True)
@@ -291,6 +338,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--compile-ppo", action="store_true")
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
@@ -304,4 +353,6 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         save_video=args.save_video,
         seed=args.seed,
+        deterministic=args.deterministic,
+        compile_ppo=args.compile_ppo,
     )
