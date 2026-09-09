@@ -14,7 +14,12 @@ import torch
 from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent
 from algorithms.subspace_projection import AdamSubspaceProjection, build_input_subspaces
 from environments import AtariEnv, make_vector_atari_env, observation_protocol
-from training import ReplayBuffer, configure_ppo_runtime, dqn_updates_due, seed_everything
+from training import (
+    ReplayBuffer,
+    configure_ppo_runtime,
+    dqn_updates_due,
+    seed_everything,
+)
 
 
 def benchmark_configuration(

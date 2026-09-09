@@ -7,7 +7,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
 
-from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
+from algorithms import (
+    DQNAgent,
+    EWCWrapper,
+    MultiHeadDQNAgent,
+    MultiHeadPPOAgent,
+    PPOAgent,
+)
 from environments import AtariEnv, observation_protocol
 from training import (
     DEFAULT_MAX_EPISODE_STEPS,
