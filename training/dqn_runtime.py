@@ -3,6 +3,34 @@
 import torch
 
 
+class DQNMetrics:
+    """Keep every update's diagnostics, with one device read per bounded group."""
+
+    def __init__(self, agent, callback, capacity=128):
+        self.agent = getattr(agent, "agent", agent)
+        self.ewc = self.agent is not agent
+        self.callback = callback
+        self.values = torch.empty((capacity, 3), device=self.agent.device)
+        self.metadata = []
+
+    def record(self, diagnostics, epsilon, regularized):
+        self.values[len(self.metadata)].copy_(diagnostics)
+        self.metadata.append((epsilon, regularized))
+        if len(self.metadata) == len(self.values):
+            self.flush()
+
+    def flush(self):
+        if not self.metadata:
+            return
+        rows = self.values[: len(self.metadata)].tolist()
+        for row, (epsilon, regularized) in zip(rows, self.metadata, strict=True):
+            metrics = self.agent.format_update_metrics(row, epsilon, regularized)
+            if self.ewc and "regularization_loss" in metrics:
+                metrics["ewc_loss"] = metrics.pop("regularization_loss")
+            self.callback(metrics)
+        self.metadata.clear()
+
+
 def dqn_updates_due(start, count, *, learning_starts=10_000, frequency=4, post_increment=False):
     """Preserve each protocol's update count when several transitions arrive together."""
     lower, upper = start + int(post_increment), start + count + int(post_increment)

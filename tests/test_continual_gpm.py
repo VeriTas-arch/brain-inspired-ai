@@ -116,7 +116,18 @@ def test_three_task_gpm_starts_fresh_accumulates_and_saves_an_evaluable_checkpoi
         gpm_collection_steps=8,
         gpm_samples=4,
         seed=7,
+        save_video=True,
     )
+
+    import imageio_ffmpeg
+
+    videos = sorted(tmp_path.glob("outputs/continual/ppo_gpm/seed-7/*/training.mp4"))
+    assert len(videos) == 3
+    assert sorted(imageio_ffmpeg.count_frames_and_secs(str(path))[0] for path in videos) == [
+        1,
+        1,
+        2,
+    ]
 
     assert len(agents) == 1
     assert [env.transitions for env in environments if env.training] == [4, 6, 4]

@@ -374,6 +374,8 @@ def test_teaching_matrix_covers_ten_configurations_and_matching_evaluation():
     assert len({job.log_name for job in jobs}) == 24
     for job in training:
         assert job.arguments[job.arguments.index("--seed") + 1] == "0"
+        assert job.arguments[job.arguments.index("--num-envs") + 1] == "8"
+        assert job.arguments[job.arguments.index("--env-backend") + 1] == "async"
         algorithm = job.arguments[job.arguments.index("--algorithm") + 1]
         assert ("--compile-ppo" in job.arguments) == (algorithm == "ppo")
         if "multitask" in job.name:
@@ -392,18 +394,26 @@ def test_teaching_cli_preserves_formal_defaults_and_explicit_eager_override(monk
     options = (
         ()
         if optimized
-        else ("--num-envs", "1", "--env-backend", "sync", "--no-compile-ppo", "--no-compile-dqn")
+        else (
+            "--num-envs",
+            "1",
+            "--dqn-num-envs",
+            "1",
+            "--env-backend",
+            "sync",
+            "--no-compile-ppo",
+            "--no-compile-dqn",
+        )
     )
     main(("train", "teaching", *options))
     assert len(recorded) == 24
     for job in recorded[:12]:
         algorithm = job.arguments[job.arguments.index("--algorithm") + 1]
         assert (f"--compile-{algorithm}" in job.arguments) == optimized
-        if algorithm == "ppo" and "multitask" not in job.name:
-            assert ("--num-envs" in job.arguments) == optimized
-            if optimized:
-                assert job.arguments[job.arguments.index("--num-envs") + 1] == "8"
-                assert job.arguments[job.arguments.index("--env-backend") + 1] == "async"
+        assert ("--num-envs" in job.arguments) == optimized
+        if optimized:
+            assert job.arguments[job.arguments.index("--num-envs") + 1] == "8"
+            assert job.arguments[job.arguments.index("--env-backend") + 1] == "async"
 
 
 def test_sequential_runner_records_completion_failure_and_pending_jobs(tmp_path):
@@ -503,7 +513,8 @@ def test_deterministic_training_option_is_forwarded_and_can_be_reset() -> None:
 
 
 @pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
-def test_joint_records_actual_environment_steps(monkeypatch, tmp_path, algorithm):
+@pytest.mark.parametrize("num_envs", (1, 8))
+def test_joint_records_actual_environment_steps(monkeypatch, tmp_path, algorithm, num_envs):
     import importlib
     import json
 
@@ -530,16 +541,33 @@ def test_joint_records_actual_environment_steps(monkeypatch, tmp_path, algorithm
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "AtariEnv", CountingEnvironment)
     monkeypatch.setattr("environments.atari_env.AtariEnv", CountingEnvironment)
-    module.train_multitask(games=["a", "b"], algorithm=algorithm, total_steps=131)
+    total_steps = 131 if num_envs == 1 else 152
+    module.train_multitask(
+        games=["a", "b"],
+        algorithm=algorithm,
+        total_steps=total_steps,
+        num_envs=num_envs,
+        save_video=True,
+    )
     summary = json.loads(
         (tmp_path / f"outputs/multitask/{algorithm}/seed-0/training_summary.json").read_text()
     )
-    assert summary["total_steps"] == 131
-    assert summary["task_steps"] == {game: env.steps for game, env in environments.items()}
-    assert sum(summary["task_steps"].values()) == 131
+    assert summary["total_steps"] == total_steps
+    assert summary["task_steps"] == {
+        game: env.steps * num_envs for game, env in environments.items()
+    }
+    assert sum(summary["task_steps"].values()) == total_steps
+    import imageio_ffmpeg
+
+    for game, env in environments.items():
+        if env.steps:
+            path = tmp_path / f"outputs/multitask/{algorithm}/seed-0/{game}/training.mp4"
+            frames, _ = imageio_ffmpeg.count_frames_and_secs(str(path))
+            assert frames == (env.steps + 1) // 2
 
 
-def test_single_periodic_evaluation_keeps_training_budget(monkeypatch, tmp_path):
+@pytest.mark.parametrize("num_envs", (1, 8))
+def test_single_periodic_evaluation_keeps_training_budget(monkeypatch, tmp_path, num_envs):
     import importlib
     import json
 
@@ -566,15 +594,28 @@ def test_single_periodic_evaluation_keeps_training_budget(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "AtariEnv", CountingEnvironment)
     monkeypatch.setattr("environments.atari_env.AtariEnv", CountingEnvironment)
-    module.train_single_game(algorithm="dqn", num_steps=10, eval_interval=4, eval_episodes=2)
+    module.train_single_game(
+        algorithm="dqn",
+        num_steps=10 * num_envs,
+        eval_interval=4 * num_envs,
+        eval_episodes=2,
+        num_envs=num_envs,
+        save_video=True,
+    )
     data = json.loads(
         (tmp_path / "outputs/single/Pong-v5_dqn/seed-0/learning_evaluation.json").read_text()
     )
-    assert [e["step"] for e in data["evaluations"]] == [4, 8, 10]
+    assert [e["step"] for e in data["evaluations"]] == [4 * num_envs, 8 * num_envs, 10 * num_envs]
     assert all(e["rewards"] == [3.0, 3.0] for e in data["evaluations"])
     assert all((tmp_path / e["checkpoint"]).is_file() for e in data["evaluations"])
     assert environments[0].steps == 10
     assert all(env.closed for env in environments)
+    import imageio_ffmpeg
+
+    frames, _ = imageio_ffmpeg.count_frames_and_secs(
+        str(tmp_path / "outputs/single/Pong-v5_dqn/seed-0/training.mp4")
+    )
+    assert frames == 5
 
 
 def test_teaching_defaults_use_qualified_budgets_and_keep_uniform_smoke_override():

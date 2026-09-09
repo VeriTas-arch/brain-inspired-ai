@@ -10,10 +10,20 @@ from torch.distributions import Categorical
 from algorithms.ppo import (
     MultiHeadPPOAgent,
     PPOAgent,
-    bootstrap_truncated_reward,
     generalized_advantage_estimate,
 )
-from training.ppo_runtime import indexed_ppo_loss, optimize_ppo
+from training.ppo_runtime import CollectedRollout, PPOLearner, indexed_ppo_loss, optimize_ppo
+
+
+def _update(
+    agent, rollout_data, next_value, *, update_epochs=4, minibatch_size=32, minibatch_loss=None
+):
+    learner = PPOLearner(agent, update_epochs=update_epochs, minibatch_size=minibatch_size)
+    if minibatch_loss is not None:
+        learner._loss = minibatch_loss
+    return learner.update(
+        CollectedRollout(rollout_data, next_value, rollout_data["actions"].numel(), ())
+    )
 
 
 @pytest.mark.parametrize("vectorized", (False, True))
@@ -69,6 +79,7 @@ def test_policy_sampling_and_gradients_match_validated_distribution(device, mult
     expected_value = critic(hidden)
     torch.manual_seed(31)
     expected_action = reference.sample()
+    expected_rng = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
     expected_log_prob = reference.log_prob(expected_action)
     parameters = [*network.parameters(), *actor.parameters(), *critic.parameters()]
     expected_gradients = torch.autograd.grad(
@@ -85,6 +96,18 @@ def test_policy_sampling_and_gradients_match_validated_distribution(device, mult
     for expected, actual in zip(expected_gradients, gradients, strict=True):
         # Parallel convolution reductions can differ at float32 rounding precision.
         torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+    critic_calls = []
+    handle = critic.register_forward_hook(lambda *args: critic_calls.append(True))
+    try:
+        torch.manual_seed(31)
+        sampled = agent.select_actions(states, deterministic=False)
+        torch.testing.assert_close(sampled, expected_action, rtol=0, atol=0)
+        actual_rng = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
+        torch.testing.assert_close(actual_rng, expected_rng, rtol=0, atol=0)
+        assert critic_calls == []
+    finally:
+        handle.remove()
 
 
 @pytest.mark.parametrize("device", ("cpu", "cuda"))
@@ -108,9 +131,10 @@ def test_cpu_and_device_rollouts_produce_matching_ppo_updates(device) -> None:
     }
     next_value = torch.tensor([0.3, -0.2], device=device)
     torch.manual_seed(37)
-    actual = agent.update(rollout, next_value, update_epochs=2, minibatch_size=4)
+    actual = _update(agent, rollout, next_value, update_epochs=2, minibatch_size=4)
     torch.manual_seed(37)
-    expected = reference.update(
+    expected = _update(
+        reference,
         {name: value.to(device) for name, value in rollout.items()},
         next_value,
         update_epochs=2,
@@ -184,26 +208,6 @@ def test_gae_keeps_vector_environments_independent() -> None:
     torch.testing.assert_close(returns, expected)
 
 
-def test_time_limit_reward_bootstraps_without_crossing_the_reset_boundary() -> None:
-    reward = bootstrap_truncated_reward(
-        1.0,
-        2.0,
-        terminated=False,
-        truncated=True,
-        gamma=0.9,
-    )
-    terminal_reward = bootstrap_truncated_reward(
-        1.0,
-        2.0,
-        terminated=True,
-        truncated=True,
-        gamma=0.9,
-    )
-
-    assert reward == 2.8
-    assert terminal_reward == 1.0
-
-
 def test_ppo_update_accepts_uint8_rollout_states() -> None:
     torch.manual_seed(7)
     agent = PPOAgent(state_dim=4, action_dim=2, device="cpu")
@@ -211,7 +215,8 @@ def test_ppo_update_accepts_uint8_rollout_states() -> None:
     with torch.no_grad():
         actions, log_probs, _, values = agent.get_action_and_value(states)
 
-    metrics = agent.update(
+    metrics = _update(
+        agent,
         {
             "states": states,
             "actions": actions,
@@ -237,7 +242,8 @@ def test_multi_head_ppo_uses_the_shared_update_path() -> None:
     with torch.no_grad():
         actions, log_probs, _, values = agent.get_action_and_value(states)
 
-    metrics = agent.update(
+    metrics = _update(
+        agent,
         {
             "states": states,
             "actions": actions,
@@ -262,7 +268,8 @@ def test_ppo_update_flattens_vector_rollouts_after_gae() -> None:
     with torch.no_grad():
         actions, log_probs, _, values = agent.get_action_and_value(flat_states)
 
-    metrics = agent.update(
+    metrics = _update(
+        agent,
         {
             "states": states,
             "actions": actions.reshape(2, 2),
@@ -292,7 +299,8 @@ def test_ppo_update_rejects_invalid_optimization_sizes() -> None:
 
     for update_epochs, minibatch_size in ((0, 1), (1, 0)):
         try:
-            agent.update(
+            _update(
+                agent,
                 rollout,
                 next_value=torch.zeros(1),
                 update_epochs=update_epochs,
@@ -317,7 +325,8 @@ def test_ppo_metrics_average_all_minibatches() -> None:
         loss = agent.actor.weight.sum() * 0
         return loss, torch.tensor((*next(diagnostics), 0.0))
 
-    metrics = agent.update(
+    metrics = _update(
+        agent,
         {
             "states": states,
             "actions": actions,

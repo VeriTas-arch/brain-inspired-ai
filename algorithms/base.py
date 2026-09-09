@@ -43,11 +43,6 @@ class BaseAgent(ABC):
         """Select an action given a state."""
         raise NotImplementedError
 
-    @abstractmethod
-    def update(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
-        """Update the agent with a batch of experiences."""
-        raise NotImplementedError
-
     def checkpoint_state(self) -> dict:
         """Return serializable state needed to restore the agent."""
         if self.network is None:
@@ -67,21 +62,6 @@ class BaseAgent(ABC):
         """Load an agent checkpoint."""
         checkpoint = safe_torch_load(path, map_location=self.device)
         self.load_checkpoint_state(checkpoint)
-
-    def get_weights(self) -> dict[str, torch.Tensor]:
-        """Get network weights for EWC."""
-        if self.network is None:
-            return {}
-        return {name: param.clone().detach() for name, param in self.network.named_parameters()}
-
-    def set_weights(self, weights: dict[str, torch.Tensor]):
-        """Set network weights."""
-        if self.network is None:
-            return
-        with torch.no_grad():
-            for name, param in self.network.named_parameters():
-                if name in weights:
-                    param.copy_(weights[name])
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):

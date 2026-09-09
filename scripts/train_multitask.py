@@ -4,6 +4,7 @@ import argparse
 import json
 import time
 from collections import defaultdict
+from contextlib import ExitStack
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,7 @@ from algorithms import (
 from environments import AtariEnv, make_vector_atari_env, observation_protocol
 from training import (
     DQNCollector,
+    DQNMetrics,
     MetricsPlotter,
     PPOCollector,
     PPOLearner,
@@ -157,9 +159,23 @@ def train_multitask(
         for game, collector in collectors.items():
             recorder = video_recorders[game]
             collector.frame_callback = lambda count, frame, recorder=recorder: (
-                recorder.add_frame(frame.cpu().numpy()) if count % 2 == 0 else None
+                recorder.add_frame(frame.cpu().numpy()) if (count // num_envs) % 2 == 0 else None
             )
     pbar = tqdm(total=total_steps, desc="Multi-task Training")
+
+    def record_dqn_metrics(game, metrics):
+        for name in ("loss", "epsilon", "q_value"):
+            if name in metrics:
+                metrics_plotter.add_metric(f"{game}_{name}", metrics[name])
+
+    dqn_metrics = (
+        {
+            game: DQNMetrics(agent, lambda metrics, game=game: record_dqn_metrics(game, metrics))
+            for game in games
+        }
+        if algorithm == "dqn"
+        else {}
+    )
     step = 0
     task_steps = {game: 0 for game in games}
     try:
@@ -182,12 +198,11 @@ def train_multitask(
                 ):
                     buffer = buffers[current_game]
                     if buffer.is_ready(batch_size):
-                        metrics = agent.update(buffer.sample(batch_size))
-                        for name in ("loss", "epsilon", "q_value"):
-                            if name in metrics:
-                                metrics_plotter.add_metric(f"{current_game}_{name}", metrics[name])
+                        agent.update(
+                            buffer.sample(batch_size), metrics_sink=dqn_metrics[current_game].record
+                        )
                 transitions = num_envs
-                if save_video and step % 2 == 0:
+                if save_video and (task_steps[current_game] // num_envs) % 2 == 0:
                     video_recorders[current_game].add_frame(frame.cpu().numpy())
             else:
                 rollout = collector.collect(total_steps - step)
@@ -206,15 +221,14 @@ def train_multitask(
                 refresh=False,
             )
     finally:
+        for pending in dqn_metrics.values():
+            pending.flush()
         pbar.close()
-        for env in envs.values():
-            env.close()
-
-    # Save videos
-    if save_video:
-        for game_name, recorder in video_recorders.items():
-            recorder.save(format="mp4")
-            print(f"Video saved: {exp_dir / game_name / 'training.mp4'}")
+        with ExitStack() as resources:
+            for recorder in video_recorders.values():
+                resources.callback(recorder.close)
+            for env in envs.values():
+                resources.callback(env.close)
 
     # Print training summary
     print(f"\n{'=' * 60}")

@@ -1,149 +1,107 @@
-"""Visualization utilities."""
+"""Training plots and streaming MP4 recording."""
 
+import subprocess
 from pathlib import Path
+from tempfile import TemporaryFile
 
-import imageio
+import cv2
+import imageio_ffmpeg
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
 
 class VideoRecorder:
-    """Record gameplay as video/GIF."""
+    """Write uint8 grayscale or RGB observations without retaining a trajectory."""
 
     def __init__(self, output_path: str, fps: int = 30):
-        """
-        Initialize video recorder.
-
-        Args:
-            output_path: Path to save video/GIF
-            fps: Frames per second (default: 30 for better quality)
-        """
         self.output_path = Path(output_path)
         self.fps = fps
-        self.frames = []
+        self.writer = None
+        self.frame_count = 0
+        self.errors = None
 
     def add_frame(self, frame):
-        """Add a frame to the video."""
         if isinstance(frame, torch.Tensor):
             frame = frame.detach().cpu().numpy()
-
         frame = np.asarray(frame)
-
-        if len(frame.shape) == 2:
-            frame = np.stack([frame] * 3, axis=-1)
-        elif len(frame.shape) == 3:
-            if frame.shape[0] == 4:
-                frame = frame[0]
-                frame = np.stack([frame] * 3, axis=-1)
-            elif frame.shape[0] == 1:
-                frame = frame[0]
-                frame = np.stack([frame] * 3, axis=-1)
-            elif frame.shape[2] == 1:
-                frame = np.stack([frame[:, :, 0]] * 3, axis=-1)
-            elif frame.shape[2] == 3:
-                pass
-            elif frame.shape[2] == 4:
-                frame = frame[:, :, :3]
-            else:
-                raise ValueError(f"Unexpected frame shape: {frame.shape}")
-        else:
-            raise ValueError(f"Unexpected frame shape: {frame.shape}")
-
         if frame.dtype != np.uint8:
-            if frame.max() <= 1.0:
-                frame = (frame * 255).astype(np.uint8)
-            else:
-                frame = np.clip(frame, 0, 255).astype(np.uint8)
-
+            raise ValueError("Video frames must be uint8")
+        if frame.ndim == 2:
+            frame = np.repeat(frame[:, :, None], 3, axis=2)
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            raise ValueError(f"Expected grayscale or RGB frame, received {frame.shape}")
+        if min(frame.shape[:2]) < 84:
+            frame = cv2.resize(frame, (max(84, frame.shape[1]), max(84, frame.shape[0])))
         frame = np.ascontiguousarray(frame)
-
-        if frame.shape[0] < 84 or frame.shape[1] < 84:
-            try:
-                import cv2
-
-                target_size = (max(84, frame.shape[1]), max(84, frame.shape[0]))
-                frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_LINEAR)
-            except ImportError:
-                scale_h = max(1, 84 / frame.shape[0])
-                scale_w = max(1, 84 / frame.shape[1])
-                h, w = frame.shape[:2]
-                new_h, new_w = int(h * scale_h), int(w * scale_w)
-                frame = np.repeat(np.repeat(frame, scale_h, axis=0), scale_w, axis=1)[
-                    :new_h, :new_w
-                ]
-            frame = np.clip(frame, 0, 255).astype(np.uint8)
-
-        self.frames.append(frame)
-
-    def save(self, format: str = "mp4"):
-        """Save video."""
-        if not self.frames:
-            print("Warning: No frames to save")
-            return
-
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            if format == "mp4":
-                try:
-                    import imageio_ffmpeg
-
-                    writer = imageio_ffmpeg.write_frames(
-                        str(self.output_path),
-                        size=(self.frames[0].shape[1], self.frames[0].shape[0]),
-                        fps=self.fps,
-                        codec="libx264",
-                        quality=8,
-                        pixelformat="yuv420p",
-                        bitrate="2M",
-                    )
-                    writer.send(None)
-                    for frame in self.frames:
-                        writer.send(frame)
-                    writer.close()
-                except (ImportError, Exception):
-                    try:
-                        imageio.mimsave(
-                            str(self.output_path),
-                            self.frames,
-                            fps=self.fps,
-                            codec="libx264",
-                            quality=8,
-                            pixelformat="yuv420p",
-                            macro_block_size=None,
-                        )
-                    except Exception:
-                        imageio.mimsave(str(self.output_path), self.frames, fps=self.fps)
-            elif format == "gif":
-                try:
-                    imageio.mimsave(
-                        str(self.output_path),
-                        self.frames,
-                        fps=self.fps,
-                        duration=1.0 / self.fps,
-                    )
-                except Exception:
-                    imageio.mimsave(str(self.output_path), self.frames, fps=self.fps)
-            else:
-                raise ValueError(f"Unsupported format: {format}")
-
-            file_size = self.output_path.stat().st_size / (1024 * 1024)
-            duration = len(self.frames) / self.fps
-            print(f"✓ Video saved: {self.output_path}")
-            print(
-                f"  Frames: {len(self.frames)}, FPS: {self.fps}, Duration: {duration:.2f}s, Size: {file_size:.1f} MB"
+        if self.writer is None:
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.errors = TemporaryFile()
+            self.writer = subprocess.Popen(
+                [
+                    imageio_ffmpeg.get_ffmpeg_exe(),
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-s",
+                    f"{frame.shape[1]}x{frame.shape[0]}",
+                    "-r",
+                    str(self.fps),
+                    "-i",
+                    "pipe:0",
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-b:v",
+                    "2M",
+                    "-threads",
+                    "2",
+                    str(self.output_path),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=self.errors,
             )
-        except Exception as e:
-            print(f"✗ Error saving video: {e}")
-            print("  Make sure ffmpeg is installed: pip install imageio-ffmpeg")
-            import traceback
+        self.writer.stdin.write(frame)
+        self.frame_count += 1
 
-            traceback.print_exc()
+    def close(self):
+        """Finalize the stream and check FFmpeg's exit status, including late failures."""
+        process, self.writer = self.writer, None
+        try:
+            if process is not None:
+                write_error = None
+                try:
+                    process.stdin.close()
+                except BrokenPipeError as error:
+                    write_error = error
+                code = process.wait()
+                self.errors.seek(0)
+                message = self.errors.read().decode("utf-8", errors="replace")
+                if code or write_error:
+                    raise RuntimeError(f"Video encoder failed ({code}): {message}") from write_error
+                if self.frame_count and (
+                    not self.output_path.is_file() or self.output_path.stat().st_size == 0
+                ):
+                    raise RuntimeError(f"Video encoder produced no output: {self.output_path}")
+        finally:
+            if self.errors is not None:
+                self.errors.close()
+                self.errors = None
 
-    def reset(self):
-        """Reset frames."""
-        self.frames = []
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
 
 
 class MetricsPlotter:

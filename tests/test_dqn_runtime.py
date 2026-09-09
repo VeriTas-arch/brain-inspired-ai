@@ -124,6 +124,21 @@ def test_compiled_dqn_updates_task_switches_and_checkpoints(variant, tmp_path):
                 atol=2e-5,
             )
             assert all(p.grad is None for p in getattr(bases[1], target).parameters())
+            computation = bases[1]._compute if variant == "single" else bases[1]._computation()
+            assert computation._update_graph is not None
+            torch.testing.assert_close(
+                bases[1].optimizer.state_dict(),
+                bases[0].optimizer.state_dict(),
+                rtol=3e-3,
+                atol=3e-5,
+            )
+            if variant != "single":
+                torch.testing.assert_close(
+                    bases[1].heads.state_dict(),
+                    bases[0].heads.state_dict(),
+                    rtol=2e-4,
+                    atol=2e-5,
+                )
         if variant == "ewc":
             assert metrics[1]["ewc_loss"] > 0
         if projections:

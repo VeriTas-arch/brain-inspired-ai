@@ -21,6 +21,7 @@ from environments import AtariEnv, make_vector_atari_env, observation_protocol
 from training import (
     DEFAULT_MAX_EPISODE_STEPS,
     DQNCollector,
+    DQNMetrics,
     MetricsPlotter,
     PPOCollector,
     PPOLearner,
@@ -57,38 +58,25 @@ def collect_gpm_states(
             torch.manual_seed(seed)
             generator = torch.Generator().manual_seed(seed)
             indices = torch.randperm(collection_steps, generator=generator)[:samples]
-            if is_dqn:
-                state = environment.reset()
-                shape = state.shape[1:] if num_envs > 1 else state.shape
-                states = torch.empty((len(indices), *shape), dtype=state.dtype)
-                selected = {step: position for position, step in enumerate(indices.tolist())}
+            vectorized = not is_dqn or num_envs > 1
+            state = environment.reset()
+            shape = state.shape[1:] if vectorized else state.shape
+            states = torch.empty((len(indices), *shape), dtype=state.dtype)
+            selected = {step: position for position, step in enumerate(indices.tolist())}
+            with torch.inference_mode():
                 for step in range(0, collection_steps, num_envs):
                     for offset in range(num_envs):
                         position = selected.get(step + offset)
                         if position is not None:
-                            states[position].copy_(state[offset] if num_envs > 1 else state)
-                    if num_envs > 1:
-                        actions = agent.select_actions(state, deterministic=True)
-                        state = environment.step_and_reset(actions).observations
+                            states[position].copy_(state[offset] if vectorized else state)
+                    if vectorized:
+                        actions = agent.select_actions(state, deterministic=is_dqn)
+                        state = environment.step_and_reset(actions.cpu()).observations
                     else:
                         action = agent.select_action(state, deterministic=True)
                         state, _, terminated, truncated = environment.step(action)
                         if terminated or truncated:
                             state = environment.reset()
-            else:
-                collector = PPOCollector(environment, PPOLearner(agent), rollout_length=128)
-                states, completed = None, 0
-                while completed < collection_steps:
-                    rollout = collector.collect(collection_steps - completed)
-                    observations = flatten_rollout_data(rollout.data)["states"]
-                    if states is None:
-                        states = torch.empty(
-                            (len(indices), *observations.shape[1:]), dtype=observations.dtype
-                        )
-                    mask = (indices >= completed) & (indices < completed + rollout.transition_count)
-                    positions = (indices[mask] - completed).to(observations.device)
-                    states[mask] = observations[positions].cpu()
-                    completed += rollout.transition_count
             return states
     finally:
         environment.close()
@@ -336,7 +324,7 @@ def train_continual(
             )
 
             def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
-                if video_recorder is not None and transition_count % 2 == 0:
+                if video_recorder is not None and (transition_count // num_envs) % 2 == 0:
                     video_recorder.add_frame(frame.cpu().numpy())
 
             collector = PPOCollector(
@@ -371,11 +359,19 @@ def train_continual(
         )
         pbar = tqdm(total=stage_steps, desc=f"Training on {game_name}")
 
+        def record_dqn_metrics(metrics):
+            pbar.set_postfix(metrics, refresh=False)
+            for name in ("loss", "epsilon", "q_value", "ewc_loss"):
+                if name in metrics:
+                    continual_metrics.setdefault(game_name + "_" + name, []).append(metrics[name])
+
+        dqn_metrics = DQNMetrics(agent, record_dqn_metrics) if algorithm == "dqn" else None
+
         try:
             while step < stage_steps:
                 if algorithm == "dqn":
                     completed, frame = collector.collect()
-                    if video_recorder is not None and step % 2 == 0:
+                    if video_recorder is not None and (step // num_envs) % 2 == 0:
                         video_recorder.add_frame(frame.cpu().numpy())
                     for _ in range(
                         dqn_updates_due(
@@ -386,13 +382,7 @@ def train_continual(
                         )
                     ):
                         if buffer.is_ready(batch_size):
-                            metrics = agent.update(buffer.sample(batch_size))
-                            pbar.set_postfix(metrics, refresh=False)
-                            for name in ("loss", "epsilon", "q_value", "ewc_loss"):
-                                if name in metrics:
-                                    continual_metrics.setdefault(game_name + "_" + name, []).append(
-                                        metrics[name]
-                                    )
+                            agent.update(buffer.sample(batch_size), metrics_sink=dqn_metrics.record)
                     step += num_envs
                     pbar.update(num_envs)
                     episode_rewards.extend(completed)
@@ -415,6 +405,8 @@ def train_continual(
                     pbar.update(rollout.transition_count)
 
                 if eval_interval and (step >= next_evaluation or step == stage_steps):
+                    if dqn_metrics is not None:
+                        dqn_metrics.flush()
                     evaluation_env = AtariEnv(
                         game_name, seed=game_seeds[game_name], training=False, backend=env_backend
                     )
@@ -455,10 +447,14 @@ def train_continual(
                     next_evaluation = (step // eval_interval + 1) * eval_interval
 
         finally:
+            if dqn_metrics is not None:
+                dqn_metrics.flush()
             pbar.close()
             if projection is not None:
                 projection.close()
             env.close()
+            if video_recorder is not None:
+                video_recorder.close()
 
         if episode_rewards:
             continual_metrics.setdefault(game_name + "_episode_reward", []).extend(episode_rewards)
@@ -503,10 +499,6 @@ def train_continual(
                 "rewards": stage_rewards,
             }
         )
-
-        if video_recorder is not None:
-            video_recorder.save(format="mp4")
-            print(f"Video saved: {exp_dir / 'training.mp4'}")
 
         if use_ewc:
             sample_batch = None

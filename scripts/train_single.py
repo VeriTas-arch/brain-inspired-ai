@@ -17,6 +17,7 @@ from environments import AtariEnv, make_vector_atari_env, observation_protocol
 from training import (
     DEFAULT_MAX_EPISODE_STEPS,
     DQNCollector,
+    DQNMetrics,
     MetricsPlotter,
     PPOCollector,
     PPOLearner,
@@ -139,7 +140,7 @@ def train_single_game(
         )
 
         def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
-            if video_recorder is not None and transition_count % 2 == 0:
+            if video_recorder is not None and (transition_count // num_envs) % 2 == 0:
                 video_recorder.add_frame(frame.cpu().numpy())
 
         collector = PPOCollector(
@@ -156,83 +157,92 @@ def train_single_game(
     episode_count = 0
 
     pbar = tqdm(total=num_steps, desc="Training")
+
+    def record_dqn_metrics(metrics):
+        pbar.set_postfix(metrics, refresh=False)
+        for name in ("loss", "epsilon", "q_value"):
+            if name in metrics:
+                metrics_plotter.add_metric(name, metrics[name])
+
+    dqn_metrics = DQNMetrics(agent, record_dqn_metrics) if algorithm == "dqn" else None
     step = 0
     evaluations = []
     next_evaluation = eval_interval
 
-    while step < num_steps:
-        if algorithm == "dqn":
-            agent.global_step = step
-            completed, frame = collector.collect()
-            if video_recorder is not None and step % 2 == 0:
-                video_recorder.add_frame(frame.cpu().numpy())
-            for _ in range(
-                dqn_updates_due(
-                    step, num_envs, learning_starts=learning_starts, frequency=train_frequency
+    try:
+        while step < num_steps:
+            if algorithm == "dqn":
+                agent.global_step = step
+                completed, frame = collector.collect()
+                if video_recorder is not None and (step // num_envs) % 2 == 0:
+                    video_recorder.add_frame(frame.cpu().numpy())
+                for _ in range(
+                    dqn_updates_due(
+                        step, num_envs, learning_starts=learning_starts, frequency=train_frequency
+                    )
+                ):
+                    if buffer.is_ready(batch_size):
+                        agent.update(buffer.sample(batch_size), metrics_sink=dqn_metrics.record)
+                step += num_envs
+                pbar.update(num_envs)
+                episode_rewards.extend(completed)
+                for reward in completed:
+                    metrics_plotter.add_metric("episode_reward", reward)
+
+            else:
+                rollout = collector.collect(num_steps - step)
+                metrics = learner.update(rollout)
+                step += rollout.transition_count
+                episode_count = collector.episode_count
+                episode_rewards.extend(rollout.episode_returns)
+                for reward_value in rollout.episode_returns:
+                    metrics_plotter.add_metric("episode_reward", reward_value)
+
+                pbar.set_postfix({**metrics, "episodes": episode_count}, refresh=False)
+                for metric_name in ("policy_loss", "value_loss", "entropy"):
+                    if metric_name in metrics:
+                        metrics_plotter.add_metric(metric_name, metrics[metric_name])
+                pbar.update(rollout.transition_count)
+            if eval_interval and (step >= next_evaluation or step == num_steps):
+                if dqn_metrics is not None:
+                    dqn_metrics.flush()
+                evaluation_env = AtariEnv(game_name, seed=seed, training=False, backend=env_backend)
+                try:
+                    rewards = run_evaluation_episodes(
+                        agent, evaluation_env, eval_episodes, DEFAULT_MAX_EPISODE_STEPS
+                    )
+                finally:
+                    evaluation_env.close()
+                boundary_path = (
+                    Path("checkpoints") / "single" / run_name / f"seed-{seed}" / f"step-{step}.pt"
                 )
-            ):
-                if buffer.is_ready(batch_size):
-                    metrics = agent.update(buffer.sample(batch_size))
-                    pbar.set_postfix(metrics, refresh=False)
-                    for metric_name in ("loss", "epsilon", "q_value"):
-                        if metric_name in metrics:
-                            metrics_plotter.add_metric(metric_name, metrics[metric_name])
-            step += num_envs
-            pbar.update(num_envs)
-            episode_rewards.extend(completed)
-            for reward in completed:
-                metrics_plotter.add_metric("episode_reward", reward)
-
-        else:
-            rollout = collector.collect(num_steps - step)
-            metrics = learner.update(rollout)
-            step += rollout.transition_count
-            episode_count = collector.episode_count
-            episode_rewards.extend(rollout.episode_returns)
-            for reward_value in rollout.episode_returns:
-                metrics_plotter.add_metric("episode_reward", reward_value)
-
-            pbar.set_postfix({**metrics, "episodes": episode_count}, refresh=False)
-            for metric_name in ("policy_loss", "value_loss", "entropy"):
-                if metric_name in metrics:
-                    metrics_plotter.add_metric(metric_name, metrics[metric_name])
-            pbar.update(rollout.transition_count)
-        if eval_interval and (step >= next_evaluation or step == num_steps):
-            evaluation_env = AtariEnv(game_name, seed=seed, training=False, backend=env_backend)
-            try:
-                rewards = run_evaluation_episodes(
-                    agent, evaluation_env, eval_episodes, DEFAULT_MAX_EPISODE_STEPS
+                boundary_path.parent.mkdir(parents=True, exist_ok=True)
+                agent.save(str(boundary_path))
+                evaluations.append(
+                    {
+                        "step": step,
+                        "elapsed_seconds": time.perf_counter() - started_at,
+                        "rewards": rewards,
+                        "mean_raw_reward": sum(rewards) / len(rewards),
+                        "checkpoint": str(boundary_path),
+                    }
                 )
-            finally:
-                evaluation_env.close()
-            boundary_path = (
-                Path("checkpoints") / "single" / run_name / f"seed-{seed}" / f"step-{step}.pt"
-            )
-            boundary_path.parent.mkdir(parents=True, exist_ok=True)
-            agent.save(str(boundary_path))
-            evaluations.append(
-                {
-                    "step": step,
-                    "elapsed_seconds": time.perf_counter() - started_at,
-                    "rewards": rewards,
-                    "mean_raw_reward": sum(rewards) / len(rewards),
-                    "checkpoint": str(boundary_path),
-                }
-            )
-            (exp_dir / "learning_evaluation.json").write_text(
-                json.dumps(
-                    {"seed": seed, "deterministic": deterministic, "evaluations": evaluations},
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            print(f"[Eval] step={step}, mean raw reward={evaluations[-1]['mean_raw_reward']}")
-            next_evaluation = (step // eval_interval + 1) * eval_interval
-    pbar.close()
-
-    if video_recorder is not None:
-        video_recorder.save(format="mp4")
-        print(f"Video saved to {exp_dir / 'training.mp4'}")
+                (exp_dir / "learning_evaluation.json").write_text(
+                    json.dumps(
+                        {"seed": seed, "deterministic": deterministic, "evaluations": evaluations},
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"[Eval] step={step}, mean raw reward={evaluations[-1]['mean_raw_reward']}")
+                next_evaluation = (step // eval_interval + 1) * eval_interval
+    finally:
+        if dqn_metrics is not None:
+            dqn_metrics.flush()
+        pbar.close()
+        env.close()
+        if video_recorder is not None:
+            video_recorder.close()
 
     if episode_rewards:
         avg_reward = sum(episode_rewards) / len(episode_rewards)
@@ -300,7 +310,6 @@ def train_single_game(
         )
         + "\n"
     )
-    env.close()
 
 
 if __name__ == "__main__":

@@ -82,6 +82,7 @@ def benchmark_configuration(
     environment_only: bool = False,
     env_threads: int = 4,
     torch_threads: int = 1,
+    capture_updates: bool = True,
 ) -> BenchmarkResult:
     """Warm the real training path, then time complete collect-update cycles."""
     if min(transitions, warmup_transitions, num_envs, batch_size, env_threads, torch_threads) <= 0:
@@ -113,6 +114,7 @@ def benchmark_configuration(
             update_epochs=4,
             minibatch_size=batch_size,
             compile_policy=compile_policy,
+            capture_updates=capture_updates,
         )
         collector = PPOCollector(environment, learner, rollout_length=128)
         warmup_start = time.perf_counter()
@@ -180,6 +182,7 @@ def main() -> None:
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument("--env-threads", type=int, default=4, help="Native ALE worker threads")
     parser.add_argument("--environment-only", action="store_true")
+    parser.add_argument("--capture-updates", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
@@ -219,6 +222,7 @@ def main() -> None:
             environment_only=args.environment_only,
             env_threads=args.env_threads,
             torch_threads=args.torch_threads,
+            capture_updates=args.capture_updates,
         )
         results.append(result)
         gc.collect()
@@ -230,6 +234,7 @@ def main() -> None:
         "seed": args.seed,
         "deterministic": args.deterministic,
         "measurement": "environment" if args.environment_only else "collect_and_update",
+        "capture_updates": args.capture_updates,
         "native_ale_note": "Different preprocessing/reset protocol; throughput is not learning speed.",
         "num_envs": args.num_envs,
         "batch_size": args.batch_size,

@@ -15,6 +15,7 @@ from algorithms import DQNAgent, EWCWrapper, MultiHeadDQNAgent
 from algorithms.subspace_projection import AdamSubspaceProjection, build_input_subspaces
 from environments import AtariEnv, make_vector_atari_env, observation_protocol
 from training import (
+    DQNMetrics,
     ReplayBuffer,
     configure_ppo_runtime,
     dqn_updates_due,
@@ -38,6 +39,8 @@ def benchmark_configuration(
     num_envs=1,
     env_backend="sync",
     env_threads=4,
+    capture_updates=True,
+    defer_metrics=True,
 ):
     """Use fixed epsilon, batch size, and one update per four collected transitions.
 
@@ -111,7 +114,7 @@ def benchmark_configuration(
             agent.register_task("new", env.action_space)
             agent.set_task("new")
         if hasattr(agent, "configure_runtime"):
-            agent.configure_runtime(compile_enabled=compiled)
+            agent.configure_runtime(compile_enabled=compiled, capture_updates=capture_updates)
         elif compiled:
             raise RuntimeError("This source snapshot does not support DQN compilation")
         if variant == "gpm":
@@ -119,6 +122,8 @@ def benchmark_configuration(
             projection = AdamSubspaceProjection(
                 base.optimizer, base.backbone.network, subspaces, **options
             )
+
+        pending_metrics = DQNMetrics(agent, lambda metrics: None)
 
         def run(count):
             nonlocal state
@@ -180,8 +185,11 @@ def benchmark_configuration(
                     update_batch = replay.sample(batch_size) if component == "pipeline" else batch
                     replay_seconds += time.perf_counter() - start
                     start = time.perf_counter()
-                    agent.update(update_batch)
+                    agent.update(
+                        update_batch, metrics_sink=pending_metrics.record if defer_metrics else None
+                    )
                     update_seconds += time.perf_counter() - start
+            pending_metrics.flush()
             return dict(
                 inference_seconds=inference_seconds,
                 environment_seconds=environment_seconds,
@@ -205,6 +213,8 @@ def benchmark_configuration(
             component=component,
             variant=variant,
             compiled=compiled,
+            capture_updates=compiled and capture_updates,
+            defer_metrics=defer_metrics,
             game=game,
             seed=seed,
             deterministic=True,
@@ -277,6 +287,8 @@ def main():
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--env-backend", choices=("sync", "async", "ale"), default="sync")
     parser.add_argument("--env-threads", type=int, default=4)
+    parser.add_argument("--capture-updates", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--defer-metrics", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output", type=Path, required=True)
     args = vars(parser.parse_args())
     output = args.pop("output")

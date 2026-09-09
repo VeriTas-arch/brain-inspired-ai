@@ -113,28 +113,24 @@ def _record_example_video(
     agent,
     game: str,
     output_path: Path,
-    max_steps: int = 10000,
+    max_steps: int = DEFAULT_MAX_EPISODE_STEPS,
     seed: int = 0,
 ) -> None:
     """Record one deterministic evaluation episode."""
     env = AtariEnv(
         game, render_mode="rgb_array", training=False, seed=seed, backend=_evaluation_backend(agent)
     )
-    recorder = VideoRecorder(str(output_path), fps=30)
-    if hasattr(agent, "set_task"):
-        agent.set_task(game)
-
     try:
-        with torch.no_grad():
-            state = env.reset()
-            for _ in range(max_steps):
-                recorder.add_frame(env.env.render())
-                action = agent.select_action(state, deterministic=True)
-                state, _, terminated, truncated = env.step(action)
-                done = terminated or truncated
-                if done:
-                    break
-        recorder.save(format="mp4")
+        if hasattr(agent, "set_task"):
+            agent.set_task(game)
+        with VideoRecorder(str(output_path), fps=30) as recorder:
+            run_evaluation_episodes(
+                agent,
+                env,
+                1,
+                max_steps,
+                frame_callback=lambda: recorder.add_frame(env.env.render()),
+            )
     finally:
         env.close()
 

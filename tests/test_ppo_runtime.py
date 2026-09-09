@@ -46,16 +46,6 @@ class _FakeAgent:
     def get_value(self, states: torch.Tensor) -> torch.Tensor:
         return self._values(states)
 
-    @staticmethod
-    def update(rollout_data, next_value, update_epochs, minibatch_size, **kwargs):
-        assert kwargs["policy_evaluator"] is not None
-        return {
-            "transitions": float(len(rollout_data["actions"].flatten())),
-            "next_value": float(next_value.sum()),
-            "epochs": float(update_epochs),
-            "minibatch_size": float(minibatch_size),
-        }
-
 
 class _FakeVectorEnvironment:
     num_envs = 2
@@ -91,18 +81,10 @@ class _FakeVectorEnvironment:
                 transition_observations=self._observations(4, 8),
                 rewards=torch.tensor([3.0, 4.0]),
                 terminated=torch.tensor([False, True]),
-                truncated=torch.tensor([False, False]),
+                truncated=torch.tensor([False, True]),
             )
         self.step_index += 1
         return result
-
-
-class _ConfigurableFakeAgent(_FakeAgent):
-    def __init__(self) -> None:
-        self.compile_regularizer = None
-
-    def configure_regularizer(self, *, compile_regularizer: bool) -> None:
-        self.compile_regularizer = compile_regularizer
 
 
 @pytest.mark.parametrize("device", ("cpu", "cuda"))
@@ -131,14 +113,6 @@ def test_collector_preserves_vector_trajectories_and_time_limit_bootstrap(device
     assert rollout.data["states"][0, 0, 0, 0, 0].item() == 1
     assert rollout.data["states"][1, 0, 0, 0, 0].item() == 100
     torch.testing.assert_close(rollout.next_value.cpu(), torch.tensor([4.0, 200.0]))
-
-    metrics = learner.update(rollout)
-    assert metrics == {
-        "transitions": 4.0,
-        "next_value": 204.0,
-        "epochs": 3.0,
-        "minibatch_size": 32.0,
-    }
 
 
 def test_collector_requires_exact_vector_transition_budget() -> None:
@@ -172,13 +146,16 @@ def test_compiled_learner_compiles_only_policy_hot_paths(monkeypatch) -> None:
     assert compiled_functions[-1][1]["dynamic"] is False
 
 
-def test_learner_configures_optional_regularizer_for_same_runtime() -> None:
-    agent = _ConfigurableFakeAgent()
+def test_learner_configures_optional_regularizer_for_same_runtime(monkeypatch) -> None:
+    from algorithms import EWCWrapper
 
-    PPOLearner(agent, compile_policy=True)
-
-    # The cached eager penalty is captured together with the PPO objective.
-    assert agent.compile_regularizer is False
+    agent = EWCWrapper(_FakeAgent())
+    calls = []
+    monkeypatch.setattr(agent, "configure_regularizer", lambda: calls.append(True))
+    PPOLearner(agent)
+    assert calls == [True]
+    with pytest.raises(ValueError, match="only one PPO regularizer"):
+        PPOLearner(agent, regularizer=lambda: torch.zeros(()))
 
 
 def test_flatten_rollout_data_keeps_time_before_environment_order() -> None:
@@ -318,6 +295,13 @@ def test_compiled_ppo_optimizer_matches_eager_with_regularization_and_projection
             assert metrics[1] == pytest.approx(metrics[0], rel=1e-3, abs=3e-5)
             if variant == "ewc":
                 assert metrics[1]["ewc_loss"] > 0
+            assert learners[1]._update_graphs
+            torch.testing.assert_close(
+                actual_base.optimizer.state_dict(),
+                base.optimizer.state_dict(),
+                rtol=1e-3,
+                atol=3e-6,
+            )
             for expected_group, actual_group in zip(
                 base.optimizer.param_groups, actual_base.optimizer.param_groups, strict=True
             ):
@@ -352,3 +336,50 @@ def test_ppo_benchmark_honors_explicit_torch_thread_count():
         assert result.transitions == 2
     finally:
         torch.set_num_threads(previous)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("size", (8, 10))
+def test_ppo_update_graphs_follow_task_switch_and_loaded_optimizer(fresh_compiler_state, size):
+    from algorithms import MultiHeadPPOAgent
+
+    torch.manual_seed(51)
+    eager = MultiHeadPPOAgent(4, device="cuda")
+    eager.register_task("a", 2)
+    eager.register_task("b", 3)
+    eager.set_task("a")
+    actual = copy.deepcopy(eager)
+    learners = (
+        PPOLearner(eager, update_epochs=1, minibatch_size=4),
+        PPOLearner(actual, update_epochs=1, minibatch_size=4, compile_policy=True),
+    )
+    for index, task in enumerate(("a", "b", "a", "b")):
+        for agent in (eager, actual):
+            agent.set_task(task)
+        states = torch.randint(256, (size, 4, 84, 84), dtype=torch.uint8, device="cuda")
+        with torch.no_grad():
+            actions, logs, values = eager.sample_action_and_value(states)
+        data = dict(
+            states=states,
+            actions=actions,
+            log_probs=logs,
+            values=values.flatten(),
+            rewards=torch.ones(size),
+            dones=torch.zeros(size),
+        )
+        rollout = CollectedRollout(data, torch.zeros(1, device="cuda"), size, ())
+        for learner in learners:
+            torch.manual_seed(index + 72)
+            learner.update(rollout)
+        torch.testing.assert_close(
+            actual.actors.state_dict(), eager.actors.state_dict(), rtol=1e-3, atol=1e-5
+        )
+        torch.testing.assert_close(
+            actual.critics.state_dict(), eager.critics.state_dict(), rtol=1e-3, atol=1e-5
+        )
+        torch.testing.assert_close(
+            actual.optimizer.state_dict(), eager.optimizer.state_dict(), rtol=2e-3, atol=2e-5
+        )
+        if index == 2:
+            checkpoint = copy.deepcopy(eager.checkpoint_state())
+            actual.load_checkpoint_state(checkpoint)

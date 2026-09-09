@@ -257,8 +257,8 @@ class EWCWrapper:
     def _reset_runtime_regularizer(self) -> None:
         self._runtime_regularizer = self.compute_ewc_loss if self.aggregated_fisher else None
 
-    def configure_regularizer(self, *, compile_regularizer: bool) -> None:
-        """Cache the current task's penalty terms and optionally compile them."""
+    def configure_regularizer(self) -> None:
+        """Cache the current task's penalty terms for the complete learner objective."""
         current_params = self._collect_regularized_params()
         terms = tuple(
             (
@@ -280,16 +280,12 @@ class EWCWrapper:
                 penalty = penalty + (importance * (parameter - mean).square()).sum() + correction
             return 0.5 * self.ewc_lambda * penalty
 
-        self._runtime_regularizer = (
-            torch.compile(regularizer, mode="reduce-overhead", fullgraph=True)
-            if compile_regularizer
-            else regularizer
-        )
+        self._runtime_regularizer = regularizer
 
-    def configure_runtime(self, *, compile_enabled: bool = False) -> None:
+    def configure_runtime(self, *, compile_enabled: bool = False, **kwargs) -> None:
         """Include the cached penalty in DQN's compiled TD objective."""
-        self.agent.configure_runtime(compile_enabled=compile_enabled)
-        self.configure_regularizer(compile_regularizer=False)
+        self.agent.configure_runtime(compile_enabled=compile_enabled, **kwargs)
+        self.configure_regularizer()
 
     def compute_ewc_loss(self) -> torch.Tensor:
         """Compute all consolidated penalties from task-independent sufficient statistics."""

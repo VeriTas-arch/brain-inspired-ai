@@ -129,7 +129,6 @@ def test_rollout_buffer_keeps_pixels_uint8_and_reuses_storage() -> None:
     batch = buffer.get_batch()
     assert batch["states"].dtype == torch.uint8
     torch.testing.assert_close(batch["states"][0], state)
-    assert buffer.ready_for_update(final=True)
     assert not buffer.is_full()
 
     buffer.reset()
@@ -144,7 +143,6 @@ def test_rollout_buffer_rejects_overflow_and_empty_batches() -> None:
 
     state = torch.zeros((4, 84, 84), dtype=torch.uint8)
     buffer.add(state, 0, 0.0, False, 0.0, 0.0)
-    assert buffer.ready_for_update()
     with pytest.raises(RuntimeError, match="full"):
         buffer.add(state, 0, 0.0, False, 0.0, 0.0)
 

@@ -385,7 +385,7 @@ def build_teaching_jobs(
     ewc_lambda: float = 0.4,
     num_envs: int = 8,
     env_backend: str = "async",
-    dqn_num_envs: int = 1,
+    dqn_num_envs: int = 8,
     env_threads: int = 4,
     compile_ppo: bool = True,
     compile_dqn: bool = True,
@@ -735,7 +735,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--num-envs",
         type=int,
         default=None,
-        help="Environments per game (teaching PPO: 8; other suites: 1)",
+        help="Environments per game (teaching PPO: 8; teaching DQN uses --dqn-num-envs; other suites: 1)",
     )
     parser.add_argument(
         "--env-backend",
@@ -756,7 +756,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Compile DQN inference and TD loss (enabled for teaching)",
     )
     parser.add_argument(
-        "--dqn-num-envs", type=int, default=1, help="DQN environments in the teaching matrix"
+        "--dqn-num-envs",
+        type=int,
+        default=8,
+        help="DQN environments per game in teaching (default: 8)",
     )
     parser.add_argument("--env-threads", type=int, default=4, help="Native ALE threads per game")
     parser.add_argument("--parallel", action="store_true", help="Run at most two jobs concurrently")

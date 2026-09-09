@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from algorithms.ewc import EWCWrapper
 from algorithms.ppo import (
     PolicyEvaluator,
     PPOMinibatchLoss,
@@ -35,7 +36,7 @@ class VectorEnvironment(Protocol):
     def step_and_reset(self, actions: torch.Tensor) -> VectorStep: ...
 
 
-class PPOAgent(Protocol):
+class PPOPolicy(Protocol):
     """Agent operations shared by plain and EWC-wrapped PPO agents."""
 
     device: torch.device
@@ -43,6 +44,9 @@ class PPOAgent(Protocol):
     clip_coef: float
     ent_coef: float
     vf_coef: float
+    gae_lambda: float
+    max_grad_norm: float
+    optimizer: optim.Optimizer
 
     def sample_action_and_value(
         self, state: torch.Tensor
@@ -53,15 +57,6 @@ class PPOAgent(Protocol):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: ...
 
     def get_value(self, state: torch.Tensor) -> torch.Tensor: ...
-
-    def update(
-        self,
-        rollout_data: dict[str, torch.Tensor],
-        next_value: torch.Tensor,
-        update_epochs: int,
-        minibatch_size: int,
-        **kwargs,
-    ) -> dict[str, float]: ...
 
 
 @dataclass(frozen=True)
@@ -153,6 +148,7 @@ def optimize_ppo(
     regularizer: Callable[[], torch.Tensor] | None = None,
     minibatch_loss: PPOMinibatchLoss | None = None,
     clip_gradients: Callable | None = None,
+    captured_update: Callable | None = None,
 ) -> dict[str, float]:
     """Run the PPO learner shared by single-head and multi-head agents."""
     if update_epochs <= 0:
@@ -209,6 +205,13 @@ def optimize_ppo(
         batch_indices = torch.randperm(len(batch_states), device=device)
         for start in range(0, len(batch_states), minibatch_size):
             minibatch_indices = batch_indices[start : start + minibatch_size]
+            if captured_update is not None and len(minibatch_indices) == minibatch_size:
+                diagnostics = captured_update(
+                    (*loss_arguments, minibatch_indices), regularizer, update_count == 0
+                )
+                metric_sums += diagnostics
+                update_count += 1
+                continue
             if minibatch_loss is None or len(minibatch_indices) < minibatch_size:
                 loss, diagnostics = indexed_ppo_loss(
                     *loss_arguments,
@@ -249,12 +252,13 @@ class PPOLearner:
 
     def __init__(
         self,
-        agent: PPOAgent,
+        agent: PPOPolicy,
         *,
         update_epochs: int = 4,
         minibatch_size: int = 32,
         compile_policy: bool = False,
         regularizer: Callable[[], torch.Tensor] | None = None,
+        capture_updates: bool = True,
     ) -> None:
         if update_epochs <= 0:
             raise ValueError("update_epochs must be positive")
@@ -265,13 +269,15 @@ class PPOLearner:
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
         self.compiled = compile_policy
+        self.capture_updates = compile_policy and capture_updates and agent.device.type == "cuda"
+        self._update_graphs = {}
+        self._update_generation = None
         self.regularizer = regularizer
 
-        configure_regularizer = getattr(agent, "configure_regularizer", None)
-        if configure_regularizer is not None and regularizer is not None:
-            raise ValueError("Use only one PPO regularizer")
-        if configure_regularizer is not None:
-            configure_regularizer(compile_regularizer=False)
+        if isinstance(agent, EWCWrapper):
+            if regularizer is not None:
+                raise ValueError("Use only one PPO regularizer")
+            agent.configure_regularizer()
 
         policy_agent = getattr(agent, "agent", agent)
         sampler = policy_agent.sample_action_and_value
@@ -344,19 +350,72 @@ class PPOLearner:
         """Evaluate bootstrap values through the underlying policy."""
         return self.agent.get_value(state)
 
+    def _captured_update(self, inputs, regularizer, refresh):
+        from .cuda_update import CudaUpdate
+
+        agent = getattr(self.agent, "agent", self.agent)
+        if self._update_generation != agent._update_generation:
+            self._update_graphs.clear()
+            self._update_generation = agent._update_generation
+        key = (
+            agent._update_generation,
+            getattr(agent, "current_task", None),
+            regularizer,
+            getattr(agent.optimizer, "_subspace_projection", None),
+            tuple((value.shape, value.dtype) for value in inputs),
+        )
+        if key not in self._update_graphs:
+            parameters = [p for group in agent.optimizer.param_groups for p in group["params"]]
+
+            def loss(*values):
+                return indexed_ppo_loss(
+                    *values,
+                    regularizer,
+                    policy_evaluator=agent.get_action_and_value,
+                    clip_coef=agent.clip_coef,
+                    ent_coef=agent.ent_coef,
+                    vf_coef=agent.vf_coef,
+                )
+
+            self._update_graphs[key] = CudaUpdate(
+                agent.optimizer,
+                loss,
+                lambda: _clip_ppo_gradients(parameters, agent.max_grad_norm),
+                inputs,
+            )
+        return self._update_graphs[key](*inputs, refresh_prefix=refresh)
+
     def update(self, rollout: CollectedRollout) -> dict[str, float]:
         """Optimize one collected rollout."""
-        extra = {} if self.regularizer is None else {"regularizer": self.regularizer}
-        return self.agent.update(
+        policy = getattr(self.agent, "agent", self.agent)
+        regularizer = (
+            self.agent._runtime_regularizer
+            if isinstance(self.agent, EWCWrapper)
+            else self.regularizer
+        )
+        metrics = optimize_ppo(
             rollout.data,
             rollout.next_value,
-            self.update_epochs,
-            self.minibatch_size,
+            device=policy.device,
+            optimizer=policy.optimizer,
+            parameters=[p for group in policy.optimizer.param_groups for p in group["params"]],
             policy_evaluator=self._policy_evaluator,
+            gamma=policy.gamma,
+            gae_lambda=policy.gae_lambda,
+            clip_coef=policy.clip_coef,
+            ent_coef=policy.ent_coef,
+            vf_coef=policy.vf_coef,
+            max_grad_norm=policy.max_grad_norm,
+            update_epochs=self.update_epochs,
+            minibatch_size=self.minibatch_size,
+            regularizer=regularizer,
             minibatch_loss=self._minibatch_loss,
             clip_gradients=self._clip_gradients,
-            **extra,
+            captured_update=self._captured_update if self.capture_updates else None,
         )
+        if isinstance(self.agent, EWCWrapper) and "regularization_loss" in metrics:
+            metrics["ewc_loss"] = metrics.pop("regularization_loss")
+        return metrics
 
 
 class PPOCollector:

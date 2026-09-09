@@ -147,6 +147,9 @@ class AdamSubspaceProjection:
         self.layers = affine_layers(backbone)
         self.bases, self.before, self.sums = {}, {}, {}
         self.steps = 0
+        self.capturing_update = False
+        optimizer._subspace_projection = self
+        self.optimizer = optimizer
         for name, layer in self.layers.items():
             self.bases[name] = subspaces[name]["basis"].to(layer.weight)
             self.before[name] = torch.empty_like(affine_matrix(layer))
@@ -155,6 +158,9 @@ class AdamSubspaceProjection:
             torch.compile(self._project_step, mode="reduce-overhead", fullgraph=True)
             if compile_projection
             else self._project_step
+        )
+        self._project_for_capture = torch.compile(
+            self._project_step, fullgraph=True, dynamic=False, options={"triton.cudagraphs": False}
         )
         self.handles = (
             optimizer.register_step_pre_hook(self._before_step),
@@ -168,10 +174,11 @@ class AdamSubspaceProjection:
 
     @torch.no_grad()
     def _after_step(self, optimizer, args, kwargs):
-        statistics = self._project()
+        statistics = self._project_for_capture() if self.capturing_update else self._project()
         for name, values in zip(self.layers, statistics):
             self.sums[name].add_(values)
-        self.steps += 1
+        if not self.capturing_update:
+            self.steps += 1
 
     @torch.no_grad()
     def _project_step(self):
@@ -207,5 +214,6 @@ class AdamSubspaceProjection:
         return {"optimizer_steps": self.steps, "layers": result}
 
     def close(self) -> None:
+        self.optimizer._subspace_projection = None
         for handle in self.handles:
             handle.remove()

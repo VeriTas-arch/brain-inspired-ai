@@ -45,6 +45,10 @@
   environments where supported. Compile hot paths with `mode="reduce-overhead"` and use
   `fullgraph=True` wherever possible. Formal DQN profiles use `--compile-dqn` for inference, TD loss,
   gradient clipping, and GPM projection; keep fused Adam and an eager DQN path.
+- CUDA learners capture the complete fixed-shape loss/backward/Adam update. Disable only nested
+  Inductor CUDA Graph capture inside this outer graph; retain full-graph tensor compilation.
+  Capture warmup must restore parameters, optimizer state, RNG, and GPM counters. Invalidate
+  captured updates when loading optimizer state or changing task modules.
 - Native ALE is an explicit alternative observation protocol. Record it in checkpoints and use
   it in evaluation; never silently evaluate wrapper-trained weights with native preprocessing.
   DQN batching must preserve the protocol's cumulative update count and final-observation semantics.

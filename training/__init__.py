@@ -1,7 +1,7 @@
 """Shared training, evaluation, and result-recording components."""
 
 from .buffers import ReplayBuffer, RolloutBuffer
-from .dqn_runtime import DQNCollector, dqn_updates_due
+from .dqn_runtime import DQNCollector, DQNMetrics, dqn_updates_due
 from .evaluation import DEFAULT_MAX_EPISODE_STEPS, run_evaluation_episodes
 from .ppo_runtime import (
     CollectedRollout,
@@ -17,6 +17,7 @@ __all__ = [
     "CollectedRollout",
     "DEFAULT_MAX_EPISODE_STEPS",
     "DQNCollector",
+    "DQNMetrics",
     "MetricsPlotter",
     "PPOCollector",
     "PPOLearner",

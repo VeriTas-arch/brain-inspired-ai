@@ -224,10 +224,6 @@ class RolloutBuffer:
             "values": self.values[batch_slice],
         }
 
-    def ready_for_update(self, *, final: bool = False) -> bool:
-        """Return whether a full or final partial rollout should be optimized."""
-        return self.is_full() or (final and self.pos > 0)
-
     def __len__(self) -> int:
         """Return current buffer size."""
         return self.pos

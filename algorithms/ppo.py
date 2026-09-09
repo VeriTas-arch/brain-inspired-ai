@@ -16,20 +16,6 @@ PolicyEvaluator = Callable[
 PPOMinibatchLoss = Callable[..., tuple[torch.Tensor, torch.Tensor]]
 
 
-def bootstrap_truncated_reward(
-    reward: float,
-    next_value: float,
-    *,
-    terminated: bool,
-    truncated: bool,
-    gamma: float,
-) -> float:
-    """Bootstrap a time-limit transition while still ending its GAE segment."""
-    if truncated and not terminated:
-        return reward + gamma * next_value
-    return reward
-
-
 def generalized_advantage_estimate(
     rewards: torch.Tensor,
     values: torch.Tensor,
@@ -104,6 +90,11 @@ def greedy_policy_actions(states, backbone, actor):
     return actor(backbone(states / 255.0)).argmax(dim=1)
 
 
+def sample_policy_actions(states, backbone, actor):
+    """Sample boundary actions without computing values or log probabilities."""
+    return Categorical(logits=actor(backbone(states / 255.0)), validate_args=False).sample()
+
+
 class PPOAgent(BaseAgent):
     """PPO Agent for Atari games."""
 
@@ -156,6 +147,7 @@ class PPOAgent(BaseAgent):
 
     def configure_runtime(self, *, compile_enabled: bool = False) -> None:
         """Compile deterministic batched inference used by evaluation."""
+        self._update_generation = getattr(self, "_update_generation", 0) + 1
         self.compiled_inference = compile_enabled
         self._greedy_actions = (
             torch.compile(greedy_policy_actions, mode="reduce-overhead", fullgraph=True)
@@ -164,7 +156,9 @@ class PPOAgent(BaseAgent):
         )
 
     @torch.no_grad()
-    def select_actions(self, states: torch.Tensor) -> torch.Tensor:
+    def select_actions(self, states: torch.Tensor, deterministic: bool = True) -> torch.Tensor:
+        if not deterministic:
+            return sample_policy_actions(states.to(self.device), self.network, self.actor)
         if self.compiled_inference:
             torch.compiler.cudagraph_mark_step_begin()
         return self._greedy_actions(
@@ -183,6 +177,7 @@ class PPOAgent(BaseAgent):
 
     def load_checkpoint_state(self, checkpoint: dict) -> None:
         """Restore a PPO checkpoint."""
+        self._update_generation += 1
         self.environment_protocol = checkpoint.get("environment_protocol", "gymnasium_wrappers_v1")
         self.network.load_state_dict(checkpoint["network"])
         self.actor.load_state_dict(checkpoint["actor"])
@@ -224,62 +219,6 @@ class PPOAgent(BaseAgent):
             state = state.unsqueeze(0).to(self.device)
             action, _, _ = self.sample_action_and_value(state)
             return action.item()
-
-    def compute_gae(
-        self,
-        rewards: torch.Tensor,
-        values: torch.Tensor,
-        dones: torch.Tensor,
-        next_value: torch.Tensor,
-    ):
-        """Compute GAE advantages and returns."""
-        return generalized_advantage_estimate(
-            rewards,
-            values,
-            dones,
-            next_value,
-            gamma=self.gamma,
-            gae_lambda=self.gae_lambda,
-        )
-
-    def update(
-        self,
-        rollout_data: dict[str, torch.Tensor],
-        next_value: torch.Tensor,
-        update_epochs: int = 4,
-        minibatch_size: int = 32,
-        regularizer: Callable[[], torch.Tensor] | None = None,
-        policy_evaluator: PolicyEvaluator | None = None,
-        minibatch_loss: PPOMinibatchLoss | None = None,
-        clip_gradients: Callable | None = None,
-    ) -> dict[str, float]:
-        """Update PPO with rollout data."""
-        parameters = [
-            *self.network.parameters(),
-            *self.actor.parameters(),
-            *self.critic.parameters(),
-        ]
-        from training.ppo_runtime import optimize_ppo
-
-        return optimize_ppo(
-            rollout_data,
-            next_value,
-            device=self.device,
-            optimizer=self.optimizer,
-            parameters=parameters,
-            policy_evaluator=policy_evaluator or self.get_action_and_value,
-            gamma=self.gamma,
-            gae_lambda=self.gae_lambda,
-            clip_coef=self.clip_coef,
-            ent_coef=self.ent_coef,
-            vf_coef=self.vf_coef,
-            max_grad_norm=self.max_grad_norm,
-            update_epochs=update_epochs,
-            minibatch_size=minibatch_size,
-            regularizer=regularizer,
-            minibatch_loss=minibatch_loss,
-            clip_gradients=clip_gradients,
-        )
 
 
 class MultiHeadPPOAgent(BaseAgent):
@@ -334,6 +273,7 @@ class MultiHeadPPOAgent(BaseAgent):
 
     def configure_runtime(self, *, compile_enabled: bool = False) -> None:
         """Compile deterministic inference while keeping task selection outside the graph."""
+        self._update_generation = getattr(self, "_update_generation", 0) + 1
         self.compiled_inference = compile_enabled
         self._greedy_actions = (
             torch.compile(greedy_policy_actions, mode="reduce-overhead", fullgraph=True)
@@ -342,8 +282,10 @@ class MultiHeadPPOAgent(BaseAgent):
         )
 
     @torch.no_grad()
-    def select_actions(self, states: torch.Tensor) -> torch.Tensor:
+    def select_actions(self, states: torch.Tensor, deterministic: bool = True) -> torch.Tensor:
         actor, _ = self._current_heads()
+        if not deterministic:
+            return sample_policy_actions(states.to(self.device), self.backbone, actor)
         if self.compiled_inference:
             torch.compiler.cudagraph_mark_step_begin()
         return self._greedy_actions(states.to(self.device, non_blocking=True), self.backbone, actor)
@@ -361,6 +303,7 @@ class MultiHeadPPOAgent(BaseAgent):
         """Create new actor and critic heads for a task if they don't exist."""
         if task_id in self.actors:
             return
+        self._update_generation += 1
 
         actor = layer_init(nn.Linear(512, action_dim), std=0.01).to(self.device)
         critic = layer_init(nn.Linear(512, 1), std=1).to(self.device)
@@ -384,10 +327,6 @@ class MultiHeadPPOAgent(BaseAgent):
         if self.current_task is None:
             raise RuntimeError("Current task is not set for MultiHeadPPOAgent.")
         return self.actors[self.current_task], self.critics[self.current_task]
-
-    def policy_logits(self, states: torch.Tensor, task_id: str) -> torch.Tensor:
-        """Evaluate an actor without changing the active PPO task or touching its critic."""
-        return self.actors[task_id](self.backbone(states / 255.0))
 
     def get_value(self, x: torch.Tensor) -> torch.Tensor:
         """Get value estimate for current task."""
@@ -433,66 +372,6 @@ class MultiHeadPPOAgent(BaseAgent):
             action, _, _ = self.sample_action_and_value(state)
             return action.item()
 
-    def compute_gae(
-        self,
-        rewards: torch.Tensor,
-        values: torch.Tensor,
-        dones: torch.Tensor,
-        next_value: torch.Tensor,
-    ):
-        """Compute GAE advantages and returns."""
-        return generalized_advantage_estimate(
-            rewards,
-            values,
-            dones,
-            next_value,
-            gamma=self.gamma,
-            gae_lambda=self.gae_lambda,
-        )
-
-    def update(
-        self,
-        rollout_data: dict[str, torch.Tensor],
-        next_value: torch.Tensor,
-        update_epochs: int = 4,
-        minibatch_size: int = 32,
-        regularizer: Callable[[], torch.Tensor] | None = None,
-        policy_evaluator: PolicyEvaluator | None = None,
-        minibatch_loss: PPOMinibatchLoss | None = None,
-        clip_gradients: Callable | None = None,
-    ) -> dict[str, float]:
-        """Update PPO with rollout data using shared backbone and task-specific heads."""
-        if self.current_task is None:
-            raise RuntimeError("Current task is not set before update().")
-        if self.optimizer is None:
-            raise RuntimeError("Optimizer has not been initialized; call register_task() first.")
-        all_params = list(self.backbone.parameters())
-        for actor in self.actors.values():
-            all_params.extend(actor.parameters())
-        for critic in self.critics.values():
-            all_params.extend(critic.parameters())
-        from training.ppo_runtime import optimize_ppo
-
-        return optimize_ppo(
-            rollout_data,
-            next_value,
-            device=self.device,
-            optimizer=self.optimizer,
-            parameters=all_params,
-            policy_evaluator=policy_evaluator or self.get_action_and_value,
-            gamma=self.gamma,
-            gae_lambda=self.gae_lambda,
-            clip_coef=self.clip_coef,
-            ent_coef=self.ent_coef,
-            vf_coef=self.vf_coef,
-            max_grad_norm=self.max_grad_norm,
-            update_epochs=update_epochs,
-            minibatch_size=minibatch_size,
-            regularizer=regularizer,
-            minibatch_loss=minibatch_loss,
-            clip_gradients=clip_gradients,
-        )
-
     def checkpoint_state(self) -> dict:
         """Return the shared network, task heads, and optimizer state."""
         return {
@@ -509,6 +388,7 @@ class MultiHeadPPOAgent(BaseAgent):
 
     def load_checkpoint_state(self, checkpoint: dict) -> None:
         """Restore a multi-head PPO checkpoint."""
+        self._update_generation += 1
         self.environment_protocol = checkpoint.get("environment_protocol", "gymnasium_wrappers_v1")
         if "backbone" not in checkpoint:
             self.backbone.load_state_dict(checkpoint)

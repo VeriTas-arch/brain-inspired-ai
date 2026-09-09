@@ -30,8 +30,21 @@ def _clip_dqn_gradients(parameter_groups, max_norm):
 class _DQNComputation:
     """Tensor-only inference and TD loss; modules keep their checkpoint identities."""
 
-    def __init__(self, online, target, gamma, *, head=None, target_head=None, compiled=False):
+    def __init__(
+        self,
+        online,
+        target,
+        gamma,
+        *,
+        head=None,
+        target_head=None,
+        compiled=False,
+        capture_updates=True,
+    ):
         self.compiled = compiled
+        self.capture_updates = capture_updates
+        self._update_graph = None
+        self._update_key = None
 
         def greedy(states):
             values = online(states)
@@ -63,6 +76,36 @@ class _DQNComputation:
         self.loss = (
             torch.compile(loss, mode="reduce-overhead", fullgraph=True) if compiled else loss
         )
+        self._eager_loss = loss
+
+    def update(self, optimizer, groups, max_norm, batch, regularizer, clip_gradients):
+        if self.compiled and self.capture_updates and batch["states"].is_cuda:
+            from training.cuda_update import CudaUpdate
+
+            inputs = tuple(
+                batch[key] for key in ("states", "actions", "rewards", "next_states", "dones")
+            )
+            key = (
+                tuple((value.shape, value.dtype) for value in inputs),
+                regularizer,
+                getattr(optimizer, "_subspace_projection", None),
+            )
+            if key != self._update_key:
+                self._update_graph = CudaUpdate(
+                    optimizer,
+                    lambda *values: self._eager_loss(*values, regularizer),
+                    lambda: _clip_dqn_gradients(groups, max_norm),
+                    inputs,
+                )
+                self._update_key = key
+            return self._update_graph(*inputs)
+        self.begin_step()
+        optimizer.zero_grad(set_to_none=True)
+        loss, diagnostics = self.loss(**batch, regularizer=regularizer)
+        loss.backward()
+        clip_gradients(groups, max_norm)
+        optimizer.step()
+        return diagnostics
 
     def begin_step(self):
         # Inference outputs are consumed immediately; a TD step finishes its backward and metrics
@@ -127,10 +170,16 @@ class DQNAgent(BaseAgent):
         self.q_value_history = []
         self.configure_runtime(compile_enabled=False)
 
-    def configure_runtime(self, *, compile_enabled: bool = False) -> None:
+    def configure_runtime(
+        self, *, compile_enabled: bool = False, capture_updates: bool = True
+    ) -> None:
         """Select eager or compiled tensor computation without wrapping saved modules."""
         self._compute = _DQNComputation(
-            self.network, self.target_network, self.gamma, compiled=compile_enabled
+            self.network,
+            self.target_network,
+            self.gamma,
+            compiled=compile_enabled,
+            capture_updates=capture_updates,
         )
         self._gradient_groups = (tuple(self.network.parameters()),)
         self._clip_gradients = (
@@ -171,18 +220,21 @@ class DQNAgent(BaseAgent):
         self,
         batch: dict[str, torch.Tensor],
         regularizer: Callable[[], torch.Tensor] | None = None,
+        *,
+        metrics_sink: Callable | None = None,
     ) -> dict[str, float]:
         """Update DQN with a batch of experiences."""
-        self._compute.begin_step()
         device_batch = {
             name: value.to(self.device, non_blocking=True) for name, value in batch.items()
         }
-        total_loss, diagnostics = self._compute.loss(**device_batch, regularizer=regularizer)
-
-        self.optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        self._clip_gradients(self._gradient_groups, 10.0)
-        self.optimizer.step()
+        diagnostics = self._compute.update(
+            self.optimizer,
+            self._gradient_groups,
+            10.0,
+            device_batch,
+            regularizer,
+            self._clip_gradients,
+        )
 
         self.update_count += 1
         if self.update_count % self.target_update_freq == 0:
@@ -199,8 +251,14 @@ class DQNAgent(BaseAgent):
             self.global_step,
         )
 
-        # Read all diagnostics together, after backward/Adam rather than synchronizing mid-step.
-        loss_value, mean_q_value, penalty_value = diagnostics.tolist()
+        if metrics_sink is not None:
+            metrics_sink(diagnostics, epsilon, regularizer is not None)
+            return {}
+        return self.format_update_metrics(diagnostics.tolist(), epsilon, regularizer is not None)
+
+    def format_update_metrics(self, diagnostics, epsilon, regularized):
+        """Format ordered CPU diagnostics, retaining the original rolling Q average."""
+        loss_value, mean_q_value, penalty_value = diagnostics
         self.q_value_history.append(mean_q_value)
         if len(self.q_value_history) > 1000:
             self.q_value_history.pop(0)
@@ -209,7 +267,7 @@ class DQNAgent(BaseAgent):
         )
 
         metrics = {"loss": loss_value, "epsilon": epsilon, "q_value": avg_q}
-        if regularizer is not None:
+        if regularized:
             metrics["regularization_loss"] = penalty_value
         return metrics
 
@@ -226,6 +284,8 @@ class DQNAgent(BaseAgent):
 
     def load_checkpoint_state(self, checkpoint: dict) -> None:
         """Restore a DQN checkpoint, including optimizer and counters when present."""
+        self._compute._update_graph = None
+        self._compute._update_key = None
         self.environment_protocol = checkpoint.get("environment_protocol", "gymnasium_wrappers_v1")
         if "network" not in checkpoint:
             self.network.load_state_dict(checkpoint)
@@ -279,9 +339,12 @@ class MultiHeadDQNAgent(BaseAgent):
         self.current_task = None
         self.configure_runtime(compile_enabled=False)
 
-    def configure_runtime(self, *, compile_enabled: bool = False) -> None:
+    def configure_runtime(
+        self, *, compile_enabled: bool = False, capture_updates: bool = True
+    ) -> None:
         """Cache separate callables for task heads with different action dimensions."""
         self._compiled = compile_enabled
+        self._capture_updates = capture_updates
         self._computations = {}
         self._gradient_groups = (
             tuple(self.backbone.parameters()),
@@ -304,6 +367,7 @@ class MultiHeadDQNAgent(BaseAgent):
                 head=head,
                 target_head=target_head,
                 compiled=self._compiled,
+                capture_updates=self._capture_updates,
             )
         return self._computations[task]
 
@@ -318,6 +382,7 @@ class MultiHeadDQNAgent(BaseAgent):
         """Create a new output head for a task if it does not exist."""
         if task_id in self.heads:
             return
+        self._computations.clear()
 
         head = nn.Linear(self.backbone.feature_dim, action_dim).to(self.device)
         target_head = nn.Linear(self.backbone.feature_dim, action_dim).to(self.device)
@@ -376,6 +441,8 @@ class MultiHeadDQNAgent(BaseAgent):
         self,
         batch: dict[str, torch.Tensor],
         regularizer: Callable[[], torch.Tensor] | None = None,
+        *,
+        metrics_sink: Callable | None = None,
     ) -> dict[str, float]:
         """DQN update using shared backbone and task-specific head."""
         if self.current_task is None:
@@ -384,16 +451,17 @@ class MultiHeadDQNAgent(BaseAgent):
             raise RuntimeError("Optimizer has not been initialized; call register_task() first.")
 
         compute = self._computation()
-        compute.begin_step()
         device_batch = {
             name: value.to(self.device, non_blocking=True) for name, value in batch.items()
         }
-        total_loss, diagnostics = compute.loss(**device_batch, regularizer=regularizer)
-
-        self.optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        self._clip_gradients(self._gradient_groups, 1.0)
-        self.optimizer.step()
+        diagnostics = compute.update(
+            self.optimizer,
+            self._gradient_groups,
+            1.0,
+            device_batch,
+            regularizer,
+            self._clip_gradients,
+        )
 
         self.update_count += 1
         if self.update_count % self.target_update_freq == 0:
@@ -407,9 +475,16 @@ class MultiHeadDQNAgent(BaseAgent):
         )
         self.task_epsilons[self.current_task] = epsilon
 
-        loss_value, _, penalty_value = diagnostics.tolist()
+        if metrics_sink is not None:
+            metrics_sink(diagnostics, epsilon, regularizer is not None)
+            return {}
+        return self.format_update_metrics(diagnostics.tolist(), epsilon, regularizer is not None)
+
+    def format_update_metrics(self, diagnostics, epsilon, regularized):
+        """Format diagnostics after the learner's GPU work has completed."""
+        loss_value, _, penalty_value = diagnostics
         metrics = {"loss": loss_value, "epsilon": epsilon}
-        if regularizer is not None:
+        if regularized:
             metrics["regularization_loss"] = penalty_value
         return metrics
 
