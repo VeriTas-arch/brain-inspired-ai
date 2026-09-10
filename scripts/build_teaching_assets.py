@@ -3,23 +3,30 @@
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
 import imageio_ffmpeg
 import matplotlib.pyplot as plt
 
-from scripts.tutorial_examples import TEACHING_RESULTS, load_teaching_results
+from scripts.tutorial_examples import (
+    REFERENCE_RESULTS,
+    TEACHING_ASSETS,
+    TEACHING_RESULTS,
+    load_teaching_results,
+)
+from training.results import file_digest, result_directory
 
 GAMES = ("Pong-v5", "Breakout-v5", "SpaceInvaders-v5")
 METHODS = (("finetune", "Sequential"), ("ewc", "EWC"), ("gpm", "GPM"))
 
 
-def build_figures(results_dir: Path = TEACHING_RESULTS):
+def build_figures(reference: Path = REFERENCE_RESULTS, output: Path | None = None):
     """Plot actual evaluation means; leave unobserved tasks blank."""
-    results_dir = Path(results_dir)
-    data = load_teaching_results(results_dir)
-    output = results_dir / "figures"
+    reference = Path(reference)
+    data = load_teaching_results(reference)
+    output = Path(output) if output is not None else reference.parent / "figures"
     output.mkdir(parents=True, exist_ok=True)
     figure, axes = plt.subplots(1, 2, figsize=(10, 3.6))
     for axis, game in zip(axes, GAMES[:2], strict=True):
@@ -68,14 +75,7 @@ def build_figures(results_dir: Path = TEACHING_RESULTS):
     (output / "figures.json").write_text(
         json.dumps(
             {
-                "inputs": {
-                    str(path.relative_to(results_dir)): hashlib.sha256(
-                        path.read_bytes()
-                    ).hexdigest()
-                    for case in sorted(data["runs"])
-                    for name in ("learning.json", "training_summary.json")
-                    if (path := results_dir / case / name).is_file()
-                },
+                "inputs": {reference.name: file_digest(reference)},
                 "figures": {
                     path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in sorted(output.glob("*.png"))
@@ -175,14 +175,122 @@ def build_videos(run: Path = TEACHING_RESULTS):
     )
 
 
+def export_reference(results_dir: Path, output: Path = TEACHING_ASSETS):
+    """Publish portable reference data and verified GIFs without local run diagnostics."""
+    results_dir = Path(results_dir)
+    data = load_teaching_results(results_dir)
+    expected = {
+        *(
+            f"single-{algorithm}-{game}"
+            for algorithm in ("ppo", "dqn")
+            for game in ("pong", "breakout")
+        ),
+        *(
+            f"continual-{algorithm}-{method}"
+            for algorithm in ("ppo", "dqn")
+            for method, _ in METHODS
+        ),
+        "multitask-ppo",
+        "multitask-dqn",
+    }
+    if set(data["runs"]) != expected or set(data["evaluation_runs"]) != expected:
+        raise ValueError(
+            "Reference export requires all 12 seed-zero teaching cases and evaluations"
+        )
+    for group in ("runs", "evaluation_runs"):
+        data[group] = {
+            case: {
+                key: value
+                for key, value in record.items()
+                if key
+                in {
+                    "created_at",
+                    "commit",
+                    "dirty",
+                    "versions",
+                    "version_note",
+                    "checkpoint_sha256",
+                }
+            }
+            for case, record in data[group].items()
+        }
+    model_hashes = {model["name"]: model["sha256"] for model in data["models"]}
+    for model in data["models"]:
+        case = model["name"]
+        if data["evaluation_runs"][case].get("checkpoint_sha256") != model["sha256"]:
+            raise ValueError(f"Evaluation checkpoint mismatch: {case}")
+        checkpoint = results_dir / model["checkpoint"]
+        if checkpoint.exists() and file_digest(checkpoint) != model["sha256"]:
+            raise ValueError(f"Checkpoint changed: {checkpoint}")
+    data["continual"] = {
+        case: {
+            key: value
+            for key, value in summary.items()
+            if key
+            in {
+                "algorithm",
+                "method",
+                "games",
+                "score_matrix",
+                "stage_episode_rewards",
+                "initialization",
+                "task_steps",
+                "gpm_boundary_steps",
+                "head_initialization_seeds",
+            }
+        }
+        for case, summary in data["continual"].items()
+    }
+    media = json.loads((results_dir / "figures/media.json").read_text())
+    if len(media["records"]) != 6:
+        raise ValueError("Reference export requires six teaching GIFs")
+    with result_directory(output, force=True) as staging:
+        if (output / "README.md").exists():
+            shutil.copy2(output / "README.md", staging / "README.md")
+        (staging / "videos").mkdir()
+        for record in media["records"]:
+            source = results_dir / record["gif"]
+            checkpoint = results_dir / record["checkpoint"]
+            case = Path(record["checkpoint"]).parts[0]
+            expected_hash = model_hashes[case]
+            if checkpoint.name == "final.pt" and record["checkpoint_sha256"] != expected_hash:
+                raise ValueError(f"Stale reference media: {source}")
+            for field in ("gif", "checkpoint", "video"):
+                path = results_dir / record[field]
+                if (field == "gif" or path.exists()) and file_digest(path) != record[
+                    field + "_sha256"
+                ]:
+                    raise ValueError(f"Media source changed: {path}")
+            target = Path("videos") / f"{case}-{source.name}"
+            shutil.copy2(source, staging / target)
+            record["gif"] = str(target)
+        (staging / "reference_results.json").write_text(json.dumps(data, indent=2) + "\n")
+        build_figures(staging / "reference_results.json")
+        (staging / "videos/media.json").write_text(json.dumps(media, indent=2) + "\n")
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--videos", action="store_true", help="Requires local checkpoints and MP4s")
-    parser.add_argument("--results-dir", type=Path, default=TEACHING_RESULTS)
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        help="Explicitly replace reference assets from local teaching results",
+    )
+    parser.add_argument(
+        "--videos",
+        action="store_true",
+        help="Regenerate local GIFs before export; requires checkpoints and MP4s",
+    )
     args = parser.parse_args()
-    output = build_figures(args.results_dir)
-    if args.videos:
-        build_videos(args.results_dir)
+    if args.videos and args.results_dir is None:
+        parser.error("--videos requires --results-dir")
+    if args.results_dir is not None:
+        if args.videos:
+            build_videos(args.results_dir)
+        output = export_reference(args.results_dir)
+    else:
+        output = build_figures()
     print(output)
 
 

@@ -1,0 +1,3646 @@
+{
+  "training": {
+    "continual-dqn-ewc": {
+      "task_steps": {
+        "Pong-v5": 500000,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-dqn-finetune": {
+      "task_steps": {
+        "Pong-v5": 500000,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-dqn-gpm": {
+      "task_steps": {
+        "Pong-v5": 500000,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-ppo-ewc": {
+      "task_steps": {
+        "Pong-v5": 1000448,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-ppo-finetune": {
+      "task_steps": {
+        "Pong-v5": 1000448,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-ppo-gpm": {
+      "task_steps": {
+        "Pong-v5": 1000448,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "multitask-dqn": {
+      "total_steps": 1500000,
+      "task_steps": {
+        "Pong-v5": 502376,
+        "Breakout-v5": 499560,
+        "SpaceInvaders-v5": 498064
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "multitask-ppo": {
+      "total_steps": 1500000,
+      "task_steps": {
+        "Pong-v5": 514048,
+        "Breakout-v5": 506880,
+        "SpaceInvaders-v5": 479072
+      },
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-dqn-breakout": {
+      "total_steps": 500000,
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-dqn-pong": {
+      "total_steps": 2000000,
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-ppo-breakout": {
+      "total_steps": 500000,
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-ppo-pong": {
+      "total_steps": 2000000,
+      "num_envs": 8,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    }
+  },
+  "configurations": {
+    "continual-dqn-ewc": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "dqn",
+      "use_ewc": true,
+      "ewc_lambda": 0.4,
+      "steps_per_game": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": false,
+      "compile_dqn": true,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "method": "ewc",
+      "task_steps": [
+        500000,
+        500000,
+        500000
+      ],
+      "gpm_threshold": 0.995,
+      "gpm_samples": 2048,
+      "gpm_collection_steps": 32768,
+      "protocol": "continual",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-dqn-finetune": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "dqn",
+      "use_ewc": false,
+      "ewc_lambda": 0.4,
+      "steps_per_game": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": false,
+      "compile_dqn": true,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "method": "finetune",
+      "task_steps": [
+        500000,
+        500000,
+        500000
+      ],
+      "gpm_threshold": 0.995,
+      "gpm_samples": 2048,
+      "gpm_collection_steps": 32768,
+      "protocol": "continual",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-dqn-gpm": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "dqn",
+      "use_ewc": false,
+      "ewc_lambda": 0.4,
+      "steps_per_game": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": false,
+      "compile_dqn": true,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "method": "gpm",
+      "task_steps": [
+        500000,
+        500000,
+        500000
+      ],
+      "gpm_threshold": 0.995,
+      "gpm_samples": 2048,
+      "gpm_collection_steps": 32768,
+      "protocol": "continual",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-ppo-ewc": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "ppo",
+      "use_ewc": true,
+      "ewc_lambda": 0.4,
+      "steps_per_game": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": true,
+      "compile_dqn": false,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "method": "ewc",
+      "task_steps": [
+        1000448,
+        500000,
+        500000
+      ],
+      "gpm_threshold": 0.995,
+      "gpm_samples": 2048,
+      "gpm_collection_steps": 32768,
+      "protocol": "continual",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-ppo-finetune": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "ppo",
+      "use_ewc": false,
+      "ewc_lambda": 0.4,
+      "steps_per_game": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": true,
+      "compile_dqn": false,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "method": "finetune",
+      "task_steps": [
+        1000448,
+        500000,
+        500000
+      ],
+      "gpm_threshold": 0.995,
+      "gpm_samples": 2048,
+      "gpm_collection_steps": 32768,
+      "protocol": "continual",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "continual-ppo-gpm": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "ppo",
+      "use_ewc": false,
+      "ewc_lambda": 0.4,
+      "steps_per_game": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": true,
+      "compile_dqn": false,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "method": "gpm",
+      "task_steps": [
+        1000448,
+        500000,
+        500000
+      ],
+      "gpm_threshold": 0.995,
+      "gpm_samples": 2048,
+      "gpm_collection_steps": 32768,
+      "protocol": "continual",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "multitask-dqn": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "dqn",
+      "total_steps": 1500000,
+      "batch_size": 32,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "compile_ppo": false,
+      "compile_dqn": true,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "protocol": "multitask",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "multitask-ppo": {
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "algorithm": "ppo",
+      "total_steps": 1500000,
+      "batch_size": 32,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "compile_ppo": true,
+      "compile_dqn": false,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "protocol": "multitask",
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-dqn-breakout": {
+      "protocol": "single",
+      "algorithm": "dqn",
+      "games": [
+        "Breakout-v5"
+      ],
+      "seed": 0,
+      "num_steps": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": false,
+      "compile_dqn": true,
+      "save_video": false,
+      "deterministic": true,
+      "eval_interval": 0,
+      "eval_points": 10,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-dqn-pong": {
+      "algorithm": "dqn",
+      "num_steps": 2000000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": false,
+      "compile_dqn": true,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "eval_episodes": 10,
+      "protocol": "single",
+      "games": [
+        "Pong-v5"
+      ],
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-ppo-breakout": {
+      "protocol": "single",
+      "algorithm": "ppo",
+      "games": [
+        "Breakout-v5"
+      ],
+      "seed": 0,
+      "num_steps": 500000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": true,
+      "compile_dqn": false,
+      "save_video": false,
+      "deterministic": true,
+      "eval_interval": 0,
+      "eval_points": 10,
+      "eval_episodes": 10,
+      "eval_max_steps": 30000,
+      "environment_protocol": "gymnasium_wrappers_v1"
+    },
+    "single-ppo-pong": {
+      "algorithm": "ppo",
+      "num_steps": 2000000,
+      "batch_size": 32,
+      "num_envs": 8,
+      "env_backend": "async",
+      "env_threads": 4,
+      "compile_ppo": true,
+      "compile_dqn": false,
+      "save_video": false,
+      "seed": 0,
+      "deterministic": true,
+      "eval_interval": 250000,
+      "eval_points": 0,
+      "eval_episodes": 10,
+      "protocol": "single",
+      "games": [
+        "Pong-v5"
+      ],
+      "environment_protocol": "gymnasium_wrappers_v1"
+    }
+  },
+  "runs": {
+    "continual-dqn-ewc": {
+      "created_at": "2026-09-09T12:18:33.539813+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "continual-dqn-finetune": {
+      "created_at": "2026-09-09T12:08:41.677402+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "continual-dqn-gpm": {
+      "created_at": "2026-09-09T12:32:37.187804+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "continual-ppo-ewc": {
+      "created_at": "2026-09-09T11:13:43.565191+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "continual-ppo-finetune": {
+      "created_at": "2026-09-09T11:00:14.362065+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "continual-ppo-gpm": {
+      "created_at": "2026-09-09T11:27:39.857865+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "multitask-dqn": {
+      "created_at": "2026-09-09T12:00:55.112581+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "multitask-ppo": {
+      "created_at": "2026-09-09T10:54:56.183520+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "single-dqn-breakout": {
+      "created_at": "2026-09-09T15:56:50.054695+00:00",
+      "commit": "c53c80ae42782f9064a948638a12694f375e1729",
+      "dirty": true,
+      "versions": {
+        "python": "3.12.8",
+        "torch": "2.14.0",
+        "torchrl": "0.13.3",
+        "tensordict": "0.13.0",
+        "gymnasium": "1.3.0",
+        "ale-py": "0.12.1"
+      }
+    },
+    "single-dqn-pong": {
+      "created_at": "2026-09-09T11:42:11.810119+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    },
+    "single-ppo-breakout": {
+      "created_at": "2026-09-09T15:56:50.054179+00:00",
+      "commit": "c53c80ae42782f9064a948638a12694f375e1729",
+      "dirty": true,
+      "versions": {
+        "python": "3.12.8",
+        "torch": "2.14.0",
+        "torchrl": "0.13.3",
+        "tensordict": "0.13.0",
+        "gymnasium": "1.3.0",
+        "ale-py": "0.12.1"
+      }
+    },
+    "single-ppo-pong": {
+      "created_at": "2026-09-09T10:40:45.850889+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted."
+    }
+  },
+  "evaluation_runs": {
+    "continual-dqn-ewc": {
+      "created_at": "2026-09-09T13:07:04.743214+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "1981bb373ab72b2865e81df8e4837766064b7a9603d9bd3d1021b798ddd4a63a"
+    },
+    "continual-dqn-finetune": {
+      "created_at": "2026-09-09T13:06:50.501212+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "12356c483b19856a6dd4b0d7e051c985bd8a83f3157424df220de9abcf852261"
+    },
+    "continual-dqn-gpm": {
+      "created_at": "2026-09-09T13:09:57.056507+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "2221db655c7d0397bba89c5e296518e5b90ad071eaad7e877ae52f42a00130de"
+    },
+    "continual-ppo-ewc": {
+      "created_at": "2026-09-09T12:57:07.839024+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "de7c4893a78244581265ab09ff8b50aa5be64f6935e2970d7a96cebffa610d7c"
+    },
+    "continual-ppo-finetune": {
+      "created_at": "2026-09-09T12:54:14.947006+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "82d09230342b84459152c0a5d958c8c51f78f5bfff5d97001946f109f0cfad65"
+    },
+    "continual-ppo-gpm": {
+      "created_at": "2026-09-09T12:59:24.051271+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "af699a77d4fefb5ccc63664774d5bbc29b22aad0a6928d0a1e49f7d8741fcc47"
+    },
+    "multitask-dqn": {
+      "created_at": "2026-09-09T13:03:46.345753+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "3bac719cb913668f86ab50bdd9eda59e2e179ad0b39045f7e4320d512320c614"
+    },
+    "multitask-ppo": {
+      "created_at": "2026-09-09T12:51:23.767317+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "af6ce30023a196d410efeb72025fc0b96f3a59810a6d8c1b03a290f778ad7c1e"
+    },
+    "single-dqn-breakout": {
+      "created_at": "2026-09-09T16:21:28.298105+00:00",
+      "commit": "c53c80ae42782f9064a948638a12694f375e1729",
+      "dirty": true,
+      "versions": {
+        "python": "3.12.8",
+        "torch": "2.14.0",
+        "torchrl": "0.13.3",
+        "tensordict": "0.13.0",
+        "gymnasium": "1.3.0",
+        "ale-py": "0.12.1"
+      },
+      "checkpoint_sha256": "2523383779e78a3222aacbb142011e4294eebee938c49b20b8094fc782b053cb"
+    },
+    "single-dqn-pong": {
+      "created_at": "2026-09-09T13:01:25.423369+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "af39e9b1a1cadbe00838bce536ea2055ee42172d9f95b301b13be3c9419b67a4"
+    },
+    "single-ppo-breakout": {
+      "created_at": "2026-09-09T16:13:26.791833+00:00",
+      "commit": "c53c80ae42782f9064a948638a12694f375e1729",
+      "dirty": true,
+      "versions": {
+        "python": "3.12.8",
+        "torch": "2.14.0",
+        "torchrl": "0.13.3",
+        "tensordict": "0.13.0",
+        "gymnasium": "1.3.0",
+        "ale-py": "0.12.1"
+      },
+      "checkpoint_sha256": "24a5c7acbfa95ab51302b525370c2748046f3585ff7a72712953a625d005380e"
+    },
+    "single-ppo-pong": {
+      "created_at": "2026-09-09T12:48:25.178157+00:00",
+      "commit": "38da831599096e871c983ccc921e81b141ddd478",
+      "dirty": false,
+      "versions": null,
+      "version_note": "Original dependency versions were not recorded; no current versions substituted.",
+      "checkpoint_sha256": "dcf89195a6d015cff494ce3cbc7fdde5d90dbc0b8d96a863f4aaeb036289fd24"
+    }
+  },
+  "models": [
+    {
+      "name": "continual-dqn-ewc",
+      "checkpoint": "continual-dqn-ewc/checkpoints/final.pt",
+      "sha256": "1981bb373ab72b2865e81df8e4837766064b7a9603d9bd3d1021b798ddd4a63a",
+      "metrics_path": "continual-dqn-ewc/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "continual",
+        "algorithm": "dqn",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0
+            ],
+            "avg_reward": -21.0
+          },
+          "Breakout-v5": {
+            "rewards": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "avg_reward": 0.1
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              470.0,
+              785.0,
+              85.0,
+              330.0,
+              330.0,
+              685.0,
+              490.0,
+              200.0,
+              600.0,
+              290.0
+            ],
+            "avg_reward": 426.5
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": null,
+        "compile_dqn": true
+      }
+    },
+    {
+      "name": "continual-dqn-finetune",
+      "checkpoint": "continual-dqn-finetune/checkpoints/final.pt",
+      "sha256": "12356c483b19856a6dd4b0d7e051c985bd8a83f3157424df220de9abcf852261",
+      "metrics_path": "continual-dqn-finetune/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "continual",
+        "algorithm": "dqn",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0
+            ],
+            "avg_reward": -21.0
+          },
+          "Breakout-v5": {
+            "rewards": [
+              2.0,
+              5.0,
+              10.0,
+              3.0,
+              3.0,
+              3.0,
+              4.0,
+              0.0,
+              4.0,
+              3.0
+            ],
+            "avg_reward": 3.7
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              385.0,
+              205.0,
+              300.0,
+              270.0,
+              135.0,
+              290.0,
+              290.0,
+              185.0,
+              395.0,
+              280.0
+            ],
+            "avg_reward": 273.5
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": null,
+        "compile_dqn": true
+      }
+    },
+    {
+      "name": "continual-dqn-gpm",
+      "checkpoint": "continual-dqn-gpm/checkpoints/final.pt",
+      "sha256": "2221db655c7d0397bba89c5e296518e5b90ad071eaad7e877ae52f42a00130de",
+      "metrics_path": "continual-dqn-gpm/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "continual",
+        "algorithm": "dqn",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              -20.0,
+              -17.0,
+              -19.0,
+              -21.0,
+              -20.0,
+              -19.0,
+              -19.0,
+              -19.0,
+              -21.0,
+              -18.0
+            ],
+            "avg_reward": -19.3
+          },
+          "Breakout-v5": {
+            "rewards": [
+              4.0,
+              0.0,
+              1.0,
+              1.0,
+              1.0,
+              2.0,
+              1.0,
+              1.0,
+              2.0,
+              4.0
+            ],
+            "avg_reward": 1.7
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              420.0,
+              295.0,
+              255.0,
+              180.0,
+              45.0,
+              175.0,
+              355.0,
+              110.0,
+              65.0,
+              265.0
+            ],
+            "avg_reward": 216.5
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": null,
+        "compile_dqn": true
+      }
+    },
+    {
+      "name": "continual-ppo-ewc",
+      "checkpoint": "continual-ppo-ewc/checkpoints/final.pt",
+      "sha256": "de7c4893a78244581265ab09ff8b50aa5be64f6935e2970d7a96cebffa610d7c",
+      "metrics_path": "continual-ppo-ewc/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "continual",
+        "algorithm": "ppo",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              -13.0,
+              -6.0,
+              -17.0,
+              -15.0,
+              -12.0,
+              -18.0,
+              -12.0,
+              -10.0,
+              -17.0,
+              -9.0
+            ],
+            "avg_reward": -12.9
+          },
+          "Breakout-v5": {
+            "rewards": [
+              8.0,
+              13.0,
+              11.0,
+              10.0,
+              8.0,
+              6.0,
+              7.0,
+              15.0,
+              3.0,
+              17.0
+            ],
+            "avg_reward": 9.8
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              360.0,
+              355.0,
+              395.0,
+              300.0,
+              355.0,
+              285.0,
+              475.0,
+              240.0,
+              240.0,
+              340.0
+            ],
+            "avg_reward": 334.5
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": true,
+        "compile_dqn": null
+      }
+    },
+    {
+      "name": "continual-ppo-finetune",
+      "checkpoint": "continual-ppo-finetune/checkpoints/final.pt",
+      "sha256": "82d09230342b84459152c0a5d958c8c51f78f5bfff5d97001946f109f0cfad65",
+      "metrics_path": "continual-ppo-finetune/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "continual",
+        "algorithm": "ppo",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              -20.0,
+              -19.0,
+              -21.0,
+              -20.0,
+              -21.0,
+              -19.0,
+              -19.0,
+              -20.0,
+              -21.0,
+              -19.0
+            ],
+            "avg_reward": -19.9
+          },
+          "Breakout-v5": {
+            "rewards": [
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "avg_reward": 0.5
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              185.0,
+              190.0,
+              250.0,
+              500.0,
+              210.0,
+              155.0,
+              245.0,
+              205.0,
+              150.0,
+              330.0
+            ],
+            "avg_reward": 242.0
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": true,
+        "compile_dqn": null
+      }
+    },
+    {
+      "name": "continual-ppo-gpm",
+      "checkpoint": "continual-ppo-gpm/checkpoints/final.pt",
+      "sha256": "af699a77d4fefb5ccc63664774d5bbc29b22aad0a6928d0a1e49f7d8741fcc47",
+      "metrics_path": "continual-ppo-gpm/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "continual",
+        "algorithm": "ppo",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              14.0,
+              13.0,
+              18.0,
+              17.0,
+              10.0,
+              10.0,
+              6.0,
+              13.0,
+              -1.0,
+              18.0
+            ],
+            "avg_reward": 11.8
+          },
+          "Breakout-v5": {
+            "rewards": [
+              15.0,
+              8.0,
+              12.0,
+              12.0,
+              7.0,
+              7.0,
+              5.0,
+              2.0,
+              7.0,
+              19.0
+            ],
+            "avg_reward": 9.4
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              260.0,
+              195.0,
+              320.0,
+              290.0,
+              255.0,
+              135.0,
+              190.0,
+              320.0,
+              275.0,
+              385.0
+            ],
+            "avg_reward": 262.5
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": true,
+        "compile_dqn": null
+      }
+    },
+    {
+      "name": "multitask-dqn",
+      "checkpoint": "multitask-dqn/checkpoints/final.pt",
+      "sha256": "3bac719cb913668f86ab50bdd9eda59e2e179ad0b39045f7e4320d512320c614",
+      "metrics_path": "multitask-dqn/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "multitask",
+        "algorithm": "dqn",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              -15.0,
+              -17.0,
+              -16.0,
+              -16.0,
+              -16.0,
+              -18.0,
+              -10.0,
+              -18.0,
+              -13.0,
+              -16.0
+            ],
+            "avg_reward": -15.5
+          },
+          "Breakout-v5": {
+            "rewards": [
+              5.0,
+              4.0,
+              0.0,
+              8.0,
+              2.0,
+              6.0,
+              5.0,
+              3.0,
+              5.0,
+              4.0
+            ],
+            "avg_reward": 4.2
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              570.0,
+              360.0,
+              355.0,
+              300.0,
+              275.0,
+              200.0,
+              170.0,
+              385.0,
+              395.0,
+              360.0
+            ],
+            "avg_reward": 337.0
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": null,
+        "compile_dqn": true
+      }
+    },
+    {
+      "name": "multitask-ppo",
+      "checkpoint": "multitask-ppo/checkpoints/final.pt",
+      "sha256": "af6ce30023a196d410efeb72025fc0b96f3a59810a6d8c1b03a290f778ad7c1e",
+      "metrics_path": "multitask-ppo/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "multitask",
+        "algorithm": "ppo",
+        "games": {
+          "Pong-v5": {
+            "rewards": [
+              -21.0,
+              -11.0,
+              -17.0,
+              -14.0,
+              -9.0,
+              -16.0,
+              -20.0,
+              -17.0,
+              -15.0,
+              -20.0
+            ],
+            "avg_reward": -16.0
+          },
+          "Breakout-v5": {
+            "rewards": [
+              5.0,
+              3.0,
+              7.0,
+              8.0,
+              5.0,
+              15.0,
+              5.0,
+              9.0,
+              3.0,
+              7.0
+            ],
+            "avg_reward": 6.7
+          },
+          "SpaceInvaders-v5": {
+            "rewards": [
+              250.0,
+              130.0,
+              270.0,
+              405.0,
+              200.0,
+              265.0,
+              425.0,
+              215.0,
+              470.0,
+              245.0
+            ],
+            "avg_reward": 287.5
+          }
+        },
+        "episodes": 10,
+        "seed": 0,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "deterministic": true,
+        "compile_ppo": true,
+        "compile_dqn": null
+      }
+    },
+    {
+      "name": "single-dqn-breakout",
+      "checkpoint": "single-dqn-breakout/checkpoints/final.pt",
+      "sha256": "2523383779e78a3222aacbb142011e4294eebee938c49b20b8094fc782b053cb",
+      "metrics_path": "single-dqn-breakout/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "single",
+        "deterministic": true,
+        "compile_dqn": true,
+        "compile_ppo": null,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "game": "Breakout-v5",
+        "algorithm": "dqn",
+        "episodes": 10,
+        "seed": 0,
+        "rewards": [
+          10.0,
+          11.0,
+          10.0,
+          11.0,
+          10.0,
+          1.0,
+          1.0,
+          7.0,
+          16.0,
+          27.0
+        ],
+        "avg_reward": 10.4
+      }
+    },
+    {
+      "name": "single-dqn-pong",
+      "checkpoint": "single-dqn-pong/checkpoints/final.pt",
+      "sha256": "af39e9b1a1cadbe00838bce536ea2055ee42172d9f95b301b13be3c9419b67a4",
+      "metrics_path": "single-dqn-pong/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "single",
+        "deterministic": true,
+        "compile_dqn": true,
+        "compile_ppo": null,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "game": "Pong-v5",
+        "algorithm": "dqn",
+        "episodes": 10,
+        "seed": 0,
+        "rewards": [
+          3.0,
+          5.0,
+          -1.0,
+          16.0,
+          4.0,
+          16.0,
+          2.0,
+          6.0,
+          18.0,
+          3.0
+        ],
+        "avg_reward": 7.2
+      }
+    },
+    {
+      "name": "single-ppo-breakout",
+      "checkpoint": "single-ppo-breakout/checkpoints/final.pt",
+      "sha256": "24a5c7acbfa95ab51302b525370c2748046f3585ff7a72712953a625d005380e",
+      "metrics_path": "single-ppo-breakout/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "single",
+        "deterministic": true,
+        "compile_dqn": null,
+        "compile_ppo": true,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "game": "Breakout-v5",
+        "algorithm": "ppo",
+        "episodes": 10,
+        "seed": 0,
+        "rewards": [
+          2.0,
+          5.0,
+          3.0,
+          6.0,
+          4.0,
+          6.0,
+          4.0,
+          2.0,
+          5.0,
+          5.0
+        ],
+        "avg_reward": 4.2
+      }
+    },
+    {
+      "name": "single-ppo-pong",
+      "checkpoint": "single-ppo-pong/checkpoints/final.pt",
+      "sha256": "dcf89195a6d015cff494ce3cbc7fdde5d90dbc0b8d96a863f4aaeb036289fd24",
+      "metrics_path": "single-ppo-pong/evaluation/evaluation.json",
+      "metrics": {
+        "mode": "single",
+        "deterministic": true,
+        "compile_dqn": null,
+        "compile_ppo": true,
+        "environment_protocol": "gymnasium_wrappers_v1",
+        "game": "Pong-v5",
+        "algorithm": "ppo",
+        "episodes": 10,
+        "seed": 0,
+        "rewards": [
+          18.0,
+          16.0,
+          7.0,
+          11.0,
+          -10.0,
+          6.0,
+          13.0,
+          11.0,
+          11.0,
+          6.0
+        ],
+        "avg_reward": 8.9
+      }
+    }
+  ],
+  "continual": {
+    "continual-dqn-ewc": {
+      "algorithm": "dqn",
+      "method": "ewc",
+      "initialization": "random",
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "task_steps": {
+        "Pong-v5": 500000,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "head_initialization_seeds": {
+        "Breakout-v5": 60001,
+        "SpaceInvaders-v5": 60002
+      },
+      "stage_episode_rewards": [
+        {
+          "stage": 1,
+          "elapsed_seconds": 163.9110890760203,
+          "rewards": {
+            "Pong-v5": [
+              -19.0,
+              -17.0,
+              -12.0,
+              -17.0,
+              -17.0,
+              -21.0,
+              -11.0,
+              -9.0,
+              -15.0,
+              -12.0
+            ]
+          }
+        },
+        {
+          "stage": 2,
+          "elapsed_seconds": 530.1826421550359,
+          "rewards": {
+            "Pong-v5": [
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -20.0,
+              -21.0,
+              -20.0,
+              -21.0,
+              -20.0,
+              -21.0
+            ],
+            "Breakout-v5": [
+              39.0,
+              14.0,
+              13.0,
+              43.0,
+              8.0,
+              5.0,
+              39.0,
+              32.0,
+              7.0,
+              20.0
+            ]
+          }
+        },
+        {
+          "stage": 3,
+          "elapsed_seconds": 840.7460480399895,
+          "rewards": {
+            "Pong-v5": [
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0
+            ],
+            "Breakout-v5": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "SpaceInvaders-v5": [
+              470.0,
+              785.0,
+              85.0,
+              330.0,
+              330.0,
+              685.0,
+              490.0,
+              200.0,
+              600.0,
+              290.0
+            ]
+          }
+        }
+      ],
+      "score_matrix": [
+        {
+          "stage": 1,
+          "after_task": "Pong-v5",
+          "scores": {
+            "Pong-v5": -15.0,
+            "Breakout-v5": null,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 2,
+          "after_task": "Breakout-v5",
+          "scores": {
+            "Pong-v5": -20.7,
+            "Breakout-v5": 22.0,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 3,
+          "after_task": "SpaceInvaders-v5",
+          "scores": {
+            "Pong-v5": -21.0,
+            "Breakout-v5": 0.1,
+            "SpaceInvaders-v5": 426.5
+          }
+        }
+      ]
+    },
+    "continual-dqn-finetune": {
+      "algorithm": "dqn",
+      "method": "finetune",
+      "initialization": "random",
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "task_steps": {
+        "Pong-v5": 500000,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "head_initialization_seeds": {
+        "Breakout-v5": 60001,
+        "SpaceInvaders-v5": 60002
+      },
+      "stage_episode_rewards": [
+        {
+          "stage": 1,
+          "elapsed_seconds": 162.94886673399014,
+          "rewards": {
+            "Pong-v5": [
+              -19.0,
+              -17.0,
+              -12.0,
+              -17.0,
+              -17.0,
+              -21.0,
+              -11.0,
+              -9.0,
+              -15.0,
+              -12.0
+            ]
+          }
+        },
+        {
+          "stage": 2,
+          "elapsed_seconds": 426.12063405895606,
+          "rewards": {
+            "Pong-v5": [
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0
+            ],
+            "Breakout-v5": [
+              18.0,
+              19.0,
+              28.0,
+              25.0,
+              18.0,
+              19.0,
+              15.0,
+              31.0,
+              29.0,
+              18.0
+            ]
+          }
+        },
+        {
+          "stage": 3,
+          "elapsed_seconds": 589.2196797009674,
+          "rewards": {
+            "Pong-v5": [
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0
+            ],
+            "Breakout-v5": [
+              2.0,
+              5.0,
+              10.0,
+              3.0,
+              3.0,
+              3.0,
+              4.0,
+              0.0,
+              4.0,
+              3.0
+            ],
+            "SpaceInvaders-v5": [
+              385.0,
+              205.0,
+              300.0,
+              270.0,
+              135.0,
+              290.0,
+              290.0,
+              185.0,
+              395.0,
+              280.0
+            ]
+          }
+        }
+      ],
+      "score_matrix": [
+        {
+          "stage": 1,
+          "after_task": "Pong-v5",
+          "scores": {
+            "Pong-v5": -15.0,
+            "Breakout-v5": null,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 2,
+          "after_task": "Breakout-v5",
+          "scores": {
+            "Pong-v5": -21.0,
+            "Breakout-v5": 22.0,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 3,
+          "after_task": "SpaceInvaders-v5",
+          "scores": {
+            "Pong-v5": -21.0,
+            "Breakout-v5": 3.7,
+            "SpaceInvaders-v5": 273.5
+          }
+        }
+      ]
+    },
+    "continual-dqn-gpm": {
+      "algorithm": "dqn",
+      "method": "gpm",
+      "initialization": "random",
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "task_steps": {
+        "Pong-v5": 500000,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "head_initialization_seeds": {
+        "Breakout-v5": 60001,
+        "SpaceInvaders-v5": 60002
+      },
+      "stage_episode_rewards": [
+        {
+          "stage": 1,
+          "elapsed_seconds": 163.2572196929832,
+          "rewards": {
+            "Pong-v5": [
+              -19.0,
+              -17.0,
+              -12.0,
+              -17.0,
+              -17.0,
+              -21.0,
+              -11.0,
+              -9.0,
+              -15.0,
+              -12.0
+            ]
+          }
+        },
+        {
+          "stage": 2,
+          "elapsed_seconds": 591.2402714369819,
+          "rewards": {
+            "Pong-v5": [
+              -16.0,
+              -11.0,
+              -10.0,
+              -20.0,
+              -21.0,
+              -20.0,
+              -14.0,
+              -12.0,
+              -18.0,
+              -10.0
+            ],
+            "Breakout-v5": [
+              5.0,
+              2.0,
+              3.0,
+              6.0,
+              2.0,
+              15.0,
+              10.0,
+              3.0,
+              6.0,
+              4.0
+            ]
+          }
+        },
+        {
+          "stage": 3,
+          "elapsed_seconds": 939.4444322380004,
+          "rewards": {
+            "Pong-v5": [
+              -20.0,
+              -17.0,
+              -19.0,
+              -21.0,
+              -20.0,
+              -19.0,
+              -19.0,
+              -19.0,
+              -21.0,
+              -18.0
+            ],
+            "Breakout-v5": [
+              4.0,
+              0.0,
+              1.0,
+              1.0,
+              1.0,
+              2.0,
+              1.0,
+              1.0,
+              2.0,
+              4.0
+            ],
+            "SpaceInvaders-v5": [
+              420.0,
+              295.0,
+              255.0,
+              180.0,
+              45.0,
+              175.0,
+              355.0,
+              110.0,
+              65.0,
+              265.0
+            ]
+          }
+        }
+      ],
+      "score_matrix": [
+        {
+          "stage": 1,
+          "after_task": "Pong-v5",
+          "scores": {
+            "Pong-v5": -15.0,
+            "Breakout-v5": null,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 2,
+          "after_task": "Breakout-v5",
+          "scores": {
+            "Pong-v5": -15.2,
+            "Breakout-v5": 5.6,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 3,
+          "after_task": "SpaceInvaders-v5",
+          "scores": {
+            "Pong-v5": -19.3,
+            "Breakout-v5": 1.7,
+            "SpaceInvaders-v5": 216.5
+          }
+        }
+      ]
+    },
+    "continual-ppo-ewc": {
+      "algorithm": "ppo",
+      "method": "ewc",
+      "initialization": "random",
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "task_steps": {
+        "Pong-v5": 1000448,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "head_initialization_seeds": {
+        "Breakout-v5": 60001,
+        "SpaceInvaders-v5": 60002
+      },
+      "stage_episode_rewards": [
+        {
+          "stage": 1,
+          "elapsed_seconds": 246.30185736902058,
+          "rewards": {
+            "Pong-v5": [
+              17.0,
+              13.0,
+              13.0,
+              14.0,
+              17.0,
+              13.0,
+              11.0,
+              13.0,
+              4.0,
+              11.0
+            ]
+          }
+        },
+        {
+          "stage": 2,
+          "elapsed_seconds": 607.3174090510001,
+          "rewards": {
+            "Pong-v5": [
+              -20.0,
+              -18.0,
+              -21.0,
+              -19.0,
+              -19.0,
+              -19.0,
+              -19.0,
+              -20.0,
+              -21.0,
+              -21.0
+            ],
+            "Breakout-v5": [
+              11.0,
+              5.0,
+              7.0,
+              5.0,
+              4.0,
+              8.0,
+              14.0,
+              7.0,
+              5.0,
+              12.0
+            ]
+          }
+        },
+        {
+          "stage": 3,
+          "elapsed_seconds": 833.4224782160018,
+          "rewards": {
+            "Pong-v5": [
+              -13.0,
+              -6.0,
+              -17.0,
+              -15.0,
+              -12.0,
+              -18.0,
+              -12.0,
+              -10.0,
+              -17.0,
+              -9.0
+            ],
+            "Breakout-v5": [
+              8.0,
+              13.0,
+              11.0,
+              10.0,
+              8.0,
+              6.0,
+              7.0,
+              15.0,
+              3.0,
+              17.0
+            ],
+            "SpaceInvaders-v5": [
+              360.0,
+              355.0,
+              395.0,
+              300.0,
+              355.0,
+              285.0,
+              475.0,
+              240.0,
+              240.0,
+              340.0
+            ]
+          }
+        }
+      ],
+      "score_matrix": [
+        {
+          "stage": 1,
+          "after_task": "Pong-v5",
+          "scores": {
+            "Pong-v5": 12.6,
+            "Breakout-v5": null,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 2,
+          "after_task": "Breakout-v5",
+          "scores": {
+            "Pong-v5": -19.7,
+            "Breakout-v5": 7.8,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 3,
+          "after_task": "SpaceInvaders-v5",
+          "scores": {
+            "Pong-v5": -12.9,
+            "Breakout-v5": 9.8,
+            "SpaceInvaders-v5": 334.5
+          }
+        }
+      ]
+    },
+    "continual-ppo-finetune": {
+      "algorithm": "ppo",
+      "method": "finetune",
+      "initialization": "random",
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "task_steps": {
+        "Pong-v5": 1000448,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "head_initialization_seeds": {
+        "Breakout-v5": 60001,
+        "SpaceInvaders-v5": 60002
+      },
+      "stage_episode_rewards": [
+        {
+          "stage": 1,
+          "elapsed_seconds": 246.43735277000815,
+          "rewards": {
+            "Pong-v5": [
+              17.0,
+              13.0,
+              13.0,
+              14.0,
+              17.0,
+              13.0,
+              11.0,
+              13.0,
+              4.0,
+              11.0
+            ]
+          }
+        },
+        {
+          "stage": 2,
+          "elapsed_seconds": 545.5147818580153,
+          "rewards": {
+            "Pong-v5": [
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -20.0,
+              -21.0,
+              -21.0,
+              -21.0,
+              -20.0
+            ],
+            "Breakout-v5": [
+              9.0,
+              3.0,
+              17.0,
+              9.0,
+              3.0,
+              4.0,
+              13.0,
+              8.0,
+              5.0,
+              5.0
+            ]
+          }
+        },
+        {
+          "stage": 3,
+          "elapsed_seconds": 806.5785945510142,
+          "rewards": {
+            "Pong-v5": [
+              -20.0,
+              -19.0,
+              -21.0,
+              -20.0,
+              -21.0,
+              -19.0,
+              -19.0,
+              -20.0,
+              -21.0,
+              -19.0
+            ],
+            "Breakout-v5": [
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "SpaceInvaders-v5": [
+              185.0,
+              190.0,
+              250.0,
+              500.0,
+              210.0,
+              155.0,
+              245.0,
+              205.0,
+              150.0,
+              330.0
+            ]
+          }
+        }
+      ],
+      "score_matrix": [
+        {
+          "stage": 1,
+          "after_task": "Pong-v5",
+          "scores": {
+            "Pong-v5": 12.6,
+            "Breakout-v5": null,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 2,
+          "after_task": "Breakout-v5",
+          "scores": {
+            "Pong-v5": -20.8,
+            "Breakout-v5": 7.6,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 3,
+          "after_task": "SpaceInvaders-v5",
+          "scores": {
+            "Pong-v5": -19.9,
+            "Breakout-v5": 0.5,
+            "SpaceInvaders-v5": 242.0
+          }
+        }
+      ]
+    },
+    "continual-ppo-gpm": {
+      "algorithm": "ppo",
+      "method": "gpm",
+      "initialization": "random",
+      "games": [
+        "Pong-v5",
+        "Breakout-v5",
+        "SpaceInvaders-v5"
+      ],
+      "task_steps": {
+        "Pong-v5": 1000448,
+        "Breakout-v5": 500000,
+        "SpaceInvaders-v5": 500000
+      },
+      "head_initialization_seeds": {
+        "Breakout-v5": 60001,
+        "SpaceInvaders-v5": 60002
+      },
+      "stage_episode_rewards": [
+        {
+          "stage": 1,
+          "elapsed_seconds": 245.85767336195568,
+          "rewards": {
+            "Pong-v5": [
+              17.0,
+              13.0,
+              13.0,
+              14.0,
+              17.0,
+              13.0,
+              11.0,
+              13.0,
+              4.0,
+              11.0
+            ]
+          }
+        },
+        {
+          "stage": 2,
+          "elapsed_seconds": 600.1103341239505,
+          "rewards": {
+            "Pong-v5": [
+              14.0,
+              8.0,
+              7.0,
+              5.0,
+              9.0,
+              5.0,
+              16.0,
+              14.0,
+              5.0,
+              14.0
+            ],
+            "Breakout-v5": [
+              10.0,
+              9.0,
+              5.0,
+              8.0,
+              2.0,
+              8.0,
+              10.0,
+              1.0,
+              5.0,
+              2.0
+            ]
+          }
+        },
+        {
+          "stage": 3,
+          "elapsed_seconds": 862.6597717279801,
+          "rewards": {
+            "Pong-v5": [
+              14.0,
+              13.0,
+              18.0,
+              17.0,
+              10.0,
+              10.0,
+              6.0,
+              13.0,
+              -1.0,
+              18.0
+            ],
+            "Breakout-v5": [
+              15.0,
+              8.0,
+              12.0,
+              12.0,
+              7.0,
+              7.0,
+              5.0,
+              2.0,
+              7.0,
+              19.0
+            ],
+            "SpaceInvaders-v5": [
+              260.0,
+              195.0,
+              320.0,
+              290.0,
+              255.0,
+              135.0,
+              190.0,
+              320.0,
+              275.0,
+              385.0
+            ]
+          }
+        }
+      ],
+      "score_matrix": [
+        {
+          "stage": 1,
+          "after_task": "Pong-v5",
+          "scores": {
+            "Pong-v5": 12.6,
+            "Breakout-v5": null,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 2,
+          "after_task": "Breakout-v5",
+          "scores": {
+            "Pong-v5": 9.7,
+            "Breakout-v5": 6.0,
+            "SpaceInvaders-v5": null
+          }
+        },
+        {
+          "stage": 3,
+          "after_task": "SpaceInvaders-v5",
+          "scores": {
+            "Pong-v5": 11.8,
+            "Breakout-v5": 9.4,
+            "SpaceInvaders-v5": 262.5
+          }
+        }
+      ]
+    }
+  },
+  "learning_curves": {
+    "continual-dqn-ewc/learning.json": {
+      "Pong-v5": {
+        "task": "Pong-v5",
+        "stage": 1,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 80.89821579802083,
+            "rewards": [
+              -21.0,
+              -18.0,
+              -17.0,
+              -19.0,
+              -17.0,
+              -17.0,
+              -19.0,
+              -18.0,
+              -19.0,
+              -18.0
+            ],
+            "mean_raw_reward": -18.3
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 163.89520736201666,
+            "rewards": [
+              -19.0,
+              -17.0,
+              -12.0,
+              -17.0,
+              -17.0,
+              -21.0,
+              -11.0,
+              -9.0,
+              -15.0,
+              -12.0
+            ],
+            "mean_raw_reward": -15.0
+          }
+        ]
+      },
+      "Breakout-v5": {
+        "task": "Breakout-v5",
+        "stage": 2,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 387.49853724002605,
+            "rewards": [
+              5.0,
+              2.0,
+              4.0,
+              6.0,
+              0.0,
+              4.0,
+              3.0,
+              4.0,
+              4.0,
+              1.0
+            ],
+            "mean_raw_reward": 3.3
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 525.9316072660149,
+            "rewards": [
+              39.0,
+              14.0,
+              13.0,
+              43.0,
+              8.0,
+              5.0,
+              39.0,
+              32.0,
+              7.0,
+              20.0
+            ],
+            "mean_raw_reward": 22.0
+          }
+        ]
+      },
+      "SpaceInvaders-v5": {
+        "task": "SpaceInvaders-v5",
+        "stage": 3,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 609.981017476006,
+            "rewards": [
+              455.0,
+              740.0,
+              290.0,
+              210.0,
+              160.0,
+              245.0,
+              150.0,
+              150.0,
+              135.0,
+              170.0
+            ],
+            "mean_raw_reward": 270.5
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 693.5762298930204,
+            "rewards": [
+              470.0,
+              785.0,
+              85.0,
+              330.0,
+              330.0,
+              685.0,
+              490.0,
+              200.0,
+              600.0,
+              290.0
+            ],
+            "mean_raw_reward": 426.5
+          }
+        ]
+      }
+    },
+    "continual-dqn-finetune/learning.json": {
+      "Pong-v5": {
+        "task": "Pong-v5",
+        "stage": 1,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 80.15735493798275,
+            "rewards": [
+              -21.0,
+              -18.0,
+              -17.0,
+              -19.0,
+              -17.0,
+              -17.0,
+              -19.0,
+              -18.0,
+              -19.0,
+              -18.0
+            ],
+            "mean_raw_reward": -18.3
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 162.93686198594514,
+            "rewards": [
+              -19.0,
+              -17.0,
+              -12.0,
+              -17.0,
+              -17.0,
+              -21.0,
+              -11.0,
+              -9.0,
+              -15.0,
+              -12.0
+            ],
+            "mean_raw_reward": -15.0
+          }
+        ]
+      },
+      "Breakout-v5": {
+        "task": "Breakout-v5",
+        "stage": 2,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 300.9136731129838,
+            "rewards": [
+              15.0,
+              15.0,
+              16.0,
+              21.0,
+              12.0,
+              14.0,
+              11.0,
+              13.0,
+              4.0,
+              9.0
+            ],
+            "mean_raw_reward": 13.0
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 422.24833250796655,
+            "rewards": [
+              18.0,
+              19.0,
+              28.0,
+              25.0,
+              18.0,
+              19.0,
+              15.0,
+              31.0,
+              29.0,
+              18.0
+            ],
+            "mean_raw_reward": 22.0
+          }
+        ]
+      },
+      "SpaceInvaders-v5": {
+        "task": "SpaceInvaders-v5",
+        "stage": 3,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 504.26044638699386,
+            "rewards": [
+              315.0,
+              455.0,
+              80.0,
+              145.0,
+              290.0,
+              570.0,
+              235.0,
+              270.0,
+              335.0,
+              390.0
+            ],
+            "mean_raw_reward": 308.5
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 583.7682075359626,
+            "rewards": [
+              385.0,
+              205.0,
+              300.0,
+              270.0,
+              135.0,
+              290.0,
+              290.0,
+              185.0,
+              395.0,
+              280.0
+            ],
+            "mean_raw_reward": 273.5
+          }
+        ]
+      }
+    },
+    "continual-dqn-gpm/learning.json": {
+      "Pong-v5": {
+        "task": "Pong-v5",
+        "stage": 1,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 80.18882161495276,
+            "rewards": [
+              -21.0,
+              -18.0,
+              -17.0,
+              -19.0,
+              -17.0,
+              -17.0,
+              -19.0,
+              -18.0,
+              -19.0,
+              -18.0
+            ],
+            "mean_raw_reward": -18.3
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 163.245238124975,
+            "rewards": [
+              -19.0,
+              -17.0,
+              -12.0,
+              -17.0,
+              -17.0,
+              -21.0,
+              -11.0,
+              -9.0,
+              -15.0,
+              -12.0
+            ],
+            "mean_raw_reward": -15.0
+          }
+        ]
+      },
+      "Breakout-v5": {
+        "task": "Breakout-v5",
+        "stage": 2,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 341.4586430019699,
+            "rewards": [
+              8.0,
+              4.0,
+              8.0,
+              11.0,
+              4.0,
+              8.0,
+              9.0,
+              7.0,
+              7.0,
+              7.0
+            ],
+            "mean_raw_reward": 7.3
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 581.4379110579612,
+            "rewards": [
+              5.0,
+              2.0,
+              3.0,
+              6.0,
+              2.0,
+              15.0,
+              10.0,
+              3.0,
+              6.0,
+              4.0
+            ],
+            "mean_raw_reward": 5.6
+          }
+        ]
+      },
+      "SpaceInvaders-v5": {
+        "task": "SpaceInvaders-v5",
+        "stage": 3,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250000,
+            "elapsed_seconds": 692.8917921179673,
+            "rewards": [
+              50.0,
+              65.0,
+              55.0,
+              120.0,
+              400.0,
+              110.0,
+              60.0,
+              65.0,
+              175.0,
+              70.0
+            ],
+            "mean_raw_reward": 117.0
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 792.2366283149458,
+            "rewards": [
+              420.0,
+              295.0,
+              255.0,
+              180.0,
+              45.0,
+              175.0,
+              355.0,
+              110.0,
+              65.0,
+              265.0
+            ],
+            "mean_raw_reward": 216.5
+          }
+        ]
+      }
+    },
+    "continual-ppo-ewc/learning.json": {
+      "Pong-v5": {
+        "task": "Pong-v5",
+        "stage": 1,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 62.66145612503169,
+            "rewards": [
+              -15.0,
+              -8.0,
+              -6.0,
+              -15.0,
+              -20.0,
+              -7.0,
+              -10.0,
+              -4.0,
+              -14.0,
+              8.0
+            ],
+            "mean_raw_reward": -9.1
+          },
+          {
+            "step": 500736,
+            "elapsed_seconds": 123.21395209804177,
+            "rewards": [
+              -11.0,
+              3.0,
+              5.0,
+              -19.0,
+              -8.0,
+              -14.0,
+              11.0,
+              6.0,
+              -8.0,
+              9.0
+            ],
+            "mean_raw_reward": -2.6
+          },
+          {
+            "step": 750592,
+            "elapsed_seconds": 185.1308578249882,
+            "rewards": [
+              -4.0,
+              8.0,
+              10.0,
+              -2.0,
+              12.0,
+              13.0,
+              9.0,
+              11.0,
+              12.0,
+              12.0
+            ],
+            "mean_raw_reward": 8.1
+          },
+          {
+            "step": 1000448,
+            "elapsed_seconds": 246.2898591000121,
+            "rewards": [
+              17.0,
+              13.0,
+              13.0,
+              14.0,
+              17.0,
+              13.0,
+              11.0,
+              13.0,
+              4.0,
+              11.0
+            ],
+            "mean_raw_reward": 12.6
+          }
+        ]
+      },
+      "Breakout-v5": {
+        "task": "Breakout-v5",
+        "stage": 2,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 419.1571699900087,
+            "rewards": [
+              5.0,
+              3.0,
+              2.0,
+              6.0,
+              16.0,
+              2.0,
+              8.0,
+              1.0,
+              8.0,
+              14.0
+            ],
+            "mean_raw_reward": 6.5
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 602.7443838090403,
+            "rewards": [
+              11.0,
+              5.0,
+              7.0,
+              5.0,
+              4.0,
+              8.0,
+              14.0,
+              7.0,
+              5.0,
+              12.0
+            ],
+            "mean_raw_reward": 7.8
+          }
+        ]
+      },
+      "SpaceInvaders-v5": {
+        "task": "SpaceInvaders-v5",
+        "stage": 3,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 665.2094746700022,
+            "rewards": [
+              135.0,
+              125.0,
+              155.0,
+              165.0,
+              110.0,
+              135.0,
+              330.0,
+              540.0,
+              110.0,
+              265.0
+            ],
+            "mean_raw_reward": 207.0
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 723.4778371290304,
+            "rewards": [
+              360.0,
+              355.0,
+              395.0,
+              300.0,
+              355.0,
+              285.0,
+              475.0,
+              240.0,
+              240.0,
+              340.0
+            ],
+            "mean_raw_reward": 334.5
+          }
+        ]
+      }
+    },
+    "continual-ppo-finetune/learning.json": {
+      "Pong-v5": {
+        "task": "Pong-v5",
+        "stage": 1,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 62.43734836700605,
+            "rewards": [
+              -15.0,
+              -8.0,
+              -6.0,
+              -15.0,
+              -20.0,
+              -7.0,
+              -10.0,
+              -4.0,
+              -14.0,
+              8.0
+            ],
+            "mean_raw_reward": -9.1
+          },
+          {
+            "step": 500736,
+            "elapsed_seconds": 122.88546232599765,
+            "rewards": [
+              -11.0,
+              3.0,
+              5.0,
+              -19.0,
+              -8.0,
+              -14.0,
+              11.0,
+              6.0,
+              -8.0,
+              9.0
+            ],
+            "mean_raw_reward": -2.6
+          },
+          {
+            "step": 750592,
+            "elapsed_seconds": 185.26703301700763,
+            "rewards": [
+              -4.0,
+              8.0,
+              10.0,
+              -2.0,
+              12.0,
+              13.0,
+              9.0,
+              11.0,
+              12.0,
+              12.0
+            ],
+            "mean_raw_reward": 8.1
+          },
+          {
+            "step": 1000448,
+            "elapsed_seconds": 246.42196969501674,
+            "rewards": [
+              17.0,
+              13.0,
+              13.0,
+              14.0,
+              17.0,
+              13.0,
+              11.0,
+              13.0,
+              4.0,
+              11.0
+            ],
+            "mean_raw_reward": 12.6
+          }
+        ]
+      },
+      "Breakout-v5": {
+        "task": "Breakout-v5",
+        "stage": 2,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 374.46717382600764,
+            "rewards": [
+              15.0,
+              12.0,
+              16.0,
+              4.0,
+              10.0,
+              4.0,
+              5.0,
+              1.0,
+              18.0,
+              14.0
+            ],
+            "mean_raw_reward": 9.9
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 541.0634212840232,
+            "rewards": [
+              9.0,
+              3.0,
+              17.0,
+              9.0,
+              3.0,
+              4.0,
+              13.0,
+              8.0,
+              5.0,
+              5.0
+            ],
+            "mean_raw_reward": 7.6
+          }
+        ]
+      },
+      "SpaceInvaders-v5": {
+        "task": "SpaceInvaders-v5",
+        "stage": 3,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 602.3852521230001,
+            "rewards": [
+              265.0,
+              230.0,
+              605.0,
+              215.0,
+              320.0,
+              190.0,
+              290.0,
+              265.0,
+              590.0,
+              195.0
+            ],
+            "mean_raw_reward": 316.5
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 658.4150140970014,
+            "rewards": [
+              185.0,
+              190.0,
+              250.0,
+              500.0,
+              210.0,
+              155.0,
+              245.0,
+              205.0,
+              150.0,
+              330.0
+            ],
+            "mean_raw_reward": 242.0
+          }
+        ]
+      }
+    },
+    "continual-ppo-gpm/learning.json": {
+      "Pong-v5": {
+        "task": "Pong-v5",
+        "stage": 1,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 62.64601090998622,
+            "rewards": [
+              -15.0,
+              -8.0,
+              -6.0,
+              -15.0,
+              -20.0,
+              -7.0,
+              -10.0,
+              -4.0,
+              -14.0,
+              8.0
+            ],
+            "mean_raw_reward": -9.1
+          },
+          {
+            "step": 500736,
+            "elapsed_seconds": 123.06513626495143,
+            "rewards": [
+              -11.0,
+              3.0,
+              5.0,
+              -19.0,
+              -8.0,
+              -14.0,
+              11.0,
+              6.0,
+              -8.0,
+              9.0
+            ],
+            "mean_raw_reward": -2.6
+          },
+          {
+            "step": 750592,
+            "elapsed_seconds": 184.78884020796977,
+            "rewards": [
+              -4.0,
+              8.0,
+              10.0,
+              -2.0,
+              12.0,
+              13.0,
+              9.0,
+              11.0,
+              12.0,
+              12.0
+            ],
+            "mean_raw_reward": 8.1
+          },
+          {
+            "step": 1000448,
+            "elapsed_seconds": 245.8460204959847,
+            "rewards": [
+              17.0,
+              13.0,
+              13.0,
+              14.0,
+              17.0,
+              13.0,
+              11.0,
+              13.0,
+              4.0,
+              11.0
+            ],
+            "mean_raw_reward": 12.6
+          }
+        ]
+      },
+      "Breakout-v5": {
+        "task": "Breakout-v5",
+        "stage": 2,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 379.5133491709712,
+            "rewards": [
+              18.0,
+              9.0,
+              10.0,
+              7.0,
+              2.0,
+              9.0,
+              19.0,
+              6.0,
+              12.0,
+              15.0
+            ],
+            "mean_raw_reward": 10.7
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 585.2241835349705,
+            "rewards": [
+              10.0,
+              9.0,
+              5.0,
+              8.0,
+              2.0,
+              8.0,
+              10.0,
+              1.0,
+              5.0,
+              2.0
+            ],
+            "mean_raw_reward": 6.0
+          }
+        ]
+      },
+      "SpaceInvaders-v5": {
+        "task": "SpaceInvaders-v5",
+        "stage": 3,
+        "seed": 0,
+        "deterministic": true,
+        "evaluations": [
+          {
+            "step": 250880,
+            "elapsed_seconds": 680.053794132953,
+            "rewards": [
+              180.0,
+              525.0,
+              400.0,
+              250.0,
+              260.0,
+              225.0,
+              415.0,
+              335.0,
+              320.0,
+              370.0
+            ],
+            "mean_raw_reward": 328.0
+          },
+          {
+            "step": 500000,
+            "elapsed_seconds": 750.4640111879562,
+            "rewards": [
+              260.0,
+              195.0,
+              320.0,
+              290.0,
+              255.0,
+              135.0,
+              190.0,
+              320.0,
+              275.0,
+              385.0
+            ],
+            "mean_raw_reward": 262.5
+          }
+        ]
+      }
+    },
+    "single-dqn-breakout/learning.json": {
+      "seed": 0,
+      "deterministic": true,
+      "eval_points": 10,
+      "evaluation_steps": [
+        50000,
+        100000,
+        150000,
+        200000,
+        250000,
+        300000,
+        350000,
+        400000,
+        450000,
+        500000
+      ],
+      "evaluations": [
+        {
+          "step": 50000,
+          "elapsed_seconds": 148.61111497099046,
+          "rewards": [
+            0.0,
+            3.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            3.0,
+            0.0,
+            3.0,
+            0.0
+          ],
+          "mean_raw_reward": 0.9
+        },
+        {
+          "step": 100000,
+          "elapsed_seconds": 346.3210144030163,
+          "rewards": [
+            0.0,
+            2.0,
+            0.0,
+            0.0,
+            2.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            2.0
+          ],
+          "mean_raw_reward": 0.6
+        },
+        {
+          "step": 150000,
+          "elapsed_seconds": 545.6192231400055,
+          "rewards": [
+            0.0,
+            5.0,
+            5.0,
+            1.0,
+            8.0,
+            1.0,
+            1.0,
+            1.0,
+            2.0,
+            4.0
+          ],
+          "mean_raw_reward": 2.8
+        },
+        {
+          "step": 200000,
+          "elapsed_seconds": 740.3364667039714,
+          "rewards": [
+            4.0,
+            4.0,
+            10.0,
+            1.0,
+            4.0,
+            1.0,
+            2.0,
+            4.0,
+            3.0,
+            5.0
+          ],
+          "mean_raw_reward": 3.8
+        },
+        {
+          "step": 250000,
+          "elapsed_seconds": 918.6963737379992,
+          "rewards": [
+            7.0,
+            5.0,
+            1.0,
+            23.0,
+            4.0,
+            5.0,
+            2.0,
+            2.0,
+            5.0,
+            5.0
+          ],
+          "mean_raw_reward": 5.9
+        },
+        {
+          "step": 300000,
+          "elapsed_seconds": 943.9009728310048,
+          "rewards": [
+            17.0,
+            38.0,
+            17.0,
+            19.0,
+            18.0,
+            25.0,
+            26.0,
+            10.0,
+            19.0,
+            26.0
+          ],
+          "mean_raw_reward": 21.5
+        },
+        {
+          "step": 350000,
+          "elapsed_seconds": 991.4438825870166,
+          "rewards": [
+            11.0,
+            18.0,
+            23.0,
+            33.0,
+            53.0,
+            26.0,
+            11.0,
+            16.0,
+            49.0,
+            57.0
+          ],
+          "mean_raw_reward": 29.7
+        },
+        {
+          "step": 400000,
+          "elapsed_seconds": 1180.9835152919986,
+          "rewards": [
+            1.0,
+            4.0,
+            4.0,
+            5.0,
+            12.0,
+            3.0,
+            1.0,
+            4.0,
+            2.0,
+            10.0
+          ],
+          "mean_raw_reward": 4.6
+        },
+        {
+          "step": 450000,
+          "elapsed_seconds": 1328.2108434640104,
+          "rewards": [
+            29.0,
+            4.0,
+            4.0,
+            7.0,
+            1.0,
+            1.0,
+            29.0,
+            1.0,
+            5.0,
+            14.0
+          ],
+          "mean_raw_reward": 9.5
+        },
+        {
+          "step": 500000,
+          "elapsed_seconds": 1475.5216369659756,
+          "rewards": [
+            10.0,
+            11.0,
+            10.0,
+            11.0,
+            10.0,
+            1.0,
+            1.0,
+            7.0,
+            16.0,
+            27.0
+          ],
+          "mean_raw_reward": 10.4
+        }
+      ]
+    },
+    "single-dqn-pong/learning.json": {
+      "seed": 0,
+      "deterministic": true,
+      "evaluations": [
+        {
+          "step": 250000,
+          "elapsed_seconds": 82.52659485099139,
+          "rewards": [
+            -18.0,
+            -19.0,
+            -17.0,
+            -19.0,
+            -19.0,
+            -19.0,
+            -20.0,
+            -18.0,
+            -16.0,
+            -17.0
+          ],
+          "mean_raw_reward": -18.2
+        },
+        {
+          "step": 500000,
+          "elapsed_seconds": 168.37621566501912,
+          "rewards": [
+            -14.0,
+            -17.0,
+            -12.0,
+            -16.0,
+            -17.0,
+            -19.0,
+            -17.0,
+            -16.0,
+            -15.0,
+            -14.0
+          ],
+          "mean_raw_reward": -15.7
+        },
+        {
+          "step": 750000,
+          "elapsed_seconds": 261.81596220401116,
+          "rewards": [
+            -21.0,
+            -15.0,
+            -12.0,
+            -6.0,
+            -14.0,
+            -13.0,
+            -12.0,
+            -16.0,
+            -11.0,
+            -14.0
+          ],
+          "mean_raw_reward": -13.4
+        },
+        {
+          "step": 1000000,
+          "elapsed_seconds": 357.36230511503527,
+          "rewards": [
+            -12.0,
+            -11.0,
+            -14.0,
+            -2.0,
+            -13.0,
+            -4.0,
+            -9.0,
+            -6.0,
+            -5.0,
+            -3.0
+          ],
+          "mean_raw_reward": -7.9
+        },
+        {
+          "step": 1250000,
+          "elapsed_seconds": 448.4111383400159,
+          "rewards": [
+            2.0,
+            -2.0,
+            -5.0,
+            -9.0,
+            -11.0,
+            -13.0,
+            -2.0,
+            -7.0,
+            -13.0,
+            -3.0
+          ],
+          "mean_raw_reward": -6.3
+        },
+        {
+          "step": 1500000,
+          "elapsed_seconds": 540.0731096949894,
+          "rewards": [
+            6.0,
+            2.0,
+            4.0,
+            8.0,
+            9.0,
+            4.0,
+            -2.0,
+            2.0,
+            -3.0,
+            -1.0
+          ],
+          "mean_raw_reward": 2.9
+        },
+        {
+          "step": 1750000,
+          "elapsed_seconds": 628.1043842090294,
+          "rewards": [
+            8.0,
+            10.0,
+            6.0,
+            -5.0,
+            12.0,
+            10.0,
+            3.0,
+            13.0,
+            4.0,
+            11.0
+          ],
+          "mean_raw_reward": 7.2
+        },
+        {
+          "step": 2000000,
+          "elapsed_seconds": 717.7881391629926,
+          "rewards": [
+            3.0,
+            5.0,
+            -1.0,
+            16.0,
+            4.0,
+            16.0,
+            2.0,
+            6.0,
+            18.0,
+            3.0
+          ],
+          "mean_raw_reward": 7.2
+        }
+      ]
+    },
+    "single-ppo-breakout/learning.json": {
+      "seed": 0,
+      "deterministic": true,
+      "eval_points": 10,
+      "evaluation_steps": [
+        50176,
+        100352,
+        150528,
+        200704,
+        250880,
+        300032,
+        350208,
+        400384,
+        450560,
+        500000
+      ],
+      "evaluations": [
+        {
+          "step": 50176,
+          "elapsed_seconds": 32.994058099982794,
+          "rewards": [
+            2.0,
+            11.0,
+            11.0,
+            4.0,
+            7.0,
+            10.0,
+            0.0,
+            0.0,
+            10.0,
+            3.0
+          ],
+          "mean_raw_reward": 5.8
+        },
+        {
+          "step": 100352,
+          "elapsed_seconds": 134.43054463301087,
+          "rewards": [
+            1.0,
+            4.0,
+            3.0,
+            8.0,
+            6.0,
+            12.0,
+            2.0,
+            10.0,
+            4.0,
+            1.0
+          ],
+          "mean_raw_reward": 5.1
+        },
+        {
+          "step": 150528,
+          "elapsed_seconds": 191.56587537901942,
+          "rewards": [
+            9.0,
+            10.0,
+            6.0,
+            13.0,
+            9.0,
+            7.0,
+            4.0,
+            20.0,
+            7.0,
+            4.0
+          ],
+          "mean_raw_reward": 8.9
+        },
+        {
+          "step": 200704,
+          "elapsed_seconds": 247.27790424402338,
+          "rewards": [
+            12.0,
+            4.0,
+            21.0,
+            10.0,
+            6.0,
+            15.0,
+            11.0,
+            6.0,
+            11.0,
+            9.0
+          ],
+          "mean_raw_reward": 10.5
+        },
+        {
+          "step": 250880,
+          "elapsed_seconds": 359.9231803540024,
+          "rewards": [
+            5.0,
+            13.0,
+            11.0,
+            3.0,
+            3.0,
+            2.0,
+            13.0,
+            2.0,
+            13.0,
+            16.0
+          ],
+          "mean_raw_reward": 8.1
+        },
+        {
+          "step": 300032,
+          "elapsed_seconds": 471.72526390402345,
+          "rewards": [
+            11.0,
+            5.0,
+            11.0,
+            17.0,
+            15.0,
+            6.0,
+            9.0,
+            1.0,
+            10.0,
+            10.0
+          ],
+          "mean_raw_reward": 9.5
+        },
+        {
+          "step": 350208,
+          "elapsed_seconds": 527.6542389430106,
+          "rewards": [
+            8.0,
+            19.0,
+            14.0,
+            8.0,
+            11.0,
+            9.0,
+            14.0,
+            6.0,
+            8.0,
+            15.0
+          ],
+          "mean_raw_reward": 11.2
+        },
+        {
+          "step": 400384,
+          "elapsed_seconds": 683.2585844839923,
+          "rewards": [
+            3.0,
+            5.0,
+            4.0,
+            6.0,
+            5.0,
+            1.0,
+            2.0,
+            6.0,
+            1.0,
+            6.0
+          ],
+          "mean_raw_reward": 3.9
+        },
+        {
+          "step": 450560,
+          "elapsed_seconds": 838.4181208310183,
+          "rewards": [
+            3.0,
+            4.0,
+            4.0,
+            10.0,
+            4.0,
+            4.0,
+            5.0,
+            1.0,
+            0.0,
+            5.0
+          ],
+          "mean_raw_reward": 4.0
+        },
+        {
+          "step": 500000,
+          "elapsed_seconds": 994.470567559998,
+          "rewards": [
+            2.0,
+            5.0,
+            3.0,
+            6.0,
+            4.0,
+            6.0,
+            4.0,
+            2.0,
+            5.0,
+            5.0
+          ],
+          "mean_raw_reward": 4.2
+        }
+      ]
+    },
+    "single-ppo-pong/learning.json": {
+      "seed": 0,
+      "deterministic": true,
+      "evaluations": [
+        {
+          "step": 250880,
+          "elapsed_seconds": 62.87655025802087,
+          "rewards": [
+            -15.0,
+            -8.0,
+            -6.0,
+            -15.0,
+            -20.0,
+            -7.0,
+            -10.0,
+            -4.0,
+            -14.0,
+            8.0
+          ],
+          "mean_raw_reward": -9.1
+        },
+        {
+          "step": 500736,
+          "elapsed_seconds": 124.64762371801771,
+          "rewards": [
+            -11.0,
+            3.0,
+            5.0,
+            -19.0,
+            -8.0,
+            -14.0,
+            11.0,
+            6.0,
+            -8.0,
+            9.0
+          ],
+          "mean_raw_reward": -2.6
+        },
+        {
+          "step": 750592,
+          "elapsed_seconds": 187.07537197397323,
+          "rewards": [
+            -4.0,
+            8.0,
+            10.0,
+            -2.0,
+            12.0,
+            13.0,
+            9.0,
+            11.0,
+            12.0,
+            12.0
+          ],
+          "mean_raw_reward": 8.1
+        },
+        {
+          "step": 1000448,
+          "elapsed_seconds": 248.064904252009,
+          "rewards": [
+            17.0,
+            13.0,
+            13.0,
+            14.0,
+            17.0,
+            13.0,
+            11.0,
+            13.0,
+            4.0,
+            11.0
+          ],
+          "mean_raw_reward": 12.6
+        },
+        {
+          "step": 1250304,
+          "elapsed_seconds": 310.0003932279651,
+          "rewards": [
+            17.0,
+            13.0,
+            11.0,
+            15.0,
+            7.0,
+            8.0,
+            12.0,
+            14.0,
+            12.0,
+            14.0
+          ],
+          "mean_raw_reward": 12.3
+        },
+        {
+          "step": 1500160,
+          "elapsed_seconds": 371.3760993310134,
+          "rewards": [
+            14.0,
+            12.0,
+            9.0,
+            17.0,
+            17.0,
+            5.0,
+            10.0,
+            8.0,
+            5.0,
+            4.0
+          ],
+          "mean_raw_reward": 10.1
+        },
+        {
+          "step": 1750016,
+          "elapsed_seconds": 432.05216286401264,
+          "rewards": [
+            14.0,
+            12.0,
+            15.0,
+            9.0,
+            8.0,
+            5.0,
+            17.0,
+            18.0,
+            14.0,
+            17.0
+          ],
+          "mean_raw_reward": 12.9
+        },
+        {
+          "step": 2000000,
+          "elapsed_seconds": 495.2331618129974,
+          "rewards": [
+            18.0,
+            16.0,
+            7.0,
+            11.0,
+            -10.0,
+            6.0,
+            13.0,
+            11.0,
+            11.0,
+            6.0
+          ],
+          "mean_raw_reward": 8.9
+        }
+      ]
+    }
+  }
+}

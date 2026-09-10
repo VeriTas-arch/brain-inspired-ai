@@ -7,7 +7,7 @@ import math
 import pytest
 
 from scripts.run_experiments import build_teaching_jobs
-from scripts.tutorial_examples import TEACHING_RESULTS
+from scripts.tutorial_examples import REFERENCE_RESULTS, TEACHING_ASSETS
 from training.results import parameter_digest, prepare_case, publish_output, result_directory
 
 
@@ -125,25 +125,25 @@ def test_readers_ignore_pending_and_non_teaching_results(tmp_path):
 
 
 def test_published_figures_and_media_match_the_current_cases():
-    figures_dir = TEACHING_RESULTS / "figures"
+    figures_dir = TEACHING_ASSETS / "figures"
     figures = json.loads((figures_dir / "figures.json").read_text())
     for name, digest in figures["inputs"].items():
-        assert hashlib.sha256((TEACHING_RESULTS / name).read_bytes()).hexdigest() == digest
+        assert hashlib.sha256((TEACHING_ASSETS / name).read_bytes()).hexdigest() == digest
     for name, digest in figures["figures"].items():
         assert hashlib.sha256((figures_dir / name).read_bytes()).hexdigest() == digest
-    media = json.loads((figures_dir / "media.json").read_text())
+    media = json.loads((TEACHING_ASSETS / "videos/media.json").read_text())
     assert len(media["records"]) == 6
     for record in media["records"]:
         assert (
-            hashlib.sha256((TEACHING_RESULTS / record["gif"]).read_bytes()).hexdigest()
+            hashlib.sha256((TEACHING_ASSETS / record["gif"]).read_bytes()).hexdigest()
             == record["gif_sha256"]
         )
-    cases = sorted(TEACHING_RESULTS.glob("*/config.json"))
-    assert len(cases) == 12
-    for config in cases:
-        for path in (config.parent / "run.json", config.parent / "evaluation/run.json"):
-            run = json.loads(path.read_text())
-            assert all(job["state"] == "completed" for job in run["jobs"])
+    reference = json.loads(REFERENCE_RESULTS.read_text())
+    assert len(reference["configurations"]) == 12
+    for case, config in reference["configurations"].items():
+        assert config["seed"] == 0
+        for group in ("runs", "evaluation_runs"):
+            assert "jobs" not in reference[group][case]
 
 
 def test_committed_results_cover_every_case_and_preserve_score_evidence():
@@ -182,7 +182,7 @@ def test_teaching_table_renders_available_stage_scores(monkeypatch, method):
             }
         }
     }
-    monkeypatch.setattr(tutorial_examples, "load_teaching_results", lambda: snapshot)
+    monkeypatch.setattr(tutorial_examples, "load_teaching_results", lambda *args: snapshot)
     assert tutorial_examples.teaching_results(method).splitlines()[2:] == [
         "| PPO | pong | 1 → -2.5 |"
     ]
@@ -192,3 +192,87 @@ def test_multiple_seeds_have_disjoint_case_paths():
     jobs = [job for seed in (0, 17) for job in build_teaching_jobs(phase="train", seed=seed)[:12]]
     assert len({job.case_id for job in jobs}) == 24
     assert len({job.arguments[job.arguments.index("--output-dir") + 1] for job in jobs}) == 24
+
+
+def test_reference_figures_work_without_local_results(tmp_path, monkeypatch):
+    from scripts.build_teaching_assets import build_figures
+    from scripts.tutorial_examples import load_teaching_results, teaching_results
+
+    reference = tmp_path / "reference_results.json"
+    reference.write_bytes(REFERENCE_RESULTS.read_bytes())
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "results").exists()
+    assert len(load_teaching_results(reference)["models"]) == 12
+    assert "PPO" in teaching_results("single", reference)
+    output = build_figures(reference)
+    assert len(list(output.glob("*.png"))) == 3
+
+
+@pytest.fixture
+def export_source(tmp_path):
+    import shutil
+
+    data = json.loads(REFERENCE_RESULTS.read_text())
+    root = tmp_path / "local"
+    for model in data["models"]:
+        name = model["name"]
+        case = root / name
+        (case / "evaluation").mkdir(parents=True)
+        values = {
+            "config.json": data["configurations"][name],
+            "run.json": {**data["runs"][name], "jobs": [{"pid": 999}]},
+            "training_summary.json": {
+                **data["training"][name],
+                **data["continual"].get(name, {}),
+                "checkpoint_sha256": model["sha256"],
+            },
+            "evaluation/evaluation.json": model["metrics"],
+            "evaluation/run.json": data["evaluation_runs"][name],
+        }
+        key = f"{name}/learning.json"
+        if key in data["learning_curves"]:
+            values["learning.json"] = data["learning_curves"][key]
+        for filename, value in values.items():
+            (case / filename).write_text(json.dumps(value))
+    media = json.loads((TEACHING_ASSETS / "videos/media.json").read_text())
+    for record in media["records"]:
+        case = record["checkpoint"].split("/")[0]
+        source = TEACHING_ASSETS / record["gif"]
+        filename = source.name.removeprefix(case + "-")
+        record["gif"] = f"{case}/evaluation/videos/{filename}"
+        target = root / record["gif"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    (root / "figures").mkdir()
+    (root / "figures/media.json").write_text(json.dumps(media))
+    return root
+
+
+def test_explicit_export_preserves_reference_data(export_source, tmp_path):
+    from scripts.build_teaching_assets import export_reference
+
+    output = export_reference(export_source, tmp_path / "assets")
+    assert json.loads((output / "reference_results.json").read_text()) == json.loads(
+        REFERENCE_RESULTS.read_text()
+    )
+    assert len(list((output / "videos").glob("*.gif"))) == 6
+    assert len(list((output / "figures").glob("*.png"))) == 3
+
+
+@pytest.mark.parametrize("corruption", ("gif", "evaluation"))
+def test_failed_export_preserves_published_assets(export_source, tmp_path, corruption):
+    from scripts.build_teaching_assets import export_reference
+
+    output = tmp_path / "assets"
+    output.mkdir()
+    (output / "reference_results.json").write_text("previous reference")
+    if corruption == "gif":
+        next(export_source.glob("*/evaluation/videos/*.gif")).write_bytes(b"changed")
+    else:
+        path = export_source / "single-ppo-pong/evaluation/run.json"
+        data = json.loads(path.read_text())
+        data["checkpoint_sha256"] = "changed"
+        path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="changed|mismatch"):
+        export_reference(export_source, output)
+    assert (output / "reference_results.json").read_text() == "previous reference"

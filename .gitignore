@@ -204,9 +204,8 @@ __marimo__/
 # Local reference material
 ref/
 
-# Large and temporary artifacts inside the unified results tree
+# Local training outputs and temporary reference exports
 *.pt
 *.mp4
-/results/smoke/
-/results/performance/
-/results/**/.pending-*/
+/results/
+/.pending-assets-*/

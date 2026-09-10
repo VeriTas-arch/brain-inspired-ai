@@ -1,93 +1,77 @@
-# Repository Guidelines
+# Repository guidelines
 
-## Teaching material
+## Documentation and scope
 
-- This repository teaches DQN, PPO, joint and sequential training, EWC, and GPM. Favor readable
-  PyTorch implementations and changes that serve these examples.
-- `README.md` provides a short introduction, setup instructions, and links. The notebook explains
-  the methods and works through examples. `results/` holds scores, figures, and experiment details.
-- Keep the notebook's main text focused on cases and training/evaluation entry points. Put
-  derivations, numerical examples, and notes on differences from the papers in linked appendices.
-  Exercises should remain brief suggestions for exploration.
-- Write lessons in plain Chinese. Introduce terms and symbols before using them, connect each
-  example to the concept it illustrates, and explain results through specific observations.
-  Remove repeated introductions, slogans, and audit or changelog language from lesson prose.
-- Put executable logic in Python modules and scripts. Notebook cells call tested functions and
-  display artifacts; do not duplicate algorithms, training loops, result calculations, or
-  installation instructions there. Training previews default to `--dry-run`.
-- `build_teaching_jobs` in `scripts/run_experiments.py` defines the formal configurations. Update
-  notebook previews when those configurations change. Every teaching method, including GPM,
-  starts from fresh initialization without an external pretrained checkpoint.
+This repository teaches DQN, PPO, joint training, sequential training, EWC and GPM.
+Keep the Python implementations readable and share code only when the protocols have the same
+behavior and data semantics.
 
-## Environment and dependencies
+- `README.md` is the student's starting point: installation, running examples and code navigation.
+  The notebook explains methods and cases; `assets/README.md` explains the reference results.
+- Write teaching material in plain Chinese. Introduce terms before using them and explain results
+  with specific observations. Keep maintenance procedures, performance audit notes and changelogs
+  out of lesson prose. Put derivations and numerical examples in notebook appendices; keep exercises brief.
+- Keep executable logic in Python. Notebook cells call tested functions and display artifacts;
+  do not duplicate algorithms, training loops, result calculations or installation instructions.
+  Training previews use `--dry-run`.
+- `build_teaching_jobs` in `scripts/run_experiments.py` defines the formal configurations and
+  experiment matrix. Update notebook previews when it changes. Do not add shell scripts that duplicate it.
 
-- Use Python 3.12 or newer. Run project commands through direnv when available.
-- Install packages with `python -m pip`. Declare all dependencies, including pytest and Ruff, in
-  `pyproject.toml`; do not add `requirements.txt`, separate dev extras, `uv`, or `uv.lock`.
-- Test against the PyTorch, TorchRL, and TensorDict stack declared in `pyproject.toml`. Use tested
-  minimum versions; add upper bounds only when an incompatibility has been demonstrated.
-- TorchRL is the adopted external RL framework. Introduce it incrementally and test each change.
-  Adding another RL framework or acceleration backend requires an explicit project decision.
+## Environment
 
-## Implementation and performance
+- Use Python 3.12 or newer and run commands through direnv when available.
+- Install with `python -m pip`. Keep all dependencies, including pytest and Ruff, in `pyproject.toml`.
+  Do not add `requirements.txt`, dev extras, `uv` or `uv.lock`. Use tested minimum versions; add
+  upper bounds only for demonstrated incompatibilities.
+- TorchRL is the adopted RL framework. Test integrations against the declared PyTorch, TorchRL
+  and TensorDict versions. Adding a framework or acceleration backend requires a project decision.
 
-- Keep single-task, sequential, and joint protocols separate. Share code when behavior and data
-  semantics match; avoid abstractions that hide differences between protocols.
-- PPO collection and optimization belong in `training/ppo_runtime.py`. Complete episode evaluation
-  belongs in `training/evaluation.py`. Both in-training and standalone evaluation use deterministic
-  actions, raw rewards, and the same episode-length limit. Reuse these in protocol scripts.
-- With shared-memory vector environments, save the current observation before stepping. Under
-  same-step autoreset, recover Gymnasium's `final_obs`; a truncated transition must bootstrap from
-  its final observation, never the reset observation.
-- Count PPO transitions across all environments and honor the requested total. Compute GAE
-  separately along each environment's trajectory.
-- Maintain a working synchronous/eager PPO path. Formal profiles use `--compile-ppo` and async
-  environments where supported. Compile hot paths with `mode="reduce-overhead"` and use
-  `fullgraph=True` wherever possible. Formal DQN profiles use `--compile-dqn` for inference, TD loss,
-  gradient clipping, and GPM projection; keep fused Adam and an eager DQN path.
-- CUDA learners capture the complete fixed-shape loss/backward/Adam update. Disable only nested
-  Inductor CUDA Graph capture inside this outer graph; retain full-graph tensor compilation.
-  Capture warmup must restore parameters, optimizer state, RNG, and GPM counters. Invalidate
-  captured updates when loading optimizer state or changing task modules.
-- Native ALE is an explicit alternative observation protocol. Record it in checkpoints and use
-  it in evaluation; never silently evaluate wrapper-trained weights with native preprocessing.
-  DQN batching must preserve the protocol's cumulative update count and final-observation semantics.
-- Keep replay sampling uniform without replacement, with a seeded private generator separate from
-  exploration, task selection, and EWC sampling. Do not transfer the entire replay store to CUDA.
-- Measure PPO speed with `scripts/benchmark_ppo_runtime.py` and DQN speed with
-  `scripts/benchmark_dqn_runtime.py`, keeping training semantics and
-  minibatch size fixed. Report warmup, timed transitions, minibatch size, hardware, throughput, and
-  PyTorch allocated/reserved memory. Use throughput to assess speed, episode scores to assess
-  learning, and GPU utilization to help diagnose stalls.
+## Training and evaluation
 
-## Runs and results
+- All teaching methods start from fresh initialization. Formal runs use seed 0 and deterministic
+  training and evaluation. For continual-learning comparisons, also verify matching network and
+  task-head initialization, task order and budgets; setting the seed alone is insufficient.
+- Keep PPO collection and optimization in `training/ppo_runtime.py`, and complete-episode evaluation
+  in `training/evaluation.py`. In-training and standalone evaluation must use deterministic actions,
+  raw rewards and the same episode-length limit.
+- With shared-memory environments, save the current observation before stepping. Recover `final_obs`
+  under same-step autoreset; truncated transitions bootstrap from the final observation, not the reset.
+- Count transitions across all environments and honor the requested budget. Compute PPO GAE along
+  each environment's trajectory. DQN batching must preserve cumulative update counts.
+- Replay sampling stays uniform without replacement. Use a seeded private generator separate from
+  exploration, task selection and EWC sampling; keep the replay store on CPU.
+- Native ALE uses a separate observation protocol. Record it in checkpoints and use matching
+  preprocessing in evaluation; do not evaluate wrapper-trained weights with native ALE preprocessing.
+- Keep working eager DQN and synchronous/eager PPO paths. Formal profiles use async environments
+  and `--compile-ppo` / `--compile-dqn`. Use `reduce-overhead` and `fullgraph=True` where supported;
+  DQN compilation covers inference, TD loss, gradient clipping and GPM projection. Retain fused Adam.
+- CUDA learners capture the fixed-shape loss/backward/Adam update. Disable nested Inductor graph
+  capture only; retain tensor compilation. Warmup must restore parameters, optimizer state, RNG and
+  GPM counters. Invalidate captured updates after loading optimizer state or changing task modules.
 
-- Define experiment matrices in `scripts/run_experiments.py` instead of adding shell-script variants.
-  Before a long run, smoke-test every affected configuration and its standalone evaluation with
-  the intended runtime options.
-- Formal teaching runs use seed 0 and deterministic training and evaluation. When comparing
-  continual-learning methods, verify that network and task-head initialization, task order, and
-  budgets match. Check these conditions directly as well as setting the seed.
-- Store current teaching results directly under `results/<case>/`, without timestamp directories.
-  Each case records its Git commit, dirty status, dependency versions, configuration and seed.
-  Run from the maintained repository; do not copy source or create source manifests for runs.
-- Default to rejecting existing output. `--force` authorizes replacement of selected cases only.
-  Write to a temporary directory first; publish after jobs and artifact checks succeed. Preserve
-  previous results and failed work on error. Teaching matrices must finish dependent evaluation
-  before publication. Preserve bounded concurrency and disjoint CPU quotas.
-- Keep standalone evaluation in `<case>/evaluation/`, including its own `run.json`. Re-evaluation
-  with `--force` replaces this directory while preserving the case's training data and models.
-- Keep JSON records, figures and short GIFs in Git. Ignore checkpoints, MP4s, logs, `results/smoke/`, temporary `.pending-*` directories and local `results/performance/` reports.
-  Retain only final single/joint models and task-boundary continual models, using `final.pt` for the
-  last stage. Evaluation points record scores without saving periodic models. Record parameter
-  digests for initialization comparisons instead of retaining initial checkpoints.
-- Keep the selected teaching run's metrics and necessary models. After verification, remove
-  obsolete smoke and historical raw artifacts; retain small summaries of useful earlier results.
-  Do not recreate `outputs/`, `archive/`, source snapshots or old-path compatibility links.
-- Report old-task retention, new-task learning, and the stage-by-task score matrix. EWC penalizes
-  parameter changes; assess its effect on both old and new tasks. Keep negative results and label
-  historical configurations. Conclusions from a single seed apply to that run. Compare each
-  game's scores separately because reward scales differ.
+## Local runs and reference results
+
+- Store local runs under ignored `results/<case>/`, without date directories or source copies.
+  Record configuration, seed, Git commit, dirty status and dependency versions. Do not recreate
+  `outputs/`, `archive/`, source manifests or compatibility links to old paths.
+- Reject existing output by default. `--force` replaces selected cases only: write to a temporary
+  directory and check all selected jobs and artifacts before replacement. Teaching runs must finish
+  dependent evaluation first. Preserve old results and failed work on error. Keep job concurrency
+  bounded and CPU allocations disjoint.
+- Standalone evaluation belongs in `<case>/evaluation/`, with its own `run.json`. Re-evaluation
+  replaces only this directory, preserving training records and models.
+- Retain final single/joint models and continual task-boundary models; use `final.pt` for the last
+  stage. Evaluation points save scores, not checkpoints. Compare initialization through parameter
+  digests. Remove obsolete smoke and historical artifacts after verification, keeping useful summaries.
+- Track `assets/reference_results.json`, selected figures and GIFs in Git. Reference displays must
+  work without local runs. Training and `--force` must never modify these assets.
+- `python -m scripts.build_teaching_assets` redraws reference figures. An explicit
+  `python -m scripts.build_teaching_assets --results-dir results` exports the complete teaching results.
+  Add `--videos` to regenerate GIFs from local checkpoints and MP4s. After export, check notebook
+  explanations and score tables against the new data.
+- Report old-task retention, new-task learning and stage-by-task scores. Keep negative results;
+  distinguish a weak starting policy from successful retention. Compare games separately and limit
+  single-seed conclusions to that run. EWC's penalty can affect both old and new tasks.
 
 ## Validation
 
@@ -99,10 +83,15 @@ direnv exec . ruff format --check .
 direnv exec . pytest -q
 ```
 
-For prose-only edits, check the diff, links, and notebook structure; do not launch training or GPU
-tests. Report unrelated pre-existing failures without editing unrelated files to make checks pass.
+For prose-only changes, check the diff, links and notebook structure; do not run training or GPU tests.
+Report unrelated failures without changing unrelated code to make checks pass.
 
-The sandbox may hide NVIDIA management devices even when CUDA works. If NVML reports a warning,
-first check `torch.cuda.is_available()` and run a small synchronized CUDA operation. Use elevated
-`nvidia-smi` when telemetry or driver verification is needed. If both succeed, report a sandbox
-limitation; do not suppress the warning in project code or change dependencies to address it.
+Before a long run, smoke-test every affected configuration and its standalone evaluation with the
+intended runtime options. Measure speed with `scripts/benchmark_ppo_runtime.py` and
+`scripts/benchmark_dqn_runtime.py`, holding training semantics and minibatch size fixed. Report warmup,
+timed transitions, hardware, throughput and PyTorch allocated/reserved memory. Use episode scores to
+assess learning; GPU utilization helps diagnose stalls but does not measure training speed.
+
+If NVML fails in the sandbox, check `torch.cuda.is_available()` and a small synchronized CUDA operation.
+Use elevated `nvidia-smi` for device telemetry. If both work, report the sandbox limitation instead of
+suppressing the warning or changing dependencies.

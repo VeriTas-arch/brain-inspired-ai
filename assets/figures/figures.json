@@ -1,0 +1,10 @@
+{
+  "inputs": {
+    "reference_results.json": "770a5aa3fddbec7cea0dd7e2c9d5d12c1374721ae947216e67980421f34a8743"
+  },
+  "figures": {
+    "dqn_continual.png": "f2bc91c4f09591e2f55e8e00322f035c2e44be5c85afdb2392d06a505b22c1e4",
+    "ppo_continual.png": "5798a549df6b4da611bf8dfa8e87201849a1e5bd81cc33fd0b33fe9c419e3876",
+    "single_learning.png": "3afc28194aa93d5f64879a6a6969621da854e8bc771ba287e206af7cc804a07d"
+  }
+}

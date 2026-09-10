@@ -118,13 +118,20 @@ if __name__ == "__main__":
 
 
 TEACHING_RESULTS = Path(__file__).resolve().parents[1] / "results"
+TEACHING_ASSETS = Path(__file__).resolve().parents[1] / "assets"
+REFERENCE_RESULTS = TEACHING_ASSETS / "reference_results.json"
 
 
-def load_teaching_results(results_dir: Path = TEACHING_RESULTS) -> dict:
+def load_teaching_results(results_dir: Path = REFERENCE_RESULTS) -> dict:
     """Read case records without requiring local models or source copies."""
     results_dir = Path(results_dir)
+    if results_dir.is_file():
+        return json.loads(results_dir.read_text())
     result = {
+        "training": {},
+        "configurations": {},
         "runs": {},
+        "evaluation_runs": {},
         "models": [],
         "continual": {},
         "learning_curves": {},
@@ -135,8 +142,17 @@ def load_teaching_results(results_dir: Path = TEACHING_RESULTS) -> dict:
         if case.startswith(".") or case in {"smoke", "performance"}:
             continue
         config = json.loads(config_path.read_text())
+        result["configurations"][case] = config
+        evaluation_record = directory / "evaluation/run.json"
+        if evaluation_record.exists():
+            result["evaluation_runs"][case] = json.loads(evaluation_record.read_text())
         result["runs"][case] = json.loads((directory / "run.json").read_text())
         summary = json.loads((directory / "training_summary.json").read_text())
+        result["training"][case] = {
+            key: summary[key]
+            for key in ("total_steps", "task_steps", "num_envs", "environment_protocol")
+            if key in summary
+        }
         metrics = json.loads((directory / "evaluation/evaluation.json").read_text())
         result["models"].append(
             {
@@ -155,9 +171,9 @@ def load_teaching_results(results_dir: Path = TEACHING_RESULTS) -> dict:
     return result
 
 
-def teaching_results(case: str) -> str:
+def teaching_results(case: str, results_path: Path = REFERENCE_RESULTS) -> str:
     """Render final means or stage trajectories from the current teaching cases."""
-    data = load_teaching_results()
+    data = load_teaching_results(results_path)
     lines = ["| 算法 | 游戏 | 评估均分／阶段轨迹 |", "|---|---|---|"]
     if case in {"single", "multitask"}:
         for record in data["models"]:
