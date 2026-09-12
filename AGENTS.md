@@ -2,19 +2,26 @@
 
 ## Documentation and scope
 
-This repository teaches DQN, PPO, joint training, sequential training, EWC and GPM.
+This repository supports the Brain-Inspired Artificial Intelligence (BIAI) course: MLP, CNN,
+MNIST continual learning, Omniglot meta-learning, and Atari reinforcement learning.
+The distribution is `biai-course`; all Python modules live under `biai`.
 Keep the Python implementations readable and share code only when the protocols have the same
 behavior and data semantics.
 
 - `README.md` is the student's starting point: installation, running examples and code navigation.
-  The notebook explains methods and cases; `assets/README.md` explains the reference results.
+  Each topic under `biai/` has one notebook; `assets/README.md` explains Atari reference results.
 - Write teaching material in plain Chinese. Introduce terms before using them and explain results
   with specific observations. Keep maintenance procedures, performance audit notes and changelogs
   out of lesson prose. Put derivations and numerical examples in notebook appendices; keep exercises brief.
-- Keep executable logic in Python. Notebook cells call tested functions and display artifacts;
-  do not duplicate algorithms, training loops, result calculations or installation instructions.
-  Training previews use `--dry-run`.
-- `build_teaching_jobs` in `scripts/run_experiments.py` defines the formal configurations and
+- The four introductory notebooks retain their inline teaching implementations. Do not add a
+  mandatory `lesson.py` or extract every lesson into a framework. Share code only for demonstrated
+  reuse, such as paths and reproducibility.
+- Keep Atari executable logic in Python. Its notebook calls tested functions and displays artifacts;
+  do not duplicate its algorithms, training loops or result calculations. Atari training previews
+  use `--dry-run`. Installation instructions live only in the root README.
+- Use `biai.paths` for project data, results and assets, independently of the notebook working
+  directory. Download image datasets into ignored `data/`; never commit datasets or `ref/` archives.
+- `build_teaching_jobs` in `biai/atari/scripts/run_experiments.py` defines the formal configurations and
   experiment matrix. Update notebook previews when it changes. Do not add shell scripts that duplicate it.
 
 ## Environment
@@ -31,8 +38,8 @@ behavior and data semantics.
 - All teaching methods start from fresh initialization. Formal runs use seed 0 and deterministic
   training and evaluation. For continual-learning comparisons, also verify matching network and
   task-head initialization, task order and budgets; setting the seed alone is insufficient.
-- Keep PPO collection and optimization in `training/ppo_runtime.py`, and complete-episode evaluation
-  in `training/evaluation.py`. In-training and standalone evaluation must use deterministic actions,
+- Keep PPO collection and optimization in `biai/atari/training/ppo_runtime.py`, and complete-episode evaluation
+  in `biai/atari/training/evaluation.py`. In-training and standalone evaluation must use deterministic actions,
   raw rewards and the same episode-length limit.
 - With shared-memory environments, save the current observation before stepping. Recover `final_obs`
   under same-step autoreset; truncated transitions bootstrap from the final observation, not the reset.
@@ -65,8 +72,8 @@ behavior and data semantics.
   digests. Remove obsolete smoke and historical artifacts after verification, keeping useful summaries.
 - Track `assets/reference_results.json`, selected figures and GIFs in Git. Reference displays must
   work without local runs. Training and `--force` must never modify these assets.
-- `python -m scripts.build_teaching_assets` redraws reference figures. An explicit
-  `python -m scripts.build_teaching_assets --results-dir results` exports the complete teaching results.
+- `python -m biai.atari.scripts.build_teaching_assets` redraws reference figures. An explicit
+  `python -m biai.atari.scripts.build_teaching_assets --results-dir results` exports the complete teaching results.
   Add `--videos` to regenerate GIFs from local checkpoints and MP4s. After export, check notebook
   explanations and score tables against the new data.
 - Report old-task retention, new-task learning and stage-by-task scores. Keep negative results;
@@ -87,8 +94,8 @@ For prose-only changes, check the diff, links and notebook structure; do not run
 Report unrelated failures without changing unrelated code to make checks pass.
 
 Before a long run, smoke-test every affected configuration and its standalone evaluation with the
-intended runtime options. Measure speed with `scripts/benchmark_ppo_runtime.py` and
-`scripts/benchmark_dqn_runtime.py`, holding training semantics and minibatch size fixed. Report warmup,
+intended runtime options. Measure speed with `biai/atari/scripts/benchmark_ppo_runtime.py` and
+`biai/atari/scripts/benchmark_dqn_runtime.py`, holding training semantics and minibatch size fixed. Report warmup,
 timed transitions, hardware, throughput and PyTorch allocated/reserved memory. Use episode scores to
 assess learning; GPU utilization helps diagnose stalls but does not measure training speed.
 

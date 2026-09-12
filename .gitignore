@@ -204,6 +204,9 @@ __marimo__/
 # Local reference material
 ref/
 
+# Datasets downloaded by the course notebooks
+/data/
+
 # Local training outputs and temporary reference exports
 *.pt
 *.mp4
