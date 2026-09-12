@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,8 +22,9 @@ from biai.atari.training import DEFAULT_MAX_EPISODE_STEPS
 from biai.atari.training.results import (
     case_name,
     check_output,
+    check_result_path,
     file_digest,
-    publish_output,
+    publish_outputs,
     run_metadata,
 )
 from biai.paths import PROJECT_ROOT
@@ -199,6 +201,8 @@ def _build_training_jobs(
                     game,
                     "--eval-episodes",
                     str(eval_episodes),
+                    "--eval-max-steps",
+                    str(eval_max_steps),
                     "--algorithm",
                     algorithm,
                     "--steps",
@@ -555,7 +559,11 @@ def _job_environment(device_count: int, job_index: int, parallel: bool) -> dict[
     if device_count == 0:
         environment["CUDA_VISIBLE_DEVICES"] = ""
     else:
-        environment["CUDA_VISIBLE_DEVICES"] = str(job_index % device_count if parallel else 0)
+        index = job_index % device_count if parallel else 0
+        visible = environment.get("CUDA_VISIBLE_DEVICES")
+        environment["CUDA_VISIBLE_DEVICES"] = (
+            visible.split(",")[index].strip() if visible is not None else str(index)
+        )
     return environment
 
 
@@ -634,7 +642,29 @@ def run_jobs(
         temporary.write_text(json.dumps(status, indent=2) + "\n")
         temporary.replace(status_path)
 
+    def stop_job(index, process):
+        try:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+        except BaseException as error:
+            status["jobs"][index].update(state="cleanup_failed", cleanup_error=str(error))
+            raise
+        else:
+            status["jobs"][index].update(state="cancelled")
+        finally:
+            status["jobs"][index].update(
+                exit_code=process.returncode,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+
     pending, running, completed = list(enumerate(jobs)), {}, set()
+
     write_status()
     try:
         while pending or running:
@@ -708,20 +738,14 @@ def run_jobs(
             if running:
                 time.sleep(0.1)
     finally:
-        for index, _, process, log_file in running.values():
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+        resources = ExitStack()
+        resources.callback(write_status)
+        for index, _, process, log_file in reversed(tuple(running.values())):
             if log_file is not None:
-                log_file.close()
-            status["jobs"][index].update(state="cancelled", exit_code=process.returncode)
-        write_status()
+                resources.callback(log_file.close)
+            resources.callback(stop_job, index, process)
+        # Forward the active exception; close() would unwind with no exception context.
+        resources.__exit__(*sys.exc_info())
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -842,6 +866,7 @@ def _dispatch_jobs(jobs, args):
     if args.matched_budget:
         default_folder = "atari-matched-smoke" if args.smoke else "atari-matched"
     root = (args.results_dir or PROJECT_ROOT / "results" / default_folder).resolve()
+    check_result_path(root)
     cases = sorted({job.case_id for job in jobs})
     destinations = {
         case: root / case / ("evaluation" if args.phase == "evaluate" else "") for case in cases
@@ -860,6 +885,7 @@ def _dispatch_jobs(jobs, args):
             _print_job(job, index, len(jobs), args.device)
         return
     for destination in destinations.values():
+        check_result_path(destination)
         check_output(destination, force=args.force)
     if args.phase == "evaluate":
         for job in jobs:
@@ -919,13 +945,18 @@ def _dispatch_jobs(jobs, args):
             for pattern in ("*/checkpoints", "*/videos", "*/evaluation/videos"):
                 for directory in work.glob(pattern):
                     shutil.rmtree(directory)
-        for case, destination in destinations.items():
-            source = work / case / ("evaluation" if args.phase == "evaluate" else "")
-            publish_output(source, destination, force=args.force)
-        shutil.rmtree(staging)
+        publish_outputs(
+            {
+                work / case / ("evaluation" if args.phase == "evaluate" else ""): destination
+                for case, destination in destinations.items()
+            },
+            force=args.force,
+        )
     except BaseException:
         print(f"Unpublished results and logs retained at {work}", file=sys.stderr)
         raise
+    # Old case backups are inside staging; publication has already completed.
+    shutil.rmtree(staging)
     print(f"Completed results saved to {root}")
 
 

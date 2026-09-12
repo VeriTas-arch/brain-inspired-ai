@@ -9,6 +9,34 @@ from biai.atari.environments import AsyncVectorAtariEnv, AtariEnv, SyncVectorAta
 from biai.atari.environments.atari_wrappers import GrayscaleObservation
 
 
+def test_async_workers_match_sync_with_threads_and_close_cleanly(monkeypatch):
+    import os
+    from contextlib import ExitStack
+    from threading import Event, Thread
+
+    with ExitStack() as resources:
+        stopped = Event()
+        thread = Thread(target=stopped.wait)
+        thread.start()
+        resources.callback(thread.join)
+        resources.callback(stopped.set)
+        sync = SyncVectorAtariEnv("Pong-v5", 2, seed=7)
+        resources.callback(sync.close)
+        monkeypatch.setattr(os, "fork", lambda: pytest.fail("Must not fork a threaded parent"))
+        async_env = AsyncVectorAtariEnv("Pong-v5", 2, seed=7)
+        resources.callback(async_env.close)
+        workers = tuple(async_env.env.processes)
+        torch.testing.assert_close(async_env.reset(), sync.reset(), rtol=0, atol=0)
+        for action in range(8):
+            actions = torch.full((2,), action % sync.action_space, dtype=torch.long)
+            actual = async_env.step_and_reset(actions)
+            expected = sync.step_and_reset(actions)
+            for name in vars(expected):
+                torch.testing.assert_close(getattr(actual, name), getattr(expected, name))
+    assert all(not worker.is_alive() for worker in workers)
+    assert not thread.is_alive()
+
+
 def test_fast_grayscale_is_pixel_exact_with_gymnasium() -> None:
     rng = np.random.default_rng(7)
     image = rng.integers(256, size=(84, 84, 3), dtype=np.uint8)
@@ -266,3 +294,26 @@ def test_async_vector_environment_rejects_missing_final_observation() -> None:
 
     with pytest.raises(RuntimeError, match="final observation"):
         env.step_and_reset(torch.tensor([0, 0]))
+
+
+@pytest.mark.parametrize("failure", ("create", "close"))
+def test_sync_vector_releases_other_environments_after_failure(monkeypatch, failure):
+    from unittest.mock import Mock
+
+    from biai.atari.environments import atari_env
+
+    first, second = Mock(action_space=2), Mock(action_space=2)
+    error = RuntimeError("environment failure")
+    factory = Mock(side_effect=[first, error if failure == "create" else second])
+    monkeypatch.setattr(atari_env, "AtariEnv", factory)
+    if failure == "create":
+        with pytest.raises(RuntimeError) as caught:
+            SyncVectorAtariEnv("Pong-v5", 2)
+    else:
+        environment = SyncVectorAtariEnv("Pong-v5", 2)
+        first.close.side_effect = error
+        with pytest.raises(RuntimeError) as caught:
+            environment.close()
+        second.close.assert_called_once()
+    assert caught.value is error
+    first.close.assert_called_once()

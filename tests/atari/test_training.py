@@ -14,6 +14,69 @@ from biai.atari.scripts.train_single import train_single_game
 from biai.atari.training import seed_everything
 
 
+@pytest.mark.parametrize(
+    "module_name,function_name,agent_name,options",
+    [
+        ("train_single", "train_single_game", "DQNAgent", {"num_steps": 1}),
+        ("train_multitask", "train_multitask", "MultiHeadDQNAgent", {"total_steps": 1}),
+        ("train_continual", "train_continual", "MultiHeadDQNAgent", {"steps_per_game": 1}),
+    ],
+)
+def test_initialization_failure_closes_created_environments(
+    monkeypatch, tmp_path, module_name, function_name, agent_name, options
+):
+    import importlib
+    from unittest.mock import Mock
+
+    module = importlib.import_module(f"biai.atari.scripts.{module_name}")
+    environments = []
+
+    def make_environment(*args, **kwargs):
+        env = Mock(action_space=2)
+        environments.append(env)
+        return env
+
+    failure = RuntimeError("model initialization failed")
+    monkeypatch.setattr(module, "AtariEnv", make_environment)
+    monkeypatch.setattr(module, agent_name, Mock(side_effect=failure))
+    with pytest.raises(RuntimeError) as caught:
+        getattr(module, function_name)(output_dir=tmp_path, algorithm="dqn", **options)
+    assert caught.value is failure
+    assert environments
+    for env in environments:
+        env.close.assert_called_once()
+
+
+@pytest.mark.parametrize("failing_cleanup", ("flush", "environment", "video"))
+def test_training_cleanup_attempts_every_resource_and_preserves_exception_chain(
+    monkeypatch, tmp_path, failing_cleanup
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from biai.atari.scripts import train_single as module
+
+    original = ValueError("collection failed")
+    cleanup_error = RuntimeError("cleanup failed")
+    env, video, progress, metrics = (Mock() for _ in range(4))
+    env.action_space = 2
+    cleanup = {"flush": metrics.flush, "environment": env.close, "video": video.close}
+    cleanup[failing_cleanup].side_effect = cleanup_error
+    agent = SimpleNamespace(device=torch.device("cpu"), configure_runtime=Mock())
+    monkeypatch.setattr(module, "AtariEnv", Mock(return_value=env))
+    monkeypatch.setattr(module, "DQNAgent", Mock(return_value=agent))
+    monkeypatch.setattr(module, "VideoRecorder", Mock(return_value=video))
+    monkeypatch.setattr(module, "tqdm", Mock(return_value=progress))
+    monkeypatch.setattr(module, "DQNMetrics", Mock(return_value=metrics))
+    monkeypatch.setattr(module.DQNCollector, "collect", Mock(side_effect=original))
+    with pytest.raises(RuntimeError) as caught:
+        module.train_single_game(output_dir=tmp_path, num_steps=1, save_video=True)
+    assert caught.value is cleanup_error
+    assert caught.value.__context__ is original
+    for callback in (env.close, video.close, progress.close, metrics.flush):
+        callback.assert_called_once()
+
+
 def test_continual_dqn_starts_learning_before_default_task_ends() -> None:
     default_task_steps = signature(train_continual).parameters["steps_per_game"].default
 
@@ -52,9 +115,10 @@ def test_compile_ppo_requires_ppo(train) -> None:
         train(algorithm="dqn", compile_ppo=True)
 
 
-def test_continual_training_rejects_invalid_evaluation_step_limit() -> None:
+@pytest.mark.parametrize("train", (train_single_game, train_continual))
+def test_training_rejects_invalid_evaluation_step_limit(train) -> None:
     with pytest.raises(ValueError, match="eval_max_steps must be positive"):
-        train_continual(eval_max_steps=0)
+        train(eval_max_steps=0)
 
 
 def test_seed_everything_reproduces_python_numpy_and_torch() -> None:
@@ -220,9 +284,12 @@ def test_single_periodic_evaluation_keeps_training_budget(
 ):
     import importlib
     import json
+    from unittest.mock import Mock
 
     module = importlib.import_module("biai.atari.scripts.train_single")
     environments = []
+    evaluate = Mock(wraps=module.run_evaluation_episodes)
+    monkeypatch.setattr(module, "run_evaluation_episodes", evaluate)
 
     class CountingEnvironment:
         action_space = 2
@@ -253,6 +320,7 @@ def test_single_periodic_evaluation_keeps_training_budget(
         eval_interval=0 if eval_points else 4 * num_envs,
         eval_points=eval_points,
         eval_episodes=2,
+        eval_max_steps=12345,
         num_envs=num_envs,
         save_video=save_video,
     )
@@ -266,6 +334,8 @@ def test_single_periodic_evaluation_keeps_training_budget(
     )
     assert [e["step"] for e in data["evaluations"]] == expected
     assert all(e["rewards"] == [3.0, 3.0] for e in data["evaluations"])
+    assert all(call.args[3] == 12345 for call in evaluate.call_args_list)
+    assert json.loads((tmp_path / "case/config.json").read_text())["eval_max_steps"] == 12345
     assert environments[0].steps == 10
     assert all(env.closed for env in environments)
     import imageio_ffmpeg

@@ -69,7 +69,8 @@ def test_cpu_dry_run_prints_commands_without_launching(capsys) -> None:
     assert "multitask ppo (cpu)" in output
 
 
-def test_child_device_assignment_supports_cpu_and_gpu_round_robin() -> None:
+def test_child_device_assignment_supports_cpu_and_gpu_round_robin(monkeypatch) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert _job_environment(0, job_index=3, parallel=True)["CUDA_VISIBLE_DEVICES"] == ""
     assert _job_environment(2, job_index=3, parallel=True)["CUDA_VISIBLE_DEVICES"] == "1"
     assert _job_environment(2, job_index=3, parallel=False)["CUDA_VISIBLE_DEVICES"] == "0"
@@ -151,11 +152,12 @@ def test_runtime_options_reach_supported_training_protocols(suite, algorithm, ba
         assert ("--compile-ppo" in job.arguments) == compiled
 
 
-def test_continual_training_forwards_complete_episode_step_limit() -> None:
+@pytest.mark.parametrize("suite", ("single", "continual"))
+def test_training_forwards_complete_episode_step_limit(suite) -> None:
     jobs = build_jobs(
         "train",
-        "continual",
-        games=DEFAULT_GAMES["continual"],
+        suite,
+        games=DEFAULT_GAMES[suite],
         algorithms=("ppo",),
         max_steps=12_345,
     )
@@ -304,6 +306,61 @@ def test_sequential_runner_records_completion_failure_and_pending_jobs(tmp_path)
     assert status["jobs"][0]["exit_code"] == 0
     assert status["jobs"][1]["exit_code"] == 3
     assert (tmp_path / "ok.log").read_text().strip() == "done"
+
+
+@pytest.mark.parametrize("exit_race", (False, True))
+def test_runner_cleanup_continues_after_a_signal_failure(monkeypatch, tmp_path, exit_race):
+    import json
+    import signal
+    import subprocess
+    from unittest.mock import Mock
+
+    from biai.atari.scripts import run_experiments as runner
+
+    original = KeyboardInterrupt("stop requested")
+    failure = OSError("signal failed")
+    processes = [Mock(pid=101, returncode=None), Mock(pid=102, returncode=None)]
+    logs = []
+
+    def start(*args, **kwargs):
+        logs.append(kwargs["stdout"])
+        return processes[len(logs) - 1]
+
+    def wait(process, timeout=None):
+        if process is processes[0] and timeout is not None and exit_race:
+            raise subprocess.TimeoutExpired("fake process", timeout)
+        process.returncode = -signal.SIGTERM
+        return process.returncode
+
+    def killpg(pid, sig):
+        if pid == 101:
+            if exit_race and sig == signal.SIGKILL:
+                raise ProcessLookupError("already exited")
+            if not exit_race:
+                raise failure
+
+    for process in processes:
+        process.poll.return_value = None
+        process.wait.side_effect = lambda timeout=None, process=process: wait(process, timeout)
+    monkeypatch.setattr(runner, "run_metadata", lambda project: {})
+    monkeypatch.setattr(runner.os, "sched_getaffinity", lambda pid: {0, 1})
+    monkeypatch.setattr(runner.os, "killpg", killpg)
+    monkeypatch.setattr(runner.subprocess, "Popen", start)
+    monkeypatch.setattr(runner.time, "sleep", Mock(side_effect=original))
+    jobs = [runner.Job(str(i), ("-c", "pass"), f"{i}.log", True) for i in range(2)]
+    with pytest.raises(KeyboardInterrupt if exit_race else OSError) as caught:
+        runner.run_jobs(jobs, device="cpu", parallel=True, cpus_per_job=1, log_dir=tmp_path)
+    if exit_race:
+        assert caught.value is original
+    else:
+        assert caught.value is failure
+        assert caught.value.__context__ is original
+    assert processes[1].returncode is not None
+    assert all(log.closed for log in logs)
+    records = json.loads((tmp_path / "run.json").read_text())["jobs"]
+    assert records[0]["state"] == ("cancelled" if exit_race else "cleanup_failed")
+    assert records[1]["state"] == "cancelled"
+    assert all(record["finished_at"] for record in records)
 
 
 def test_bounded_runner_enforces_dependencies_and_cpu_quotas(tmp_path):
@@ -560,3 +617,105 @@ def test_matched_cli_dry_run_and_scope(capsys):
     assert "[28/28]" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         main(("train", "single", "--matched-budget", "--dry-run"))
+
+
+@pytest.mark.parametrize("visible", ("3,1", "GPU-first,GPU-second", "MIG-GPU-first/1/0"))
+def test_child_device_assignment_preserves_parent_visible_devices(monkeypatch, visible):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    devices = visible.split(",")
+    for slot in range(3):
+        assert (
+            _job_environment(len(devices), slot, True)["CUDA_VISIBLE_DEVICES"]
+            == devices[slot % len(devices)]
+        )
+        assert _job_environment(len(devices), slot, False)["CUDA_VISIBLE_DEVICES"] == devices[0]
+    assert _job_environment(0, 0, False)["CUDA_VISIBLE_DEVICES"] == ""
+
+
+@pytest.mark.parametrize("first_exists", (True, False))
+@pytest.mark.parametrize("error_type", (OSError, KeyboardInterrupt))
+def test_batch_publish_failure_restores_all_selected_cases(
+    monkeypatch, tmp_path, first_exists, error_type
+):
+    import json
+    from pathlib import Path
+
+    from biai.atari.scripts import run_experiments as runner
+    from biai.atari.training.results import file_digest
+
+    cases = ("single-dqn-breakout", "single-dqn-pong")
+    for case in cases:
+        if case == cases[0] and not first_exists:
+            continue
+        (tmp_path / case).mkdir()
+        (tmp_path / case / "old.pt").write_text(case)
+    jobs = build_jobs(
+        "train", "single", games=("Breakout-v5", "Pong-v5"), algorithms=("dqn",), steps=32
+    )
+    args = runner._build_parser().parse_args(
+        ["train", "single", "--device", "cpu", "--results-dir", str(tmp_path), "--force"]
+    )
+
+    def finished_jobs(jobs, *, run_dir, **kwargs):
+        rows = []
+        for job in jobs:
+            directory = run_dir / job.case_id
+            (directory / "checkpoints").mkdir(parents=True)
+            model = directory / "checkpoints/final.pt"
+            model.write_text("new " + job.case_id)
+            (directory / "config.json").write_text("{}")
+            (directory / "training_summary.json").write_text(
+                json.dumps({"checkpoint_sha256": file_digest(model)})
+            )
+            log = Path(".logs") / job.case_id / "train.log"
+            (run_dir / log).parent.mkdir(parents=True)
+            (run_dir / log).write_text("completed")
+            rows.append(dict(log=str(log), state="completed"))
+        (run_dir / "run.json").write_text(
+            json.dumps(dict(created_at="", commit="", dirty=False, versions={}, jobs=rows))
+        )
+
+    rename = Path.rename
+
+    def fail_second_publish(source, target):
+        if source.parent.name == "work" and source.name == cases[1]:
+            raise error_type("second publish failed")
+        return rename(source, target)
+
+    monkeypatch.setattr(runner, "run_jobs", finished_jobs)
+    monkeypatch.setattr(Path, "rename", fail_second_publish)
+    with pytest.raises(error_type, match="second publish failed"):
+        runner._dispatch_jobs(jobs, args)
+    work = next(tmp_path.glob(".pending-*/work"))
+    for case in cases:
+        if case == cases[0] and not first_exists:
+            assert not (tmp_path / case).exists()
+        else:
+            assert (tmp_path / case / "old.pt").read_text() == case
+        assert not (tmp_path / case / "checkpoints").exists()
+        assert (work / case / "checkpoints/final.pt").read_text() == "new " + case
+
+
+@pytest.mark.parametrize("destination", ("root", "assets", "case_symlink"))
+def test_runner_rejects_protected_output_before_launch(monkeypatch, tmp_path, destination):
+    from biai.atari.scripts import run_experiments as runner
+    from biai.atari.training import results
+
+    project = tmp_path / "project"
+    assets = project / "assets"
+    assets.mkdir(parents=True)
+    monkeypatch.setattr(results, "PROJECT_ROOT", project)
+    monkeypatch.setattr(results, "ASSETS_DIR", assets)
+    jobs = build_jobs("train", "single", games=("Pong-v5",), algorithms=("dqn",), steps=32)
+    root = project if destination == "root" else assets
+    if destination == "case_symlink":
+        root = project / "results"
+        root.mkdir()
+        (root / jobs[0].case_id).symlink_to(assets, target_is_directory=True)
+    args = runner._build_parser().parse_args(
+        ["train", "single", "--device", "cpu", "--results-dir", str(root), "--force"]
+    )
+    monkeypatch.setattr(runner, "run_jobs", lambda *a, **kw: pytest.fail("Jobs must not start"))
+    with pytest.raises(ValueError, match="Protected output"):
+        runner._dispatch_jobs(jobs, args)
+    assert not list(project.rglob(".pending-*"))

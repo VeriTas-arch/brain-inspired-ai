@@ -186,7 +186,6 @@ def test_plot_continual_results_reads_score_matrix_without_cross_game_average(tm
 @pytest.mark.parametrize("mode", ("single", "multitask", "continual"))
 def test_evaluation_preserves_requested_deterministic_kernels(monkeypatch, tmp_path, mode):
     from biai.atari.scripts import evaluate
-    from biai.atari.training import seed_everything
 
     class Agent(_FakeAgent):
         def __init__(self, **kwargs):
@@ -215,28 +214,25 @@ def test_evaluation_preserves_requested_deterministic_kernels(monkeypatch, tmp_p
     monkeypatch.setattr(evaluate, "_build_multihead_agent", lambda *args: Agent())
     monkeypatch.setattr(evaluate, "AtariEnv", Env)
     monkeypatch.setattr(evaluate, "_record_example_video", lambda *args, **kwargs: None)
-    try:
-        kwargs = dict(
-            model_path="example.pt",
-            algorithm="dqn",
-            episodes=2,
-            max_steps=10,
-            output_dir=tmp_path,
-            deterministic=True,
+    kwargs = dict(
+        model_path="example.pt",
+        algorithm="dqn",
+        episodes=2,
+        max_steps=10,
+        output_dir=tmp_path,
+        deterministic=True,
+    )
+    if mode == "single":
+        result = evaluate.evaluate_single(game="game", **kwargs)
+    elif mode == "multitask":
+        result = evaluate.evaluate_multitask(games=["game"], **kwargs)
+    else:
+        result = evaluate.evaluate_continual(
+            games=["game"], use_ewc=False, ewc_lambda=0.4, **kwargs
         )
-        if mode == "single":
-            result = evaluate.evaluate_single(game="game", **kwargs)
-        elif mode == "multitask":
-            result = evaluate.evaluate_multitask(games=["game"], **kwargs)
-        else:
-            result = evaluate.evaluate_continual(
-                games=["game"], use_ewc=False, ewc_lambda=0.4, **kwargs
-            )
-        assert result["deterministic"] is True
-        rewards = result["rewards"] if mode == "single" else result["games"]["game"]["rewards"]
-        assert rewards == [3.0, 3.0]
-    finally:
-        seed_everything(0)
+    assert result["deterministic"] is True
+    rewards = result["rewards"] if mode == "single" else result["games"]["game"]["rewards"]
+    assert rewards == [3.0, 3.0]
 
 
 @pytest.mark.parametrize("budget", (500_000, 1_000_448, 2_000_000))
@@ -261,3 +257,14 @@ def test_evaluation_schedule_rejects_conflicting_or_impossible_counts():
         evaluation_schedule(2048, points=10, step_size=1024)
     with pytest.raises(ValueError, match="nonnegative"):
         evaluation_schedule(100, points=-1)
+
+
+@pytest.mark.parametrize("game", ("Pong-v5", "ALE/Pong-v5"))
+def test_single_evaluation_plot_accepts_namespaced_game_ids(tmp_path, game):
+    from biai.atari.scripts.evaluate import _plot_single_results
+
+    figures = tmp_path / "figures"
+    figures.mkdir()
+    output = _plot_single_results(dict(game=game, algorithm="dqn", rewards=[1.0, 2.0]), tmp_path)
+    assert output.is_file()
+    assert output.parent == figures

@@ -131,6 +131,7 @@ def offline_data(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("topic", TOPICS[:-1])
 @pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.filterwarnings("error:__array__ implementation.*:DeprecationWarning")
 def test_course_cells_train_evaluate_and_plot_offline(topic, device, offline_data, monkeypatch):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")

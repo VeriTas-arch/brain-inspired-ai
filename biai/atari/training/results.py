@@ -7,12 +7,22 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
 
-from biai.paths import PROJECT_ROOT, RESULTS_DIR
+from biai.paths import ASSETS_DIR, PROJECT_ROOT, RESULTS_DIR
+
+
+def check_result_path(output_dir: Path) -> None:
+    """Keep training and evaluation output away from source and reference assets."""
+    output = Path(output_dir).resolve()
+    protected = (ASSETS_DIR, *(PROJECT_ROOT / name for name in ("biai", "tests", ".git")))
+    if PROJECT_ROOT.resolve().is_relative_to(output) or any(
+        output.is_relative_to(path.resolve()) for path in protected
+    ):
+        raise ValueError(f"Protected output directory: {output}")
 
 
 def check_output(output_dir: Path, *, force: bool = False) -> None:
@@ -22,20 +32,22 @@ def check_output(output_dir: Path, *, force: bool = False) -> None:
         raise FileExistsError(f"Results already exist: {output_dir}; use --force to replace them")
 
 
-def publish_output(staging: Path, output_dir: Path, *, force: bool = False) -> None:
-    """Replace one completed result, restoring the previous directory if the move fails."""
-    check_output(output_dir, force=force)
-    previous = staging.with_name(staging.name + "-previous")
-    if output_dir.exists():
-        output_dir.rename(previous)
-    try:
-        staging.rename(output_dir)
-    except BaseException:
-        if previous.exists():
-            previous.rename(output_dir)
-        raise
-    if previous.exists():
-        shutil.rmtree(previous)
+def publish_outputs(outputs: dict[Path, Path], *, force: bool = False) -> list[Path]:
+    """Publish with rollback on failure; return old directories for caller cleanup."""
+    for output_dir in outputs.values():
+        check_output(output_dir, force=force)
+    previous = []
+    with ExitStack() as rollback:
+        for staging, output_dir in outputs.items():
+            if output_dir.exists():
+                backup = staging.with_name(staging.name + "-previous")
+                output_dir.rename(backup)
+                rollback.callback(backup.rename, output_dir)
+                previous.append(backup)
+            staging.rename(output_dir)
+            rollback.callback(output_dir.rename, staging)
+        rollback.pop_all()
+    return previous
 
 
 @contextmanager
@@ -47,10 +59,12 @@ def result_directory(output_dir: Path, *, force: bool = False):
     staging = Path(tempfile.mkdtemp(prefix=f".pending-{output_dir.name}-", dir=output_dir.parent))
     try:
         yield staging
-        publish_output(staging, output_dir, force=force)
+        previous = publish_outputs({staging: output_dir}, force=force)
     except BaseException:
         print(f"Unpublished results retained at {staging}", file=sys.stderr)
         raise
+    for backup in previous:
+        shutil.rmtree(backup)
 
 
 def case_name(
@@ -92,6 +106,7 @@ def prepare_case(output_dir: Path | None, **config) -> Path:
     if output_dir is None:
         output_dir = RESULTS_DIR / name
     output_dir = Path(output_dir)
+    check_result_path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "config.json").open("x") as output:
         output.write(json.dumps(config, indent=2) + "\n")

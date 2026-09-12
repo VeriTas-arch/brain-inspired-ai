@@ -151,3 +151,26 @@ def test_multihead_ppo_checkpoint_restores_task_heads(tmp_path, device) -> None:
     assert restored.current_task == "pong"
     torch.testing.assert_close(restored.actors["pong"].bias, source.actors["pong"].bias)
     torch.testing.assert_close(restored.critics["breakout"].bias, source.critics["breakout"].bias)
+
+
+@pytest.mark.parametrize("agent_type", (MultiHeadDQNAgent, MultiHeadPPOAgent))
+@pytest.mark.parametrize("missing", ("backbone_only", "task_head"))
+def test_multihead_rejects_incomplete_checkpoints_before_changing_agent(agent_type, missing):
+    from biai.reproducibility import parameter_digest
+
+    agent = agent_type(4, device="cpu")
+    agent.register_task("pong", 2)
+    agent.set_task("pong")
+    heads = agent.heads if agent_type is MultiHeadDQNAgent else agent.actors
+    before = parameter_digest(heads)
+    if missing == "backbone_only":
+        checkpoint = agent.backbone.state_dict()
+    else:
+        checkpoint = agent.checkpoint_state()
+        checkpoint["heads" if agent_type is MultiHeadDQNAgent else "actors"] = {}
+    with pytest.raises(ValueError, match="Incomplete multi-head"):
+        agent.load_checkpoint_state(checkpoint)
+    assert agent.current_task == "pong"
+    assert (
+        parameter_digest(agent.heads if agent_type is MultiHeadDQNAgent else agent.actors) == before
+    )

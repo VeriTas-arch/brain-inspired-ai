@@ -9,6 +9,39 @@ import pytest
 from biai.atari.training import VideoRecorder, run_evaluation_episodes
 
 
+@pytest.mark.parametrize(
+    "phase,error_type",
+    [("stdin", OSError), ("stdin", KeyboardInterrupt), ("wait", KeyboardInterrupt)],
+)
+def test_encoder_is_reaped_when_stream_close_or_wait_fails(tmp_path, phase, error_type):
+    import io
+    from unittest.mock import Mock
+
+    failure = error_type("encoder cleanup interrupted")
+    process = Mock(returncode=None)
+    process.poll.side_effect = lambda: process.returncode
+
+    def wait():
+        if phase == "wait" and process.wait.call_count == 1:
+            raise failure
+        process.returncode = -9
+        return process.returncode
+
+    process.wait.side_effect = wait
+    if phase == "stdin":
+        process.stdin.close.side_effect = failure
+    errors = io.BytesIO()
+    recorder = VideoRecorder(str(tmp_path / "unused.mp4"))
+    recorder.writer, recorder.errors = process, errors
+    with pytest.raises(error_type) as caught:
+        recorder.close()
+    assert caught.value is failure
+    process.kill.assert_called_once()
+    assert process.returncode is not None
+    assert errors.closed
+    assert recorder.writer is recorder.errors is None
+
+
 @pytest.mark.parametrize("shape", ((84, 84), (210, 160, 3)))
 def test_streamed_video_decodes_every_frame_without_retaining_arrays(tmp_path, shape):
     path = tmp_path / "episode.mp4"

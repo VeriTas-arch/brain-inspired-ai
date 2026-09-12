@@ -388,38 +388,31 @@ class MultiHeadPPOAgent(BaseAgent):
 
     def load_checkpoint_state(self, checkpoint: dict) -> None:
         """Restore a multi-head PPO checkpoint."""
+        tasks = checkpoint.get("task_action_dims", {})
+        if (
+            not tasks
+            or "backbone" not in checkpoint
+            or any(set(checkpoint.get(key, {})) != set(tasks) for key in ("actors", "critics"))
+        ):
+            raise ValueError(
+                "Incomplete multi-head PPO checkpoint: backbone and all task heads are required"
+            )
         self._update_generation += 1
         self.environment_protocol = checkpoint.get("environment_protocol", "gymnasium_wrappers_v1")
-        if "backbone" not in checkpoint:
-            self.backbone.load_state_dict(checkpoint)
-            return
 
         self.actors = nn.ModuleDict()
         self.critics = nn.ModuleDict()
         self.optimizer = None
         self.current_task = None
 
-        for task_id, action_dim in checkpoint.get("task_action_dims", {}).items():
+        for task_id, action_dim in tasks.items():
             self.register_task(task_id, action_dim)
         self.backbone.load_state_dict(checkpoint["backbone"])
 
         for task_id, state_dict in checkpoint["actors"].items():
-            if task_id not in self.actors:
-                if "task_action_dims" in checkpoint and task_id in checkpoint["task_action_dims"]:
-                    action_dim = checkpoint["task_action_dims"][task_id]
-                    self.register_task(task_id, action_dim)
-                else:
-                    continue
             self.actors[task_id].load_state_dict(state_dict)
 
         for task_id, state_dict in checkpoint["critics"].items():
-            if task_id not in self.critics:
-                if "task_action_dims" in checkpoint and task_id in checkpoint["task_action_dims"]:
-                    action_dim = checkpoint["task_action_dims"][task_id]
-                    if task_id not in self.actors:
-                        self.register_task(task_id, action_dim)
-                else:
-                    continue
             self.critics[task_id].load_state_dict(state_dict)
 
         if checkpoint.get("optimizer") is not None:

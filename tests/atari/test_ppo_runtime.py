@@ -301,28 +301,53 @@ def test_compiled_ppo_optimizer_matches_eager_with_regularization_and_projection
             projection.close()
 
 
+def test_capture_flags_are_restored_even_when_cuda_state_restoration_fails(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from biai.atari.training.cuda_update import CudaUpdate
+
+    optimizer = torch.optim.Adam([torch.nn.Parameter(torch.ones(1))], capturable=False)
+    projection = SimpleNamespace(sums={}, capturing_update=False)
+    optimizer._subspace_projection = projection
+    capture_error = RuntimeError("capture failed")
+    restore_error = RuntimeError("CUDA synchronization failed")
+    current_stream = Mock()
+    current_stream.wait_stream.side_effect = [None, restore_error]
+    monkeypatch.setattr(torch, "compile", lambda function, **kwargs: function)
+    monkeypatch.setattr(torch.cuda, "Stream", Mock(return_value=Mock()))
+    monkeypatch.setattr(torch.cuda, "current_stream", Mock(return_value=current_stream))
+    monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
+    monkeypatch.setattr(torch.random, "fork_rng", lambda **kwargs: nullcontext())
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", Mock(side_effect=capture_error))
+    monkeypatch.setattr(CudaUpdate, "_step", lambda self: None)
+    with pytest.raises(RuntimeError) as caught:
+        CudaUpdate(optimizer, lambda: None, lambda: None, (torch.zeros(1),))
+    assert caught.value is restore_error
+    assert caught.value.__context__ is capture_error
+    assert not projection.capturing_update
+    assert optimizer.param_groups[0]["capturable"] is False
+
+
 def test_ppo_benchmark_honors_explicit_torch_thread_count():
     from biai.atari.scripts.benchmark_ppo_runtime import benchmark_configuration
 
-    previous = torch.get_num_threads()
-    try:
-        result = benchmark_configuration(
-            game="Pong-v5",
-            backend="async",
-            compile_policy=False,
-            transitions=2,
-            warmup_transitions=1,
-            num_envs=1,
-            batch_size=32,
-            seed=0,
-            device="cpu",
-            environment_only=True,
-            torch_threads=2,
-        )
-        assert torch.get_num_threads() == 2
-        assert result.transitions == 2
-    finally:
-        torch.set_num_threads(previous)
+    result = benchmark_configuration(
+        game="Pong-v5",
+        backend="async",
+        compile_policy=False,
+        transitions=2,
+        warmup_transitions=1,
+        num_envs=1,
+        batch_size=32,
+        seed=0,
+        device="cpu",
+        environment_only=True,
+        torch_threads=2,
+    )
+    assert torch.get_num_threads() == 2
+    assert result.transitions == 2
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")

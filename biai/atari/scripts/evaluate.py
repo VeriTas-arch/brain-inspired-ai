@@ -22,7 +22,12 @@ from biai.atari.training import (
     run_evaluation_episodes,
     seed_everything,
 )
-from biai.atari.training.results import file_digest, result_directory, run_metadata
+from biai.atari.training.results import (
+    check_result_path,
+    file_digest,
+    result_directory,
+    run_metadata,
+)
 from biai.paths import PROJECT_ROOT
 
 
@@ -44,6 +49,7 @@ def _infer_eval_dir_from_model_path(model_path: str) -> Path:
 def _prepare_output_dir(output_dir: Path | None, model_path: str) -> Path:
     """Create and return the directory used by evaluation artifacts."""
     resolved = output_dir or _infer_eval_dir_from_model_path(model_path)
+    check_result_path(resolved)
     resolved.mkdir(parents=True, exist_ok=True)
     (resolved / "figures").mkdir(exist_ok=True)
     (resolved / "videos").mkdir(exist_ok=True)
@@ -76,7 +82,7 @@ def _plot_single_results(result: dict, output_dir: Path) -> Path:
     game = result["game"]
     algorithm = result["algorithm"]
     rewards = result["rewards"]
-    plot_path = output_dir / "figures" / f"{game}_{algorithm}_eval_rewards.png"
+    plot_path = output_dir / "figures" / f"{game.replace('/', '_')}_{algorithm}_eval_rewards.png"
 
     plt.figure(figsize=(6, 4))
     plt.plot(range(1, len(rewards) + 1), rewards, marker="o")
@@ -194,7 +200,7 @@ def evaluate_single(
 
     plot_path = _plot_single_results(result, output_dir)
     print(f"  Reward plot saved to: {plot_path}")
-    video_path = output_dir / "videos" / f"{game}_{algorithm}_eval_gameplay.mp4"
+    video_path = output_dir / "videos" / f"{game.replace('/', '_')}_{algorithm}_eval_gameplay.mp4"
     _record_example_video(agent, game, video_path, max_steps=max_steps, seed=seed)
     print(f"  Example gameplay video saved to: {video_path}")
     return result
@@ -304,7 +310,9 @@ def _evaluate_multihead_checkpoint(
     print(f"\n[{label.title()}] Raw reward plot saved to: {plot_path}")
 
     for game_index, game in enumerate(games):
-        video_path = output_dir / "videos" / f"{mode}_{algorithm}_{game}_eval_gameplay.mp4"
+        video_path = (
+            output_dir / "videos" / f"{mode}_{algorithm}_{game.replace('/', '_')}_eval_gameplay.mp4"
+        )
         _record_example_video(
             agent,
             game,
@@ -409,6 +417,7 @@ def main() -> None:
         Path(args.json_out).parent if args.json_out else _infer_eval_dir_from_model_path(args.model)
     )
     output_path = Path(args.json_out) if args.json_out else output_dir / "evaluation.json"
+    check_result_path(output_dir)
     if Path(args.model).resolve().is_relative_to(output_dir.resolve()):
         raise ValueError("Evaluation output must be separate from the model directory")
     metadata = {

@@ -11,7 +11,7 @@ from biai.atari.scripts.tutorial_examples import REFERENCE_RESULTS, TEACHING_ASS
 from biai.atari.training.results import (
     parameter_digest,
     prepare_case,
-    publish_output,
+    publish_outputs,
     result_directory,
 )
 
@@ -99,9 +99,31 @@ def test_failed_publish_restores_previous_directory(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Path, "rename", fail_new_move)
     with pytest.raises(OSError, match="move failed"):
-        publish_output(staging, directory, force=True)
+        publish_outputs({staging: directory}, force=True)
     assert (directory / "model.pt").read_text() == "old"
     assert (staging / "model.pt").read_text() == "new"
+
+
+def test_backup_cleanup_failure_does_not_report_successful_publish_as_unpublished(
+    monkeypatch, tmp_path, capsys
+):
+    from biai.atari.training import results
+
+    directory = tmp_path / "case"
+    directory.mkdir()
+    (directory / "model.pt").write_text("old")
+
+    def fail_cleanup(path):
+        raise PermissionError(f"Cannot remove backup: {path}")
+
+    monkeypatch.setattr(results.shutil, "rmtree", fail_cleanup)
+    with pytest.raises(PermissionError, match="Cannot remove backup"):
+        with result_directory(directory, force=True) as staging:
+            (staging / "model.pt").write_text("new")
+    assert (directory / "model.pt").read_text() == "new"
+    backup = next(tmp_path.glob(".pending-*-previous"))
+    assert (backup / "model.pt").read_text() == "old"
+    assert "Unpublished" not in capsys.readouterr().err
 
 
 def test_parameter_digest_detects_changes():
@@ -285,3 +307,58 @@ def test_failed_export_preserves_published_assets(export_source, tmp_path, corru
     with pytest.raises(ValueError, match="changed|mismatch"):
         export_reference(export_source, output)
     assert (output / "reference_results.json").read_text() == "previous reference"
+
+
+@pytest.mark.parametrize(
+    "destination", ("assets", "assets/figures", "biai", "tests", ".git", ".", "..", "alias")
+)
+def test_training_rejects_protected_output_paths(monkeypatch, tmp_path, destination):
+    from biai.atari.training import results
+
+    project = tmp_path / "project"
+    (project / "assets").mkdir(parents=True)
+    (project / "alias").symlink_to(project / "assets", target_is_directory=True)
+    monkeypatch.setattr(results, "PROJECT_ROOT", project)
+    monkeypatch.setattr(results, "ASSETS_DIR", project / "assets")
+    with pytest.raises(ValueError, match="Protected output"):
+        results.prepare_case(
+            project / destination, protocol="single", algorithm="dqn", games=["Pong-v5"], seed=0
+        )
+    assert not list(tmp_path.rglob("config.json"))
+
+
+@pytest.mark.parametrize(
+    "module,extra",
+    (
+        ("train_single", ["--steps", "0"]),
+        ("train_multitask", ["--steps", "0"]),
+        ("train_continual", ["--steps-per-game", "0"]),
+        ("evaluate", ["--model", "missing.pt", "--game", "Pong-v5"]),
+    ),
+)
+def test_cli_rejects_protected_output_before_staging(monkeypatch, tmp_path, module, extra):
+    import runpy
+    import sys
+
+    from biai.atari.training import results
+    from biai.paths import PROJECT_ROOT
+
+    project = tmp_path / "project"
+    assets = project / "assets"
+    assets.mkdir(parents=True)
+    marker = assets / "reference_results.json"
+    marker.write_text("reference")
+    monkeypatch.setattr(results, "PROJECT_ROOT", project)
+    monkeypatch.setattr(results, "ASSETS_DIR", assets)
+    option = (
+        ["--json-out", str(assets / "evaluation.json")]
+        if module == "evaluate"
+        else ["--output-dir", str(assets)]
+    )
+    monkeypatch.setattr(sys, "argv", [module, *option, "--force", *extra])
+    with pytest.raises(ValueError, match="Protected output"):
+        runpy.run_path(
+            str(PROJECT_ROOT / "biai/atari/scripts" / f"{module}.py"), run_name="__main__"
+        )
+    assert marker.read_text() == "reference"
+    assert not list(project.glob(".pending-*"))

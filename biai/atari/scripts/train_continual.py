@@ -3,6 +3,7 @@
 import argparse
 import json
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -36,6 +37,7 @@ from biai.atari.training import (
 )
 from biai.atari.training.results import (
     case_name,
+    check_result_path,
     file_digest,
     parameter_digest,
     prepare_case,
@@ -287,142 +289,153 @@ def train_continual(
         stage_steps = budgets[game_idx]
         print(f"\n=== Task {game_idx + 1}/{len(games)}: {game_name} ===")
 
-        env = (
-            make_vector_atari_env(
-                game_name,
-                num_envs,
-                backend=env_backend,
-                num_threads=env_threads,
-                render_mode=None,
-                seed=game_seeds[game_name],
+        with ExitStack() as resources:
+            env = (
+                make_vector_atari_env(
+                    game_name,
+                    num_envs,
+                    backend=env_backend,
+                    num_threads=env_threads,
+                    render_mode=None,
+                    seed=game_seeds[game_name],
+                )
+                if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
+                else AtariEnv(game_name, render_mode=None, seed=game_seeds[game_name])
             )
-            if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
-            else AtariEnv(game_name, render_mode=None, seed=game_seeds[game_name])
-        )
-        action_dim = env.action_space
-        task_id = game_name
+            resources.callback(env.close)
+            action_dim = env.action_space
+            task_id = game_name
 
-        if agent is None:
+            if agent is None:
+                if algorithm == "dqn":
+                    base_agent = MultiHeadDQNAgent(
+                        state_dim=4,
+                        lr=1e-4,
+                        gamma=0.99,
+                    )
+                    base_agent.register_task(task_id, action_dim)
+                    base_agent.set_task(task_id)
+                else:  # ppo
+                    base_agent = MultiHeadPPOAgent(
+                        state_dim=4,
+                        lr=2.5e-4,
+                        gamma=0.99,
+                        gae_lambda=0.95,
+                        clip_coef=0.1,
+                        ent_coef=0.01,
+                        vf_coef=0.5,
+                        max_grad_norm=0.5,
+                    )
+                    base_agent.register_task(task_id, action_dim)
+                    base_agent.set_task(task_id)
+
+                base_agent.environment_protocol = observation_protocol(env_backend)
+                agent = EWCWrapper(base_agent, ewc_lambda=ewc_lambda) if use_ewc else base_agent
+            else:
+                # Match new-head initialization without resetting rollout/minibatch RNG streams.
+                devices = [agent.device.index or 0] if agent.device.type == "cuda" else []
+                with torch.random.fork_rng(devices=devices):
+                    torch.manual_seed(head_seeds[game_name])
+                    agent.register_task(task_id, action_dim)
+                agent.set_task(task_id)
+
+            modules = {"backbone": base_agent.backbone} if game_idx == 0 else {}
+            modules.update(
+                {"head": base_agent.heads[task_id]}
+                if algorithm == "dqn"
+                else {"actor": base_agent.actors[task_id], "critic": base_agent.critics[task_id]}
+            )
+            initialization[game_name] = {
+                name: parameter_digest(module) for name, module in modules.items()
+            }
+            (exp_root / "initialization.json").write_text(
+                json.dumps(initialization, indent=2) + "\n"
+            )
+
+            # Initialize buffers and training parameters based on algorithm
             if algorithm == "dqn":
-                base_agent = MultiHeadDQNAgent(
-                    state_dim=4,
-                    lr=1e-4,
-                    gamma=0.99,
-                )
-                base_agent.register_task(task_id, action_dim)
-                base_agent.set_task(task_id)
+                agent.configure_runtime(compile_enabled=compile_dqn)
+                learning_starts = DEFAULT_DQN_LEARNING_STARTS
+                train_frequency = 4
+                buffer = ReplayBuffer(capacity=100000, seed=(seed, game_idx, 1))
             else:  # ppo
-                base_agent = MultiHeadPPOAgent(
-                    state_dim=4,
-                    lr=2.5e-4,
-                    gamma=0.99,
-                    gae_lambda=0.95,
-                    clip_coef=0.1,
-                    ent_coef=0.01,
-                    vf_coef=0.5,
-                    max_grad_norm=0.5,
+                learning_starts = 0
+                train_frequency = 1
+                rollout_length = 128
+                update_epochs = 4
+                minibatch_size = batch_size
+
+            exp_dir = exp_root / "figures" / game_name
+            exp_dir.mkdir(parents=True, exist_ok=True)
+
+            video_recorder = None
+            if save_video:
+                video_recorder = VideoRecorder(
+                    str(exp_root / "videos" / f"{game_name}_training.mp4"), fps=30
                 )
-                base_agent.register_task(task_id, action_dim)
-                base_agent.set_task(task_id)
+                resources.callback(video_recorder.close)
 
-            base_agent.environment_protocol = observation_protocol(env_backend)
-            agent = EWCWrapper(base_agent, ewc_lambda=ewc_lambda) if use_ewc else base_agent
-        else:
-            # Match new-head initialization without resetting rollout/minibatch RNG streams.
-            devices = [agent.device.index or 0] if agent.device.type == "cuda" else []
-            with torch.random.fork_rng(devices=devices):
-                torch.manual_seed(head_seeds[game_name])
-                agent.register_task(task_id, action_dim)
-            agent.set_task(task_id)
+            if algorithm == "ppo":
+                agent.configure_runtime(compile_enabled=compile_ppo)
+                learner = PPOLearner(
+                    agent,
+                    update_epochs=update_epochs,
+                    minibatch_size=minibatch_size,
+                    compile_policy=compile_ppo,
+                )
 
-        modules = {"backbone": base_agent.backbone} if game_idx == 0 else {}
-        modules.update(
-            {"head": base_agent.heads[task_id]}
-            if algorithm == "dqn"
-            else {"actor": base_agent.actors[task_id], "critic": base_agent.critics[task_id]}
-        )
-        initialization[game_name] = {
-            name: parameter_digest(module) for name, module in modules.items()
-        }
-        (exp_root / "initialization.json").write_text(json.dumps(initialization, indent=2) + "\n")
+                def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
+                    if video_recorder is not None and (transition_count // num_envs) % 2 == 0:
+                        video_recorder.add_frame(frame.cpu().numpy())
 
-        # Initialize buffers and training parameters based on algorithm
-        if algorithm == "dqn":
-            agent.configure_runtime(compile_enabled=compile_dqn)
-            learning_starts = DEFAULT_DQN_LEARNING_STARTS
-            train_frequency = 4
-            buffer = ReplayBuffer(capacity=100000, seed=(seed, game_idx, 1))
-        else:  # ppo
-            learning_starts = 0
-            train_frequency = 1
-            rollout_length = 128
-            update_epochs = 4
-            minibatch_size = batch_size
+                collector = PPOCollector(
+                    env,
+                    learner,
+                    rollout_length=rollout_length,
+                    frame_callback=record_ppo_frame if video_recorder is not None else None,
+                )
+            else:
+                collector = DQNCollector(
+                    env, agent, buffer, vectorized=num_envs > 1 or env_backend != "sync"
+                )
+            episode_rewards = []
+            episode_count = 0
+            step = 0
+            last_rollout_data = None
+            learning_evaluations = []
+            evaluation_targets = iter(evaluation_steps[game_name])
+            next_evaluation = next(evaluation_targets, None)
 
-        exp_dir = exp_root / "figures" / game_name
-        exp_dir.mkdir(parents=True, exist_ok=True)
-
-        video_recorder = None
-        if save_video:
-            video_recorder = VideoRecorder(
-                str(exp_root / "videos" / f"{game_name}_training.mp4"), fps=30
+            # DQN normalizes inside its backbone; the GPM builder normalizes before forwarding.
+            if method == "gpm":
+                gpm_backbone = agent.backbone.network if algorithm == "dqn" else agent.backbone
+            projection = (
+                AdamSubspaceProjection(
+                    agent.optimizer,
+                    gpm_backbone,
+                    subspaces,
+                    compile_projection=compile_dqn if algorithm == "dqn" else compile_ppo,
+                )
+                if method == "gpm" and subspaces is not None
+                else None
             )
+            if projection is not None:
+                resources.callback(projection.close)
+            pbar = tqdm(total=stage_steps, desc=f"Training on {game_name}")
+            resources.callback(pbar.close)
 
-        if algorithm == "ppo":
-            agent.configure_runtime(compile_enabled=compile_ppo)
-            learner = PPOLearner(
-                agent,
-                update_epochs=update_epochs,
-                minibatch_size=minibatch_size,
-                compile_policy=compile_ppo,
-            )
+            def record_dqn_metrics(metrics):
+                pbar.set_postfix(metrics, refresh=False)
+                for name in ("loss", "epsilon", "q_value", "ewc_loss"):
+                    if name in metrics:
+                        continual_metrics.setdefault(game_name + "_" + name, []).append(
+                            metrics[name]
+                        )
 
-            def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
-                if video_recorder is not None and (transition_count // num_envs) % 2 == 0:
-                    video_recorder.add_frame(frame.cpu().numpy())
+            dqn_metrics = DQNMetrics(agent, record_dqn_metrics) if algorithm == "dqn" else None
+            if dqn_metrics is not None:
+                resources.callback(dqn_metrics.flush)
 
-            collector = PPOCollector(
-                env,
-                learner,
-                rollout_length=rollout_length,
-                frame_callback=record_ppo_frame if video_recorder is not None else None,
-            )
-        else:
-            collector = DQNCollector(
-                env, agent, buffer, vectorized=num_envs > 1 or env_backend != "sync"
-            )
-        episode_rewards = []
-        episode_count = 0
-        step = 0
-        last_rollout_data = None
-        learning_evaluations = []
-        evaluation_targets = iter(evaluation_steps[game_name])
-        next_evaluation = next(evaluation_targets, None)
-
-        # DQN normalizes inside its backbone; the GPM builder normalizes before forwarding.
-        if method == "gpm":
-            gpm_backbone = agent.backbone.network if algorithm == "dqn" else agent.backbone
-        projection = (
-            AdamSubspaceProjection(
-                agent.optimizer,
-                gpm_backbone,
-                subspaces,
-                compile_projection=compile_dqn if algorithm == "dqn" else compile_ppo,
-            )
-            if method == "gpm" and subspaces is not None
-            else None
-        )
-        pbar = tqdm(total=stage_steps, desc=f"Training on {game_name}")
-
-        def record_dqn_metrics(metrics):
-            pbar.set_postfix(metrics, refresh=False)
-            for name in ("loss", "epsilon", "q_value", "ewc_loss"):
-                if name in metrics:
-                    continual_metrics.setdefault(game_name + "_" + name, []).append(metrics[name])
-
-        dqn_metrics = DQNMetrics(agent, record_dqn_metrics) if algorithm == "dqn" else None
-
-        try:
             while step < stage_steps:
                 if algorithm == "dqn":
                     completed, frame = collector.collect()
@@ -489,16 +502,6 @@ def train_continual(
                         json.dumps(learning_history, indent=2) + "\n", encoding="utf-8"
                     )
                     next_evaluation = next(evaluation_targets, None)
-
-        finally:
-            if dqn_metrics is not None:
-                dqn_metrics.flush()
-            pbar.close()
-            if projection is not None:
-                projection.close()
-            env.close()
-            if video_recorder is not None:
-                video_recorder.close()
 
         if episode_rewards:
             continual_metrics.setdefault(game_name + "_episode_reward", []).extend(episode_rewards)
@@ -720,6 +723,7 @@ if __name__ == "__main__":
         method=args.method or ("ewc" if args.use_ewc else "finetune"),
         seed=args.seed,
     )
+    check_result_path(output_dir)
     with result_directory(output_dir, force=args.force) as staging:
         train_continual(
             output_dir=staging,

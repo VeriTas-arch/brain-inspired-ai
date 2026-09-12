@@ -28,7 +28,13 @@ from biai.atari.training import (
     dqn_updates_due,
     seed_everything,
 )
-from biai.atari.training.results import case_name, file_digest, prepare_case, result_directory
+from biai.atari.training.results import (
+    case_name,
+    check_result_path,
+    file_digest,
+    prepare_case,
+    result_directory,
+)
 from biai.paths import RESULTS_DIR
 
 
@@ -93,117 +99,129 @@ def train_multitask(
     print(f"Multi-task Joint Training: {algorithm.upper()} on {games}")
     print(f"Total steps: {total_steps}")
 
-    # Initialize environments and get action dimensions
-    envs = {}
-    action_dims = {}
-    for game_index, game_name in enumerate(games):
-        env = (
-            make_vector_atari_env(
-                game_name,
-                num_envs,
-                backend=env_backend,
-                seed=seed + game_index,
-                num_threads=env_threads,
+    with ExitStack() as resources:
+        # Initialize environments and get action dimensions
+        envs = {}
+        action_dims = {}
+        for game_index, game_name in enumerate(games):
+            env = (
+                make_vector_atari_env(
+                    game_name,
+                    num_envs,
+                    backend=env_backend,
+                    seed=seed + game_index,
+                    num_threads=env_threads,
+                )
+                if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
+                else AtariEnv(game_name, seed=seed + game_index)
             )
-            if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
-            else AtariEnv(game_name, seed=seed + game_index)
-        )
-        envs[game_name] = env
-        action_dims[game_name] = env.action_space
+            resources.callback(env.close)
+            envs[game_name] = env
+            action_dims[game_name] = env.action_space
 
-    # Initialize agent with multi-head architecture
-    if algorithm == "dqn":
-        agent = MultiHeadDQNAgent(
-            state_dim=4,
-            lr=1e-4,
-            gamma=0.99,
-        )
-        learning_starts = DEFAULT_DQN_LEARNING_STARTS
-        train_frequency = 4
-        buffers = {
-            game: ReplayBuffer(capacity=100000, seed=(seed, index, 1))
-            for index, game in enumerate(games)
-        }
-    else:  # ppo
-        agent = MultiHeadPPOAgent(
-            state_dim=4,
-            lr=2.5e-4,
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_coef=0.1,
-            ent_coef=0.01,
-            vf_coef=0.5,
-            max_grad_norm=0.5,
-        )
-        learning_starts = 0
-        train_frequency = 1
-        rollout_length = 128
-        update_epochs = 4
-        minibatch_size = batch_size
+        # Initialize agent with multi-head architecture
+        if algorithm == "dqn":
+            agent = MultiHeadDQNAgent(
+                state_dim=4,
+                lr=1e-4,
+                gamma=0.99,
+            )
+            learning_starts = DEFAULT_DQN_LEARNING_STARTS
+            train_frequency = 4
+            buffers = {
+                game: ReplayBuffer(capacity=100000, seed=(seed, index, 1))
+                for index, game in enumerate(games)
+            }
+        else:  # ppo
+            agent = MultiHeadPPOAgent(
+                state_dim=4,
+                lr=2.5e-4,
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_coef=0.1,
+                ent_coef=0.01,
+                vf_coef=0.5,
+                max_grad_norm=0.5,
+            )
+            learning_starts = 0
+            train_frequency = 1
+            rollout_length = 128
+            update_epochs = 4
+            minibatch_size = batch_size
 
-    agent.environment_protocol = observation_protocol(env_backend)
-    # Register all tasks
-    for game_name in games:
-        agent.register_task(game_name, action_dims[game_name])
-
-    if algorithm == "dqn":
-        agent.configure_runtime(compile_enabled=compile_dqn)
-
-    if algorithm == "ppo":
-        agent.configure_runtime(compile_enabled=compile_ppo)
-        learner = PPOLearner(
-            agent,
-            update_epochs=update_epochs,
-            minibatch_size=minibatch_size,
-            compile_policy=compile_ppo,
-        )
-
-    # Per-game video recorders (optional)
-    video_recorders = {}
-    if save_video:
+        agent.environment_protocol = observation_protocol(env_backend)
+        # Register all tasks
         for game_name in games:
-            game_dir = exp_dir / "videos" / game_name
-            game_dir.mkdir(parents=True, exist_ok=True)
-            video_recorders[game_name] = VideoRecorder(str(game_dir / "training.mp4"), fps=30)
+            agent.register_task(game_name, action_dims[game_name])
 
-    metrics_plotter = MetricsPlotter()
-    episode_rewards = defaultdict(list)
+        if algorithm == "dqn":
+            agent.configure_runtime(compile_enabled=compile_dqn)
 
-    collectors = {
-        game: (
-            PPOCollector(envs[game], learner, rollout_length=rollout_length)
-            if algorithm == "ppo"
-            else DQNCollector(
-                envs[game], agent, buffers[game], vectorized=num_envs > 1 or env_backend != "sync"
+        if algorithm == "ppo":
+            agent.configure_runtime(compile_enabled=compile_ppo)
+            learner = PPOLearner(
+                agent,
+                update_epochs=update_epochs,
+                minibatch_size=minibatch_size,
+                compile_policy=compile_ppo,
             )
-        )
-        for game in games
-    }
-    if save_video and algorithm == "ppo":
-        for game, collector in collectors.items():
-            recorder = video_recorders[game]
-            collector.frame_callback = lambda count, frame, recorder=recorder: (
-                recorder.add_frame(frame.cpu().numpy()) if (count // num_envs) % 2 == 0 else None
+
+        # Per-game video recorders (optional)
+        video_recorders = {}
+        if save_video:
+            for game_name in games:
+                game_dir = exp_dir / "videos" / game_name
+                game_dir.mkdir(parents=True, exist_ok=True)
+                video_recorders[game_name] = VideoRecorder(str(game_dir / "training.mp4"), fps=30)
+                resources.callback(video_recorders[game_name].close)
+
+        metrics_plotter = MetricsPlotter()
+        episode_rewards = defaultdict(list)
+
+        collectors = {
+            game: (
+                PPOCollector(envs[game], learner, rollout_length=rollout_length)
+                if algorithm == "ppo"
+                else DQNCollector(
+                    envs[game],
+                    agent,
+                    buffers[game],
+                    vectorized=num_envs > 1 or env_backend != "sync",
+                )
             )
-    pbar = tqdm(total=total_steps, desc="Multi-task Training")
-
-    def record_dqn_metrics(game, metrics):
-        for name in ("loss", "epsilon", "q_value"):
-            if name in metrics:
-                metrics_plotter.add_metric(f"{game}_{name}", metrics[name])
-
-    dqn_metrics = (
-        {
-            game: DQNMetrics(agent, lambda metrics, game=game: record_dqn_metrics(game, metrics))
             for game in games
         }
-        if algorithm == "dqn"
-        else {}
-    )
-    step = 0
-    task_steps = {game: 0 for game in games}
-    task_rng = np.random.default_rng(seed)
-    try:
+        if save_video and algorithm == "ppo":
+            for game, collector in collectors.items():
+                recorder = video_recorders[game]
+                collector.frame_callback = lambda count, frame, recorder=recorder: (
+                    recorder.add_frame(frame.cpu().numpy())
+                    if (count // num_envs) % 2 == 0
+                    else None
+                )
+        pbar = tqdm(total=total_steps, desc="Multi-task Training")
+        resources.callback(pbar.close)
+
+        def record_dqn_metrics(game, metrics):
+            for name in ("loss", "epsilon", "q_value"):
+                if name in metrics:
+                    metrics_plotter.add_metric(f"{game}_{name}", metrics[name])
+
+        dqn_metrics = (
+            {
+                game: DQNMetrics(
+                    agent, lambda metrics, game=game: record_dqn_metrics(game, metrics)
+                )
+                for game in games
+            }
+            if algorithm == "dqn"
+            else {}
+        )
+        for pending in reversed(tuple(dqn_metrics.values())):
+            resources.callback(pending.flush)
+        step = 0
+        task_steps = {game: 0 for game in games}
+        task_rng = np.random.default_rng(seed)
         while step < total_steps:
             # One game supplies the entire batch. PPO finishes collection before any update.
             if steps_per_game is None:
@@ -251,15 +269,6 @@ def train_multitask(
                 {**metrics, "game": current_game[:8], "episodes": collector.episode_count},
                 refresh=False,
             )
-    finally:
-        for pending in dqn_metrics.values():
-            pending.flush()
-        pbar.close()
-        with ExitStack() as resources:
-            for recorder in video_recorders.values():
-                resources.callback(recorder.close)
-            for env in envs.values():
-                resources.callback(env.close)
 
     # Print training summary
     print(f"\n{'=' * 60}")
@@ -354,6 +363,7 @@ if __name__ == "__main__":
     output_dir = args.output_dir or RESULTS_DIR / case_name(
         "multitask", args.algorithm, seed=args.seed
     )
+    check_result_path(output_dir)
     with result_directory(output_dir, force=args.force) as staging:
         train_multitask(
             output_dir=staging,

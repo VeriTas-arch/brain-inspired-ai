@@ -48,22 +48,25 @@ class CudaUpdate:
         finally:
             # Copy into the captured allocations; load_state_dict would replace
             # optimizer tensors and leave the graph pointing at stale state.
-            torch.cuda.current_stream(device).wait_stream(stream)
-            with torch.no_grad():
-                for parameter, saved in zip(self.parameters, weights, strict=True):
-                    parameter.copy_(saved)
-                for parameter, values in optimizer.state.items():
-                    for name, value in values.items():
-                        if parameter in state:
-                            value.copy_(state[parameter][name])
-                        else:
-                            value.zero_()
+            try:
+                torch.cuda.current_stream(device).wait_stream(stream)
+                with torch.no_grad():
+                    for parameter, saved in zip(self.parameters, weights, strict=True):
+                        parameter.copy_(saved)
+                    for parameter, values in optimizer.state.items():
+                        for name, value in values.items():
+                            if parameter in state:
+                                value.copy_(state[parameter][name])
+                            else:
+                                value.zero_()
+                    if self.projection is not None:
+                        for name, value in self.projection.sums.items():
+                            value.copy_(projection_sums[name])
+            finally:
                 if self.projection is not None:
-                    for name, value in self.projection.sums.items():
-                        value.copy_(projection_sums[name])
                     self.projection.capturing_update = False
-            for group, original in zip(optimizer.param_groups, capturable, strict=True):
-                group["capturable"] = original
+                for group, original in zip(optimizer.param_groups, capturable, strict=True):
+                    group["capturable"] = original
 
     def _step(self):
         self.optimizer.zero_grad(set_to_none=False)

@@ -505,12 +505,17 @@ class MultiHeadDQNAgent(BaseAgent):
 
     def load_checkpoint_state(self, checkpoint: dict) -> None:
         """Restore a multi-head DQN checkpoint."""
+        tasks = checkpoint.get("task_action_dims", {})
+        if (
+            not tasks
+            or "backbone" not in checkpoint
+            or "target_backbone" not in checkpoint
+            or any(set(checkpoint.get(key, {})) != set(tasks) for key in ("heads", "target_heads"))
+        ):
+            raise ValueError(
+                "Incomplete multi-head DQN checkpoint: backbone and all task heads are required"
+            )
         self.environment_protocol = checkpoint.get("environment_protocol", "gymnasium_wrappers_v1")
-        if "backbone" not in checkpoint:
-            # Compatibility with the old, incomplete backbone-only checkpoint.
-            self.backbone.load_state_dict(checkpoint)
-            self.target_backbone.load_state_dict(checkpoint)
-            return
 
         self.heads = nn.ModuleDict()
         self.target_heads = nn.ModuleDict()
@@ -519,14 +524,14 @@ class MultiHeadDQNAgent(BaseAgent):
         self._computations.clear()
         self._gradient_groups = (tuple(self.backbone.parameters()),)
 
-        for task_id, action_dim in checkpoint.get("task_action_dims", {}).items():
+        for task_id, action_dim in tasks.items():
             self.register_task(task_id, action_dim)
 
         self.backbone.load_state_dict(checkpoint["backbone"])
         self.target_backbone.load_state_dict(checkpoint["target_backbone"])
-        for task_id, state in checkpoint.get("heads", {}).items():
+        for task_id, state in checkpoint["heads"].items():
             self.heads[task_id].load_state_dict(state)
-        for task_id, state in checkpoint.get("target_heads", {}).items():
+        for task_id, state in checkpoint["target_heads"].items():
             self.target_heads[task_id].load_state_dict(state)
 
         if checkpoint.get("optimizer") is not None:

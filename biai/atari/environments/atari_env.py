@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from functools import partial
 
@@ -189,15 +190,18 @@ class SyncVectorAtariEnv:
     ) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
-        self.envs = [
-            AtariEnv(
-                game_name,
-                render_mode=render_mode,
-                seed=None if seed is None else seed + index,
-                training=training,
-            )
-            for index in range(num_envs)
-        ]
+        self.envs = []
+        with ExitStack() as resources:
+            for index in range(num_envs):
+                env = AtariEnv(
+                    game_name,
+                    render_mode=render_mode,
+                    seed=None if seed is None else seed + index,
+                    training=training,
+                )
+                resources.callback(env.close)
+                self.envs.append(env)
+            resources.pop_all()
         self.num_envs = num_envs
         self.action_space = self.envs[0].action_space
 
@@ -249,8 +253,9 @@ class SyncVectorAtariEnv:
 
     def close(self) -> None:
         """Close every underlying environment."""
-        for env in self.envs:
-            env.close()
+        with ExitStack() as resources:
+            for env in reversed(self.envs):
+                resources.callback(env.close)
 
 
 class AsyncVectorAtariEnv:
@@ -279,6 +284,7 @@ class AsyncVectorAtariEnv:
         ]
         self.env = gym.vector.AsyncVectorEnv(
             env_fns,
+            context="spawn",
             shared_memory=True,
             copy=False,
             autoreset_mode=AutoresetMode.SAME_STEP,

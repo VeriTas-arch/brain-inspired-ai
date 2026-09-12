@@ -1,6 +1,7 @@
 """Training plots and streaming MP4 recording."""
 
 import subprocess
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from tempfile import TemporaryFile
 
@@ -75,27 +76,35 @@ class VideoRecorder:
 
     def close(self):
         """Finalize the stream and check FFmpeg's exit status, including late failures."""
-        process, self.writer = self.writer, None
-        try:
+        process = self.writer
+        errors, self.errors = self.errors, None
+
+        def stop_encoder():
+            if process.poll() is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                process.wait()
+            self.writer = None
+
+        with ExitStack() as resources:
+            if errors is not None:
+                resources.callback(errors.close)
             if process is not None:
+                resources.callback(stop_encoder)
                 write_error = None
                 try:
                     process.stdin.close()
                 except BrokenPipeError as error:
                     write_error = error
                 code = process.wait()
-                self.errors.seek(0)
-                message = self.errors.read().decode("utf-8", errors="replace")
+                errors.seek(0)
+                message = errors.read().decode("utf-8", errors="replace")
                 if code or write_error:
                     raise RuntimeError(f"Video encoder failed ({code}): {message}") from write_error
                 if self.frame_count and (
                     not self.output_path.is_file() or self.output_path.stat().st_size == 0
                 ):
                     raise RuntimeError(f"Video encoder produced no output: {self.output_path}")
-        finally:
-            if self.errors is not None:
-                self.errors.close()
-                self.errors = None
 
     def __enter__(self):
         return self

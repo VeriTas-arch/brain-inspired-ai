@@ -3,6 +3,7 @@
 import argparse
 import json
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import torch
@@ -29,7 +30,13 @@ from biai.atari.training import (
     run_evaluation_episodes,
     seed_everything,
 )
-from biai.atari.training.results import case_name, file_digest, prepare_case, result_directory
+from biai.atari.training.results import (
+    case_name,
+    check_result_path,
+    file_digest,
+    prepare_case,
+    result_directory,
+)
 from biai.paths import RESULTS_DIR
 
 
@@ -50,6 +57,7 @@ def train_single_game(
     eval_points: int = 0,
     eval_episodes: int = 10,
     output_dir: Path | None = None,
+    eval_max_steps: int = DEFAULT_MAX_EPISODE_STEPS,
 ):
     """Train agent on a single game."""
     if batch_size <= 0:
@@ -64,6 +72,8 @@ def train_single_game(
         raise ValueError("Positive steps must be divisible by num_envs")
     if eval_interval < 0 or eval_episodes <= 0:
         raise ValueError("eval_interval must be nonnegative and eval_episodes positive")
+    if eval_max_steps <= 0:
+        raise ValueError("eval_max_steps must be positive")
     if compile_dqn and algorithm != "dqn":
         raise ValueError("compile_dqn requires DQN")
     evaluation_steps = evaluation_schedule(
@@ -90,7 +100,7 @@ def train_single_game(
         eval_interval=eval_interval,
         eval_points=eval_points,
         eval_episodes=eval_episodes,
-        eval_max_steps=DEFAULT_MAX_EPISODE_STEPS,
+        eval_max_steps=eval_max_steps,
         environment_protocol=observation_protocol(env_backend),
     )
     started_at = time.perf_counter()
@@ -98,108 +108,113 @@ def train_single_game(
     seed_everything(seed, deterministic=deterministic)
     print(f"Training {algorithm.upper()} on {game_name}")
 
-    env = (
-        make_vector_atari_env(
-            game_name,
-            num_envs,
-            backend=env_backend,
-            num_threads=env_threads,
-            render_mode=None,
-            seed=seed,
+    with ExitStack() as resources:
+        env = (
+            make_vector_atari_env(
+                game_name,
+                num_envs,
+                backend=env_backend,
+                num_threads=env_threads,
+                render_mode=None,
+                seed=seed,
+            )
+            if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
+            else AtariEnv(game_name, render_mode=None, seed=seed)
         )
-        if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
-        else AtariEnv(game_name, render_mode=None, seed=seed)
-    )
+        resources.callback(env.close)
 
-    if algorithm == "dqn":
-        agent = DQNAgent(
-            state_dim=4,
-            action_dim=env.action_space,
-            lr=1e-4,
-            gamma=0.99,
-            epsilon_start=1.0,
-            epsilon_end=0.01,
-            epsilon_fraction=0.10,
-            total_timesteps=num_steps,
-            target_update_freq=1000,
-            tau=1.0,
-        )
-        agent.configure_runtime(compile_enabled=compile_dqn)
-        learning_starts = DEFAULT_DQN_LEARNING_STARTS
-        train_frequency = 4
-        buffer = ReplayBuffer(capacity=100000, seed=(seed, 0, 1))
-    else:
-        agent = PPOAgent(
-            state_dim=4,
-            action_dim=env.action_space,
-            lr=2.5e-4,
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_coef=0.1,
-            ent_coef=0.01,
-            vf_coef=0.5,
-            max_grad_norm=0.5,
-        )
-        learning_starts = 0
-        train_frequency = 1
-        rollout_length = 128
-        update_epochs = 4
-        minibatch_size = batch_size
+        if algorithm == "dqn":
+            agent = DQNAgent(
+                state_dim=4,
+                action_dim=env.action_space,
+                lr=1e-4,
+                gamma=0.99,
+                epsilon_start=1.0,
+                epsilon_end=0.01,
+                epsilon_fraction=0.10,
+                total_timesteps=num_steps,
+                target_update_freq=1000,
+                tau=1.0,
+            )
+            agent.configure_runtime(compile_enabled=compile_dqn)
+            learning_starts = DEFAULT_DQN_LEARNING_STARTS
+            train_frequency = 4
+            buffer = ReplayBuffer(capacity=100000, seed=(seed, 0, 1))
+        else:
+            agent = PPOAgent(
+                state_dim=4,
+                action_dim=env.action_space,
+                lr=2.5e-4,
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_coef=0.1,
+                ent_coef=0.01,
+                vf_coef=0.5,
+                max_grad_norm=0.5,
+            )
+            learning_starts = 0
+            train_frequency = 1
+            rollout_length = 128
+            update_epochs = 4
+            minibatch_size = batch_size
 
-    agent.environment_protocol = observation_protocol(env_backend)
+        agent.environment_protocol = observation_protocol(env_backend)
 
-    video_recorder = None
-    if save_video:
-        video_path = exp_dir / "videos" / "training.mp4"
-        video_recorder = VideoRecorder(
-            str(video_path),
-            fps=30,
-        )
+        video_recorder = None
+        if save_video:
+            video_path = exp_dir / "videos" / "training.mp4"
+            video_recorder = VideoRecorder(
+                str(video_path),
+                fps=30,
+            )
+            resources.callback(video_recorder.close)
 
-    metrics_plotter = MetricsPlotter()
-    episode_rewards = []
+        metrics_plotter = MetricsPlotter()
+        episode_rewards = []
 
-    if algorithm == "ppo":
-        agent.configure_runtime(compile_enabled=compile_ppo)
-        learner = PPOLearner(
-            agent,
-            update_epochs=update_epochs,
-            minibatch_size=minibatch_size,
-            compile_policy=compile_ppo,
-        )
+        if algorithm == "ppo":
+            agent.configure_runtime(compile_enabled=compile_ppo)
+            learner = PPOLearner(
+                agent,
+                update_epochs=update_epochs,
+                minibatch_size=minibatch_size,
+                compile_policy=compile_ppo,
+            )
 
-        def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
-            if video_recorder is not None and (transition_count // num_envs) % 2 == 0:
-                video_recorder.add_frame(frame.cpu().numpy())
+            def record_ppo_frame(transition_count: int, frame: torch.Tensor) -> None:
+                if video_recorder is not None and (transition_count // num_envs) % 2 == 0:
+                    video_recorder.add_frame(frame.cpu().numpy())
 
-        collector = PPOCollector(
-            env,
-            learner,
-            rollout_length=rollout_length,
-            frame_callback=record_ppo_frame if video_recorder is not None else None,
-        )
-        print(f"PPO runtime: env_backend={env_backend}, compiled={compile_ppo}")
-    else:
-        collector = DQNCollector(
-            env, agent, buffer, vectorized=num_envs > 1 or env_backend != "sync"
-        )
-    episode_count = 0
+            collector = PPOCollector(
+                env,
+                learner,
+                rollout_length=rollout_length,
+                frame_callback=record_ppo_frame if video_recorder is not None else None,
+            )
+            print(f"PPO runtime: env_backend={env_backend}, compiled={compile_ppo}")
+        else:
+            collector = DQNCollector(
+                env, agent, buffer, vectorized=num_envs > 1 or env_backend != "sync"
+            )
+        episode_count = 0
 
-    pbar = tqdm(total=num_steps, desc="Training")
+        pbar = tqdm(total=num_steps, desc="Training")
+        resources.callback(pbar.close)
 
-    def record_dqn_metrics(metrics):
-        pbar.set_postfix(metrics, refresh=False)
-        for name in ("loss", "epsilon", "q_value"):
-            if name in metrics:
-                metrics_plotter.add_metric(name, metrics[name])
+        def record_dqn_metrics(metrics):
+            pbar.set_postfix(metrics, refresh=False)
+            for name in ("loss", "epsilon", "q_value"):
+                if name in metrics:
+                    metrics_plotter.add_metric(name, metrics[name])
 
-    dqn_metrics = DQNMetrics(agent, record_dqn_metrics) if algorithm == "dqn" else None
-    step = 0
-    evaluations = []
-    evaluation_targets = iter(evaluation_steps)
-    next_evaluation = next(evaluation_targets, None)
+        dqn_metrics = DQNMetrics(agent, record_dqn_metrics) if algorithm == "dqn" else None
+        if dqn_metrics is not None:
+            resources.callback(dqn_metrics.flush)
+        step = 0
+        evaluations = []
+        evaluation_targets = iter(evaluation_steps)
+        next_evaluation = next(evaluation_targets, None)
 
-    try:
         while step < num_steps:
             if algorithm == "dqn":
                 agent.global_step = step
@@ -239,7 +254,7 @@ def train_single_game(
                 evaluation_env = AtariEnv(game_name, seed=seed, training=False, backend=env_backend)
                 try:
                     rewards = run_evaluation_episodes(
-                        agent, evaluation_env, eval_episodes, DEFAULT_MAX_EPISODE_STEPS
+                        agent, evaluation_env, eval_episodes, eval_max_steps
                     )
                 finally:
                     evaluation_env.close()
@@ -266,13 +281,6 @@ def train_single_game(
                 )
                 print(f"[Eval] step={step}, mean raw reward={evaluations[-1]['mean_raw_reward']}")
                 next_evaluation = next(evaluation_targets, None)
-    finally:
-        if dqn_metrics is not None:
-            dqn_metrics.flush()
-        pbar.close()
-        env.close()
-        if video_recorder is not None:
-            video_recorder.close()
 
     if episode_rewards:
         avg_reward = sum(episode_rewards) / len(episode_rewards)
@@ -364,6 +372,7 @@ if __name__ == "__main__":
         help="Evaluation points per task budget; exclusive with --eval-interval",
     )
     parser.add_argument("--eval-episodes", type=int, default=10)
+    parser.add_argument("--eval-max-steps", type=int, default=DEFAULT_MAX_EPISODE_STEPS)
     parser.add_argument(
         "--save-video", action="store_true", help="Enable video recording (disabled by default)"
     )
@@ -377,6 +386,7 @@ if __name__ == "__main__":
     output_dir = args.output_dir or RESULTS_DIR / case_name(
         "single", args.algorithm, game=args.game, seed=args.seed
     )
+    check_result_path(output_dir)
     with result_directory(output_dir, force=args.force) as staging:
         train_single_game(
             output_dir=staging,
@@ -395,5 +405,6 @@ if __name__ == "__main__":
             eval_interval=args.eval_interval,
             eval_points=args.eval_points,
             eval_episodes=args.eval_episodes,
+            eval_max_steps=args.eval_max_steps,
         )
     print(f"Results saved to {output_dir}")

@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import torch
@@ -67,8 +68,9 @@ def benchmark_configuration(
         if vectorized
         else AtariEnv(game, seed=seed)
     )
-    projection = None
-    try:
+    with ExitStack() as resources:
+        resources.callback(env.close)
+        projection = None
         if variant == "single":
             base = DQNAgent(
                 4, env.action_space, epsilon_start=epsilon, epsilon_end=epsilon, device=device
@@ -119,6 +121,7 @@ def benchmark_configuration(
             projection = AdamSubspaceProjection(
                 base.optimizer, base.backbone.network, subspaces, **options
             )
+            resources.callback(projection.close)
 
         pending_metrics = DQNMetrics(agent, lambda metrics: None)
 
@@ -258,10 +261,6 @@ def benchmark_configuration(
             else None,
             projection=projection.metrics() if projection is not None else None,
         )
-    finally:
-        if projection is not None:
-            projection.close()
-        env.close()
 
 
 def main():

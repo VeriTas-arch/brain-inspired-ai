@@ -95,9 +95,9 @@ def benchmark_configuration(
     environment = make_vector_atari_env(
         game, num_envs, backend=backend, seed=seed, num_threads=env_threads
     )
-    torch.set_num_threads(torch_threads)
-    if environment_only:
-        try:
+    try:
+        torch.set_num_threads(torch_threads)
+        if environment_only:
             return benchmark_environment(
                 environment,
                 transitions=transitions,
@@ -105,9 +105,6 @@ def benchmark_configuration(
                 seed=seed,
                 backend=backend,
             )
-        finally:
-            environment.close()
-    try:
         agent = PPOAgent(state_dim=4, action_dim=environment.action_space, device=device)
         learner = PPOLearner(
             agent,
