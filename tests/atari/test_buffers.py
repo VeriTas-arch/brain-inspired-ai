@@ -86,7 +86,8 @@ def test_replay_seed_is_reproducible_and_external_sampling_leaves_it_unchanged()
 def test_rollout_buffer_keeps_pixels_uint8_and_reuses_storage() -> None:
     buffer = RolloutBuffer(capacity=2)
     state = torch.randint(256, (4, 84, 84), dtype=torch.uint8)
-    buffer.add(state, 1, 1.0, False, -0.5, 0.25)
+    buffer.start_step(state, 1, -0.5, 0.25)
+    buffer.finish_step(1.0, False)
 
     first_storage = buffer.states
     batch = buffer.get_batch()
@@ -95,7 +96,8 @@ def test_rollout_buffer_keeps_pixels_uint8_and_reuses_storage() -> None:
     assert not buffer.is_full()
 
     buffer.reset()
-    buffer.add(state, 0, 0.0, True, -0.2, 0.1)
+    buffer.start_step(state, 0, -0.2, 0.1)
+    buffer.finish_step(0.0, True)
     assert buffer.states is first_storage
 
 
@@ -105,22 +107,22 @@ def test_rollout_buffer_rejects_overflow_and_empty_batches() -> None:
         buffer.get_batch()
 
     state = torch.zeros((4, 84, 84), dtype=torch.uint8)
-    buffer.add(state, 0, 0.0, False, 0.0, 0.0)
+    buffer.start_step(state, 0, 0.0, 0.0)
+    buffer.finish_step(0.0, False)
     with pytest.raises(RuntimeError, match="full"):
-        buffer.add(state, 0, 0.0, False, 0.0, 0.0)
+        buffer.start_step(state, 0, 0.0, 0.0)
 
 
 def test_rollout_buffer_preserves_vector_environment_axes() -> None:
     buffer = RolloutBuffer(capacity=2, num_envs=3)
     states = torch.randint(256, (3, 4, 84, 84), dtype=torch.uint8)
-    buffer.add(
+    buffer.start_step(
         states,
         torch.tensor([0, 1, 2]),
-        torch.tensor([1.0, 2.0, 3.0]),
-        torch.tensor([False, True, False]),
         torch.tensor([-0.1, -0.2, -0.3]),
         torch.tensor([0.1, 0.2, 0.3]),
     )
+    buffer.finish_step(torch.tensor([1.0, 2.0, 3.0]), torch.tensor([False, True, False]))
 
     batch = buffer.get_batch()
     assert batch["states"].shape == (1, 3, 4, 84, 84)

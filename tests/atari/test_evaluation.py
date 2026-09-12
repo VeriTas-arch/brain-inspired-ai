@@ -104,11 +104,10 @@ def test_multihead_evaluation_records_the_loaded_inner_agents_protocol(
     assert result["games"]["game"]["rewards"] == [3.0, 3.0]
 
 
-def test_checkpoint_evaluations_use_one_stable_directory_per_case(tmp_path):
-    checkpoint = tmp_path / "single-ppo-pong/checkpoints/final.pt"
-    first = _infer_eval_dir_from_model_path(str(checkpoint), "single")
-    second = _infer_eval_dir_from_model_path(str(checkpoint), "single")
-    assert first == second == tmp_path / "single-ppo-pong/evaluation"
+@pytest.mark.parametrize("model_path", ("checkpoints/final.pt", "final.pt"))
+def test_checkpoint_evaluations_use_one_stable_directory_per_case(tmp_path, model_path):
+    case = tmp_path / "single-ppo-pong"
+    assert _infer_eval_dir_from_model_path(str(case / model_path)) == case / "evaluation"
 
 
 def test_report_keeps_task_scores_separate_and_computes_forgetting() -> None:

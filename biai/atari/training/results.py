@@ -75,10 +75,7 @@ def run_metadata(project: Path) -> dict:
         "dirty": bool(changes.stdout) if changes.returncode == 0 else None,
         "versions": {
             "python": platform.python_version(),
-            **{
-                name: version(name)
-                for name in ("torch", "torchrl", "tensordict", "gymnasium", "ale-py")
-            },
+            **{name: version(name) for name in ("torch", "gymnasium", "ale-py")},
         },
     }
 

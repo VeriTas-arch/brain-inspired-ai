@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import platform
-from importlib.metadata import version
 from pathlib import Path
 
 import torch
@@ -29,7 +28,6 @@ def runtime_summary() -> dict[str, object]:
     return {
         "python": platform.python_version(),
         "torch": torch.__version__,
-        "torchrl": version("torchrl"),
         "cuda_runtime": torch.version.cuda,
         "cuda_available": cuda_available,
         "cuda_usable": cuda_usable,

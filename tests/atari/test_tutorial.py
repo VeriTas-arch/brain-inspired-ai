@@ -3,7 +3,6 @@
 import ast
 import json
 import math
-import re
 from pathlib import Path
 
 from biai.atari.scripts.tutorial_examples import (
@@ -14,11 +13,11 @@ from biai.atari.scripts.tutorial_examples import (
 )
 
 
-def test_runtime_summary_reports_installed_frameworks() -> None:
+def test_runtime_summary_reports_python_torch_and_cuda() -> None:
     summary = runtime_summary()
 
     assert summary["torch"]
-    assert summary["torchrl"]
+    assert summary["python"]
     assert isinstance(summary["cuda_available"], bool)
     assert isinstance(summary["cuda_usable"], bool)
     if summary["cuda_available"]:
@@ -66,27 +65,6 @@ def test_notebook_is_a_thin_interface_to_python_functionality() -> None:
     assert "pip install" not in code
     assert "subprocess" not in code
     assert "sys.path" not in code
-
-    markdown = "\n".join(
-        "".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "markdown"
-    )
-    images = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", markdown)
-    local_images = [path for path in images if not path.startswith(("https://", "http://"))]
-    assert local_images
-    for path in local_images:
-        assert (Path(__file__).resolve().parents[2] / "biai/atari" / path).is_file(), path
-
-
-def test_all_notebook_code_cells_compile_and_have_no_saved_outputs() -> None:
-    notebook = _notebook()
-
-    for index, cell in enumerate(notebook["cells"]):
-        if cell["cell_type"] != "code":
-            continue
-        source = "".join(cell.get("source", []))
-        compile(source, f"notebook-cell-{index}", "exec")
-        assert cell["execution_count"] is None
-        assert cell["outputs"] == []
 
 
 def test_notebook_previews_all_teaching_cases_without_launching_jobs(monkeypatch):

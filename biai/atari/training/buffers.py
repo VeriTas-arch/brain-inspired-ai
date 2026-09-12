@@ -147,19 +147,6 @@ class RolloutBuffer:
         self.pos = 0
         self._pending_step = False
 
-    def add(
-        self,
-        state: torch.Tensor,
-        action: int | torch.Tensor,
-        reward: float | torch.Tensor,
-        done: bool | torch.Tensor,
-        log_prob: float | torch.Tensor,
-        value: float | torch.Tensor,
-    ) -> None:
-        """Add a transition to the buffer."""
-        self.start_step(state, action, log_prob, value)
-        self.finish_step(reward, done)
-
     def start_step(
         self,
         state: torch.Tensor,

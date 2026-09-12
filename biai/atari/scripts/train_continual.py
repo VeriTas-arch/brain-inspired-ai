@@ -505,11 +505,7 @@ def train_continual(
 
         stage_rewards = {}
         for eval_game in games[: game_idx + 1]:
-            eval_task_id = eval_game
-            if isinstance(agent, EWCWrapper) and hasattr(agent.agent, "set_task"):
-                agent.set_task(eval_task_id)
-            elif hasattr(agent, "set_task"):
-                agent.set_task(eval_task_id)
+            agent.set_task(eval_game)
 
             if (
                 eval_game == game_name

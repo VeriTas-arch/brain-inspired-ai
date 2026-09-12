@@ -113,10 +113,7 @@ def benchmark_configuration(
                 )
             agent.register_task("new", env.action_space)
             agent.set_task("new")
-        if hasattr(agent, "configure_runtime"):
-            agent.configure_runtime(compile_enabled=compiled, capture_updates=capture_updates)
-        elif compiled:
-            raise RuntimeError("This source snapshot does not support DQN compilation")
+        agent.configure_runtime(compile_enabled=compiled, capture_updates=capture_updates)
         if variant == "gpm":
             options = {"compile_projection": True} if compiled else {}
             projection = AdamSubspaceProjection(

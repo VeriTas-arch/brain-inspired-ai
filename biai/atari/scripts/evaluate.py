@@ -34,16 +34,16 @@ def _evaluation_backend(agent):
     return "ale" if protocol == "ale_native_v1" else "sync"
 
 
-def _infer_eval_dir_from_model_path(model_path: str, mode: str) -> Path:
+def _infer_eval_dir_from_model_path(model_path: str) -> Path:
     """Use one stable evaluation directory beside the model checkpoints."""
     model = Path(model_path)
     case = model.parent.parent if model.parent.name == "checkpoints" else model.parent
     return case / "evaluation"
 
 
-def _prepare_output_dir(output_dir: Path | None, model_path: str, mode: str) -> Path:
+def _prepare_output_dir(output_dir: Path | None, model_path: str) -> Path:
     """Create and return the directory used by evaluation artifacts."""
-    resolved = output_dir or _infer_eval_dir_from_model_path(model_path, mode)
+    resolved = output_dir or _infer_eval_dir_from_model_path(model_path)
     resolved.mkdir(parents=True, exist_ok=True)
     (resolved / "figures").mkdir(exist_ok=True)
     (resolved / "videos").mkdir(exist_ok=True)
@@ -154,7 +154,7 @@ def evaluate_single(
     if compile_dqn and algorithm != "dqn":
         raise ValueError("compile_dqn requires DQN")
     seed_everything(seed, deterministic=deterministic)
-    output_dir = _prepare_output_dir(output_dir, model_path, "single")
+    output_dir = _prepare_output_dir(output_dir, model_path)
     env = AtariEnv(game, render_mode=None, training=False, seed=seed)
     try:
         if algorithm == "dqn":
@@ -288,7 +288,7 @@ def _evaluate_multihead_checkpoint(
     if compile_dqn and algorithm != "dqn":
         raise ValueError("compile_dqn requires DQN")
     seed_everything(seed, deterministic=deterministic)
-    output_dir = _prepare_output_dir(output_dir, model_path, mode)
+    output_dir = _prepare_output_dir(output_dir, model_path)
     agent = _build_multihead_agent(algorithm, games, use_ewc, ewc_lambda)
     agent.load(model_path)
     if compile_dqn or compile_ppo:
@@ -406,9 +406,7 @@ def main() -> None:
     args = parser.parse_args()
 
     output_dir = (
-        Path(args.json_out).parent
-        if args.json_out
-        else _infer_eval_dir_from_model_path(args.model, args.mode)
+        Path(args.json_out).parent if args.json_out else _infer_eval_dir_from_model_path(args.model)
     )
     output_path = Path(args.json_out) if args.json_out else output_dir / "evaluation.json"
     if Path(args.model).resolve().is_relative_to(output_dir.resolve()):

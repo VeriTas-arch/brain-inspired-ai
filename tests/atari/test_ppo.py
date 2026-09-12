@@ -31,13 +31,8 @@ def _update(
     )
 
 
-@pytest.mark.parametrize("vectorized", (False, True))
-def test_gae_matches_torchrl_on_batched_trajectories_with_boundaries(vectorized) -> None:
-    from torchrl.objectives.value.functional import (
-        generalized_advantage_estimate as torchrl_gae,
-    )
-    from torchrl.objectives.value.functional import vec_generalized_advantage_estimate
-
+@pytest.mark.parametrize("gae_lambda", (0.0, 0.95, 1.0))
+def test_gae_matches_discounted_td_sum_on_batched_trajectories_with_boundaries(gae_lambda) -> None:
     rng = torch.Generator().manual_seed(27)
     rewards = torch.randn(11, 3, generator=rng, dtype=torch.float64)
     values = torch.randn(11, 3, generator=rng, dtype=torch.float64)
@@ -47,22 +42,27 @@ def test_gae_matches_torchrl_on_batched_trajectories_with_boundaries(vectorized)
     # PPOCollector has already added V(final_obs) to truncated rewards. GAE must
     # cut the segment at that boundary, without bootstrapping the reset observation.
     rewards[4, 1] += 0.99 * 7.0
-    expected = generalized_advantage_estimate(
-        rewards, values, dones.double(), next_value, 0.99, 0.95
+    advantages, returns = generalized_advantage_estimate(
+        rewards, values, dones.double(), next_value, 0.99, gae_lambda
     )
-    reference = vec_generalized_advantage_estimate if vectorized else torchrl_gae
-    actual = reference(
-        torch.tensor(0.99, dtype=torch.float64),
-        torch.tensor(0.95, dtype=torch.float64),
-        values.unsqueeze(-1),
-        torch.cat((values[1:], next_value.unsqueeze(0))).unsqueeze(-1),
-        rewards.unsqueeze(-1),
-        dones.unsqueeze(-1),
-        terminated=dones.unsqueeze(-1),
-        time_dim=0,
-    )
-    for left, right in zip(actual, expected, strict=True):
-        torch.testing.assert_close(left.squeeze(-1), right, rtol=1e-10, atol=1e-10)
+    # Sum future TD errors explicitly, independently of the backward recurrence.
+    expected = torch.zeros_like(rewards)
+    for env in range(rewards.shape[1]):
+        for start in range(len(rewards)):
+            terms = []
+            for step in range(start, len(rewards)):
+                delta = float(rewards[step, env] - values[step, env])
+                if not dones[step, env]:
+                    following = (
+                        next_value[env] if step == len(rewards) - 1 else values[step + 1, env]
+                    )
+                    delta += 0.99 * float(following)
+                terms.append((0.99 * gae_lambda) ** (step - start) * delta)
+                if dones[step, env]:
+                    break
+            expected[start, env] = math.fsum(terms)
+    torch.testing.assert_close(advantages, expected, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(returns, expected + values, rtol=1e-10, atol=1e-10)
 
 
 @pytest.mark.parametrize("device", ("cpu", "cuda"))
