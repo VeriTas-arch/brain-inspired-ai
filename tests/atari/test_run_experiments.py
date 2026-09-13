@@ -342,7 +342,7 @@ def test_runner_cleanup_continues_after_a_signal_failure(monkeypatch, tmp_path, 
     for process in processes:
         process.poll.return_value = None
         process.wait.side_effect = lambda timeout=None, process=process: wait(process, timeout)
-    monkeypatch.setattr(runner, "run_metadata", lambda project: {})
+    monkeypatch.setattr(runner, "run_metadata", lambda: {})
     monkeypatch.setattr(runner.os, "sched_getaffinity", lambda pid: {0, 1})
     monkeypatch.setattr(runner.os, "killpg", killpg)
     monkeypatch.setattr(runner.subprocess, "Popen", start)

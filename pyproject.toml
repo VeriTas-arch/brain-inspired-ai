@@ -17,6 +17,7 @@ dependencies = [
     "ipython>=9.17.1",
     "matplotlib>=3.11",
     "nbformat>=5.11.1",
+    "notebook>=7.5.0",
     "numpy>=2.5",
     "opencv-python>=5",
     "pillow>=12.3",
@@ -31,7 +32,7 @@ dependencies = [
 include = ["biai*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.ipynb"]
+"*" = ["*.ipynb", "README.md"]
 
 [tool.pytest.ini_options]
 addopts = ["-ra", "--strict-config", "--strict-markers"]

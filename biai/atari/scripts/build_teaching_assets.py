@@ -159,7 +159,9 @@ def build_videos(run: Path = TEACHING_RESULTS):
         json.dumps(
             {
                 "training_commits": {
-                    case: metadata["commit"] for case, metadata in data["runs"].items()
+                    case: metadata["commit"]
+                    for case, metadata in data["runs"].items()
+                    if metadata.get("commit") is not None
                 },
                 "seed": 0,
                 "start_seconds": 0,

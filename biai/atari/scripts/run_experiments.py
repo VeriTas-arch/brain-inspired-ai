@@ -611,7 +611,7 @@ def run_jobs(
             f"Run record already exists; choose a new log directory: {status_path}"
         )
     status = {
-        **run_metadata(PROJECT_ROOT),
+        **run_metadata(),
         "cases": sorted({job.case_id for job in jobs if job.case_id}),
         "pid": os.getpid(),
         "max_workers": workers,
@@ -924,7 +924,7 @@ def _dispatch_jobs(jobs, args):
             metadata = (
                 json.loads(metadata_path.read_text())
                 if metadata_path.exists()
-                else {k: record[k] for k in ("created_at", "commit", "dirty", "versions")}
+                else {k: record[k] for k in ("created_at", "versions")}
             )
             log_name = "train.log" if training else "evaluate.log"
             shutil.move(work / row["log"], directory / log_name)

@@ -1,0 +1,33 @@
+[common]
+files = ["LICENSE", "biai/__init__.py", "biai/paths.py", "biai/reproducibility.py"]
+dependencies = ["notebook", "ipykernel", "ipython", "numpy", "matplotlib", "torch"]
+
+[lessons.intro]
+title = "环境配置与 PyTorch 入门"
+files = ["biai/intro/*.py"]
+dependencies = []
+
+[lessons.mlp]
+title = "多层感知机与学习规则"
+files = ["biai/mlp/*.py"]
+dependencies = ["torchvision"]
+
+[lessons.cnn]
+title = "卷积神经网络与图像分类"
+files = ["biai/cnn/*.py"]
+dependencies = ["torchvision"]
+
+[lessons.continual_mnist]
+title = "MNIST 持续学习"
+files = ["biai/continual_mnist/*.py"]
+dependencies = ["torchvision"]
+
+[lessons.meta_learning]
+title = "少样本学习与 MAML"
+files = ["biai/meta_learning/*.py"]
+dependencies = ["torchvision", "pillow"]
+
+[lessons.atari]
+title = "Atari 强化学习"
+files = ["biai/atari/**/*.py", "assets/README.md", "assets/reference_results.json", "assets/figures/*.png", "assets/figures/*.json", "assets/videos/*.gif", "assets/videos/*.json"]
+dependencies = ["ale-py", "gymnasium", "imageio-ffmpeg", "opencv-python", "pillow", "tqdm"]

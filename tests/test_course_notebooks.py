@@ -18,7 +18,7 @@ from torchvision import datasets
 
 from biai import paths
 
-TOPICS = ("mlp", "cnn", "continual_mnist", "meta_learning", "atari")
+TOPICS = ("intro", "mlp", "cnn", "continual_mnist", "meta_learning", "atari")
 
 
 def notebook_path(topic):
@@ -129,7 +129,7 @@ def offline_data(monkeypatch, tmp_path):
     return data_dir
 
 
-@pytest.mark.parametrize("topic", TOPICS[:-1])
+@pytest.mark.parametrize("topic", TOPICS[1:-1])
 @pytest.mark.parametrize("device", ("cpu", "cuda"))
 @pytest.mark.filterwarnings("error:__array__ implementation.*:DeprecationWarning")
 def test_course_cells_train_evaluate_and_plot_offline(topic, device, offline_data, monkeypatch):

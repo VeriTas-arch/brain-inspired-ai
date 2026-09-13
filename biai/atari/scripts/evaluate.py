@@ -28,7 +28,6 @@ from biai.atari.training.results import (
     result_directory,
     run_metadata,
 )
-from biai.paths import PROJECT_ROOT
 
 
 def _evaluation_backend(agent):
@@ -421,7 +420,7 @@ def main() -> None:
     if Path(args.model).resolve().is_relative_to(output_dir.resolve()):
         raise ValueError("Evaluation output must be separate from the model directory")
     metadata = {
-        **run_metadata(PROJECT_ROOT),
+        **run_metadata(),
         "checkpoint": os.path.relpath(Path(args.model).resolve(), output_dir.resolve()),
         "checkpoint_sha256": file_digest(Path(args.model)),
     }

@@ -4,10 +4,11 @@
 
 This repository supports the Brain-Inspired Artificial Intelligence (BIAI) course: MLP, CNN,
 MNIST continual learning with EWC and replay, Omniglot/Mini-ImageNet meta-learning, and Atari RL.
-The distribution is `biai-course`; Python modules and the five notebooks live under `biai`.
+The distribution is `biai-course`; Python modules and lesson notebooks live under `biai`.
 
 - Use `README.md` for installation, running examples and code navigation. Default to VS Code
-  with the Python and Jupyter extensions. Keep installation instructions in the root README.
+  with the Python and Jupyter extensions. Each lesson's README must also work as the root README
+  of its standalone ZIP, including its dependency installation and notebook instructions.
   Use `assets/README.md` to explain Atari reference results.
 - Write teaching prose in plain Chinese and code comments/docstrings in English. Introduce terms
   before using them, explain results through specific observations, and avoid repeated caveats.
@@ -65,8 +66,8 @@ The distribution is `biai-course`; Python modules and the five notebooks live un
 
 ## Local results and reference assets
 
-- Store local runs under ignored `results/<case>/`. Record configuration, seed, Git commit, dirty
-  status and dependency versions. Do not add dated subdirectories or source copies, or recreate
+- Store local runs under ignored `results/<case>/`. Record configuration, seed, creation time and
+  dependency versions without invoking Git. Do not add dated subdirectories or source copies, or recreate
   `outputs/`, `archive/`, source manifests or compatibility links to old paths.
 - Reject existing output by default. For `--force`, write to a temporary directory and check all
   selected jobs and artifacts before replacing the selected cases. Teaching runs must complete
@@ -85,6 +86,25 @@ The distribution is `biai-course`; Python modules and the five notebooks live un
   score tables against the new data.
 
 ## Validation
+
+### Lesson exports
+
+- Maintain lesson topics, file selection and dependency names in `courses.toml`; dependency version
+  constraints belong in `pyproject.toml`. Add new topics under `biai/` with their own README and notebook.
+- Export with `direnv exec . python scripts/export_course.py intro --version 0.1.0`;
+  replace the topic to export another lesson. Add `--number 0` to assign a number at release time.
+  Keep lesson titles and READMEs independent of numbering. ZIPs go to ignored `dist/`; existing files are rejected.
+- The exporter uses the current working tree, including uncommitted edits. ZIP comments record the
+  release label, source commit and dirty status. Review the working tree before a formal release.
+- Student ZIPs put the lesson README and notebook at the root, alongside the selected `biai/` modules.
+  Rewrite and check local links after relocation. Include only selected reference assets, never local
+  datasets, results, checkpoints, caches or Git history. Do not modify source notebooks or assets on export.
+- The README dependency block is replaced with constraints from `pyproject.toml` during export.
+  Students install dependencies and run from the extracted root; installing `biai-course` is unnecessary.
+- Check extracted packages in fresh Python processes, verify that imports resolve inside the package,
+  and run the affected lesson's short execution checks. Keep release mechanics out of student lessons.
+
+### Required checks
 
 Before handing off code changes, run:
 

@@ -4,7 +4,6 @@ import hashlib
 import json
 import platform
 import shutil
-import subprocess
 import sys
 import tempfile
 from contextlib import ExitStack, contextmanager
@@ -75,18 +74,10 @@ def case_name(
     return f"{name}-seed{seed}" if seed else name
 
 
-def run_metadata(project: Path) -> dict:
-    """Record versions without copying source or requiring a clean worktree."""
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=project, capture_output=True, text=True
-    )
-    changes = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=project, capture_output=True, text=True
-    )
+def run_metadata() -> dict:
+    """Record runtime versions without inspecting Git or the source tree."""
     return {
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "commit": commit.stdout.strip() if commit.returncode == 0 else None,
-        "dirty": bool(changes.stdout) if changes.returncode == 0 else None,
         "versions": {
             "python": platform.python_version(),
             **{name: version(name) for name in ("torch", "gymnasium", "ale-py")},
@@ -110,7 +101,7 @@ def prepare_case(output_dir: Path | None, **config) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "config.json").open("x") as output:
         output.write(json.dumps(config, indent=2) + "\n")
-    metadata = {**run_metadata(PROJECT_ROOT), "case": name}
+    metadata = {**run_metadata(), "case": name}
     (output_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
     for name in ("checkpoints", "figures", "videos"):
         (output_dir / name).mkdir(exist_ok=True)

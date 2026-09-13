@@ -1,24 +1,33 @@
 # 脑启发的人工智能
 
-本仓库配套 Brain-Inspired Artificial Intelligence（BIAI）课程，包含五份 Jupyter Notebook，依次介绍神经网络的学习规则、图像分类、持续学习、元学习和强化学习。
+本仓库配套 Brain-Inspired Artificial Intelligence（BIAI）课程。从环境配置与 PyTorch 入门开始，依次学习神经网络的学习规则、图像分类、持续学习、元学习和强化学习。
 
-阅读前需要了解 Python、张量运算和梯度下降。
+环境配置与 PyTorch 入门部分需要基本的 Python 知识。后续课程会用到张量运算、自动求导和神经网络训练。
 
 ## 课程目录
 
-| 主题 | Notebook | 学习内容 |
+| 主题与说明 | Notebook | 学习内容 |
 | --- | --- | --- |
-| 多层感知机 | [MLP](biai/mlp/mlp.ipynb) | 单层与双层网络、激活函数对照、BP 与 Oja/GHA 特征学习 |
-| 卷积神经网络 | [CNN](biai/cnn/cnn.ipynb) | MNIST/CIFAR-10 的 MLP、CNN、ResNet 对照与特征图 |
-| 持续学习 | [MNIST 持续学习](biai/continual_mnist/continual_mnist.ipynb) | 比较 Task-IL 与 Class-IL，观察 EWC 和样本回放对新旧任务的影响 |
-| 元学习 | [MAML 与 FO-MAML](biai/meta_learning/meta_learning.ipynb) | Omniglot/Mini-ImageNet、MAML/FO-MAML、N-way K-shot 对照 |
-| 强化学习 | [Atari](biai/atari/atari.ipynb) | DQN、PPO、联合与顺序训练、EWC、GPM |
+| [环境配置](biai/intro/README.md) | [PyTorch 入门](biai/intro/intro.ipynb) | Conda、Jupyter、服务器 Git 克隆、张量、自动求导与小网络训练 |
+| [多层感知机](biai/mlp/README.md) | [MLP](biai/mlp/mlp.ipynb) | 单层与双层网络、激活函数对照、BP 与 Oja/GHA 特征学习 |
+| [卷积神经网络](biai/cnn/README.md) | [CNN](biai/cnn/cnn.ipynb) | MNIST/CIFAR-10 的 MLP、CNN、ResNet 对照与特征图 |
+| [持续学习](biai/continual_mnist/README.md) | [MNIST 持续学习](biai/continual_mnist/continual_mnist.ipynb) | 比较 Task-IL 与 Class-IL，观察 EWC 和样本回放对新旧任务的影响 |
+| [元学习](biai/meta_learning/README.md) | [MAML 与 FO-MAML](biai/meta_learning/meta_learning.ipynb) | Omniglot/Mini-ImageNet、MAML/FO-MAML、N-way K-shot 对照 |
+| [强化学习](biai/atari/README.md) | [Atari](biai/atari/atari.ipynb) | DQN、PPO、联合与顺序训练、EWC、GPM |
 
-前四份 Notebook 直接展示模型和训练循环。Atari 的训练代码较长，放在配套 Python 文件中，Notebook 负责讲解方法、调用训练和展示[参考结果](assets/README.md)。
+PyTorch 入门、MLP、CNN、持续学习和元学习的 Notebook 直接展示模型和训练步骤。Atari 的训练代码较长，放在配套 Python 文件中，Notebook 负责讲解方法、调用训练和展示[参考结果](assets/README.md)。
 
 ## 安装与阅读
 
-使用 Python 3.12 或更新版本，在仓库根目录安装依赖：
+### 使用每课压缩包
+
+每节课单独下载并解压，先阅读包内的 `README.md`。首次使用按[环境配置说明](biai/intro/README.md)创建 `brain_ai` 环境，后续各课沿用这个环境，按本课说明补充依赖即可。
+
+用 VS Code 打开解压目录，打开根目录的 Notebook 并选择 `brain_ai` 内核。Notebook 与 `biai/` 并列，不需要运行 `pip install -e .`，也不需要克隆课程仓库。换课时打开新的课程目录并启动新的内核；数据和结果保留在各自的课程目录中。
+
+### 使用完整仓库
+
+完整仓库中的 Notebook 按主题存放。使用 Python 3.12 或更新版本，在仓库根目录安装依赖和本地包：
 
 ```bash
 python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -26,7 +35,7 @@ python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 用 VS Code 打开仓库目录，并安装 Python 和 Jupyter 扩展。打开课程目录中的 Notebook，选择刚才安装依赖的 Python 环境作为内核，然后从顶部按顺序执行单元格。代码会自动找到仓库中的数据和素材，无需手动切换工作目录。
 
-前四份 Notebook 执行到训练单元格时会开始训练。Atari 默认使用 `--dry-run` 预览命令，移除该选项后才启动训练；已有曲线和动图可以直接查看。
+运行 PyTorch 入门、图像分类、持续学习和元学习的训练单元格时，会直接开始训练。Atari 默认使用 `--dry-run` 预览命令，移除该选项后才启动训练；已有曲线和动图可以直接查看。
 
 ## 数据与运行结果
 
@@ -43,40 +52,6 @@ Omniglot 通过 [torchvision](https://docs.pytorch.org/vision/stable/generated/t
 - `assets/`：随仓库提供的 Atari 参考结果、图表和动图。
 
 `data/` 和 `results/` 已被 Git 忽略，自己的训练结果不会覆盖 `assets/` 中的参考素材。
-
-## 运行 Atari 案例
-
-默认案例分别用 DQN 和 PPO 进行单任务、联合与顺序训练，顺序训练另有 EWC 和 GPM 两组对照。单任务使用 Pong 和 Breakout；联合训练使用三个游戏，顺序训练则依次学习 Pong、Breakout 和 Space Invaders。
-
-以下命令在仓库根目录执行。先预览全部 12 个案例：
-
-```bash
-python -m biai.atari.scripts.run_experiments train teaching --dry-run
-```
-
-先用短训练检查训练、模型保存和独立评估流程，结果保存在 `results/smoke/`：
-
-```bash
-python -m biai.atari.scripts.run_experiments train teaching --smoke
-```
-
-检查通过后运行完整训练，结果按案例保存在 `results/` 下：
-
-```bash
-python -m biai.atari.scripts.run_experiments train teaching
-```
-
-上面 12 个案例的训练步数不完全相同。若想在相同交互次数下比较训练方式，可以加入 `--matched-budget`：它增加 Space Invaders 的单任务对照，共运行 14 个案例，并让每个游戏在各训练方式下都获得 500,000 步交互。
-
-```bash
-python -m biai.atari.scripts.run_experiments train teaching --matched-budget --dry-run
-```
-
-这条命令仍只预览。将 `--dry-run` 换成 `--smoke` 可执行短训练，结果保存在 `results/atari-matched-smoke/`；直接移除 `--dry-run` 则执行完整训练，结果保存在 `results/atari-matched/`。完成后可在 Atari Notebook 的相同交互预算对照一节查看结果。
-
-这些命令默认使用随机种子 `0`，DQN 和 PPO 均使用 8 个并行环境。各案例的训练步数和已有分数见[参考结果](assets/README.md)；若只想运行其中一个案例，可以使用 Atari Notebook 中的对应命令。
-
-已有结果默认保留。需要重跑时加上 `--force`，程序会在所选案例的训练与评估都成功后替换旧结果。其他参数见 `python -m biai.atari.scripts.run_experiments --help`。
 
 ## 阅读代码
 

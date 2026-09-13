@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import subprocess
 
 import pytest
 
@@ -13,7 +14,19 @@ from biai.atari.training.results import (
     prepare_case,
     publish_outputs,
     result_directory,
+    run_metadata,
 )
+
+
+def test_run_metadata_does_not_invoke_git(monkeypatch):
+    def reject_subprocess(*args, **kwargs):
+        pytest.fail("Runtime metadata must not invoke external commands")
+
+    monkeypatch.setattr(subprocess, "run", reject_subprocess)
+    metadata = run_metadata()
+    assert "created_at" in metadata
+    assert {"python", "torch", "gymnasium", "ale-py"} == metadata["versions"].keys()
+    assert "commit" not in metadata and "dirty" not in metadata
 
 
 @pytest.mark.parametrize("seed", (0, 17))
