@@ -162,6 +162,180 @@ def plot_forgetting_curves(eval_history: dict, output_path: Path) -> bool:
     return True
 
 
+def _create_agent(algorithm, task_id, action_dim, *, env_backend, use_ewc, ewc_lambda):
+    """Create the first task head, then attach EWC when selected."""
+    if algorithm == "dqn":
+        base_agent = MultiHeadDQNAgent(
+            state_dim=4,
+            lr=1e-4,
+            gamma=0.99,
+        )
+        base_agent.register_task(task_id, action_dim)
+        base_agent.set_task(task_id)
+    else:  # ppo
+        base_agent = MultiHeadPPOAgent(
+            state_dim=4,
+            lr=2.5e-4,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_coef=0.1,
+            ent_coef=0.01,
+            vf_coef=0.5,
+            max_grad_norm=0.5,
+        )
+        base_agent.register_task(task_id, action_dim)
+        base_agent.set_task(task_id)
+
+    base_agent.environment_protocol = observation_protocol(env_backend)
+    agent = EWCWrapper(base_agent, ewc_lambda=ewc_lambda) if use_ewc else base_agent
+    return base_agent, agent
+
+
+def _record_initialization(base_agent, task_id, *, algorithm, first_task, initialization, exp_root):
+    """Record the shared backbone once and each task head before training it."""
+    modules = {"backbone": base_agent.backbone} if first_task else {}
+    modules.update(
+        {"head": base_agent.heads[task_id]}
+        if algorithm == "dqn"
+        else {"actor": base_agent.actors[task_id], "critic": base_agent.critics[task_id]}
+    )
+    initialization[task_id] = {name: parameter_digest(module) for name, module in modules.items()}
+    (exp_root / "initialization.json").write_text(json.dumps(initialization, indent=2) + "\n")
+
+
+def _evaluate_seen_tasks(
+    agent,
+    completed_games,
+    *,
+    game_seeds,
+    env_backend,
+    eval_episodes,
+    eval_max_steps,
+    final_evaluation,
+    eval_history,
+):
+    """Evaluate retention after a stage, reusing its final periodic score when available."""
+    game_name = completed_games[-1]
+    stage_rewards = {}
+    for eval_game in completed_games:
+        agent.set_task(eval_game)
+
+        if eval_game == game_name and final_evaluation is not None:
+            # Same weights, task, seed, episode count, and step limit as the final periodic evaluation.
+            episode_eval_rewards = list(final_evaluation["rewards"])
+        else:
+            eval_env = AtariEnv(
+                eval_game, training=False, seed=game_seeds[eval_game], backend=env_backend
+            )
+            try:
+                episode_eval_rewards = run_evaluation_episodes(
+                    agent, eval_env, eval_episodes, eval_max_steps
+                )
+            finally:
+                eval_env.close()
+        stage_rewards[eval_game] = episode_eval_rewards
+        avg_eval_reward = sum(episode_eval_rewards) / len(episode_eval_rewards)
+
+        eval_history[eval_game].append((len(completed_games), avg_eval_reward))
+        print(f"[Eval] After task {game_name}, on {eval_game}: avg reward {avg_eval_reward:.2f}")
+    return stage_rewards
+
+
+def _save_results(exp_root, continual_metrics, eval_history, evaluation_report):
+    """Draw training and retention curves, then save the completed sequence summary."""
+    metrics_plotter = MetricsPlotter()
+    for name, values in continual_metrics.items():
+        for v in values:
+            metrics_plotter.add_metric(name, v)
+
+    exp_root.mkdir(parents=True, exist_ok=True)
+
+    metrics_output_path = exp_root / "figures" / "training_metrics.png"
+    metrics_plotter.plot(str(metrics_output_path))
+    print(f"Continual metrics plot saved: {metrics_output_path}")
+
+    eval_metrics_path = exp_root / "figures" / "forgetting_eval.png"
+    plot_forgetting_curves(eval_history, eval_metrics_path)
+
+    evaluation_report = {
+        "checkpoint_sha256": file_digest(exp_root / "checkpoints" / "final.pt"),
+        **evaluation_report,
+    }
+    evaluation_path = exp_root / "training_summary.json"
+    with evaluation_path.open("w", encoding="utf-8") as output_file:
+        json.dump(evaluation_report, output_file, indent=2)
+    print(f"Continual evaluation data saved: {evaluation_path}")
+
+
+def _train_dqn_stage(
+    collector,
+    *,
+    stage_steps,
+    batch_size,
+    video_recorder,
+    dqn_metrics,
+    pbar,
+    record_evaluation,
+):
+    """Run one task with fresh replay and the DQN transition/update clock."""
+    step = 0
+    episode_rewards = []
+    while step < stage_steps:
+        completed, frame = collector.collect()
+        if video_recorder is not None and (step // collector.num_envs) % 2 == 0:
+            video_recorder.add_frame(frame.cpu().numpy())
+        for _ in range(
+            dqn_updates_due(
+                step,
+                collector.num_envs,
+                learning_starts=DEFAULT_DQN_LEARNING_STARTS,
+                frequency=4,
+            )
+        ):
+            if collector.replay.is_ready(batch_size):
+                collector.agent.update(
+                    collector.replay.sample(batch_size), metrics_sink=dqn_metrics.record
+                )
+        step += collector.num_envs
+        pbar.update(collector.num_envs)
+        episode_rewards.extend(completed)
+        record_evaluation(step)
+    return episode_rewards
+
+
+def _train_ppo_stage(
+    collector,
+    learner,
+    *,
+    stage_steps,
+    pbar,
+    continual_metrics,
+    game_name,
+    record_evaluation,
+):
+    """Finish each rollout before updating, and retain the last batch for EWC."""
+    step = 0
+    episode_rewards = []
+    while step < stage_steps:
+        rollout = collector.collect(stage_steps - step)
+        metrics = learner.update(rollout)
+        step += rollout.transition_count
+        episode_count = collector.episode_count
+        episode_rewards.extend(rollout.episode_returns)
+        if step == stage_steps:
+            last_rollout_data = flatten_rollout_data(rollout.data, clone=True)
+
+        pbar.set_postfix({**metrics, "episodes": episode_count}, refresh=False)
+        for metric_name in ("policy_loss", "value_loss", "entropy", "ewc_loss"):
+            if metric_name in metrics:
+                continual_metrics.setdefault(game_name + f"_{metric_name}", []).append(
+                    metrics[metric_name]
+                )
+        pbar.update(rollout.transition_count)
+        record_evaluation(step)
+    return episode_rewards, last_rollout_data
+
+
 def train_continual(
     games: list = None,
     algorithm: str = "dqn",
@@ -307,30 +481,14 @@ def train_continual(
             task_id = game_name
 
             if agent is None:
-                if algorithm == "dqn":
-                    base_agent = MultiHeadDQNAgent(
-                        state_dim=4,
-                        lr=1e-4,
-                        gamma=0.99,
-                    )
-                    base_agent.register_task(task_id, action_dim)
-                    base_agent.set_task(task_id)
-                else:  # ppo
-                    base_agent = MultiHeadPPOAgent(
-                        state_dim=4,
-                        lr=2.5e-4,
-                        gamma=0.99,
-                        gae_lambda=0.95,
-                        clip_coef=0.1,
-                        ent_coef=0.01,
-                        vf_coef=0.5,
-                        max_grad_norm=0.5,
-                    )
-                    base_agent.register_task(task_id, action_dim)
-                    base_agent.set_task(task_id)
-
-                base_agent.environment_protocol = observation_protocol(env_backend)
-                agent = EWCWrapper(base_agent, ewc_lambda=ewc_lambda) if use_ewc else base_agent
+                base_agent, agent = _create_agent(
+                    algorithm,
+                    task_id,
+                    action_dim,
+                    env_backend=env_backend,
+                    use_ewc=use_ewc,
+                    ewc_lambda=ewc_lambda,
+                )
             else:
                 # Match new-head initialization without resetting rollout/minibatch RNG streams.
                 devices = [agent.device.index or 0] if agent.device.type == "cuda" else []
@@ -339,28 +497,20 @@ def train_continual(
                     agent.register_task(task_id, action_dim)
                 agent.set_task(task_id)
 
-            modules = {"backbone": base_agent.backbone} if game_idx == 0 else {}
-            modules.update(
-                {"head": base_agent.heads[task_id]}
-                if algorithm == "dqn"
-                else {"actor": base_agent.actors[task_id], "critic": base_agent.critics[task_id]}
-            )
-            initialization[game_name] = {
-                name: parameter_digest(module) for name, module in modules.items()
-            }
-            (exp_root / "initialization.json").write_text(
-                json.dumps(initialization, indent=2) + "\n"
+            _record_initialization(
+                base_agent,
+                task_id,
+                algorithm=algorithm,
+                first_task=game_idx == 0,
+                initialization=initialization,
+                exp_root=exp_root,
             )
 
             # Initialize buffers and training parameters based on algorithm
             if algorithm == "dqn":
                 agent.configure_runtime(compile_enabled=compile_dqn)
-                learning_starts = DEFAULT_DQN_LEARNING_STARTS
-                train_frequency = 4
                 buffer = ReplayBuffer(capacity=100000, seed=(seed, game_idx, 1))
             else:  # ppo
-                learning_starts = 0
-                train_frequency = 1
                 rollout_length = 128
                 update_epochs = 4
                 minibatch_size = batch_size
@@ -398,9 +548,6 @@ def train_continual(
                 collector = DQNCollector(
                     env, agent, buffer, vectorized=num_envs > 1 or env_backend != "sync"
                 )
-            episode_rewards = []
-            episode_count = 0
-            step = 0
             last_rollout_data = None
             learning_evaluations = []
             evaluation_targets = iter(evaluation_steps[game_name])
@@ -436,42 +583,8 @@ def train_continual(
             if dqn_metrics is not None:
                 resources.callback(dqn_metrics.flush)
 
-            while step < stage_steps:
-                if algorithm == "dqn":
-                    completed, frame = collector.collect()
-                    if video_recorder is not None and (step // num_envs) % 2 == 0:
-                        video_recorder.add_frame(frame.cpu().numpy())
-                    for _ in range(
-                        dqn_updates_due(
-                            step,
-                            num_envs,
-                            learning_starts=learning_starts,
-                            frequency=train_frequency,
-                        )
-                    ):
-                        if buffer.is_ready(batch_size):
-                            agent.update(buffer.sample(batch_size), metrics_sink=dqn_metrics.record)
-                    step += num_envs
-                    pbar.update(num_envs)
-                    episode_rewards.extend(completed)
-
-                else:  # ppo
-                    rollout = collector.collect(stage_steps - step)
-                    metrics = learner.update(rollout)
-                    step += rollout.transition_count
-                    episode_count = collector.episode_count
-                    episode_rewards.extend(rollout.episode_returns)
-                    if step == stage_steps:
-                        last_rollout_data = flatten_rollout_data(rollout.data, clone=True)
-
-                    pbar.set_postfix({**metrics, "episodes": episode_count}, refresh=False)
-                    for metric_name in ("policy_loss", "value_loss", "entropy", "ewc_loss"):
-                        if metric_name in metrics:
-                            continual_metrics.setdefault(game_name + f"_{metric_name}", []).append(
-                                metrics[metric_name]
-                            )
-                    pbar.update(rollout.transition_count)
-
+            def record_evaluation(step):
+                nonlocal next_evaluation
                 if next_evaluation is not None and step >= next_evaluation:
                     if dqn_metrics is not None:
                         dqn_metrics.flush()
@@ -503,37 +616,45 @@ def train_continual(
                     )
                     next_evaluation = next(evaluation_targets, None)
 
+            if algorithm == "dqn":
+                episode_rewards = _train_dqn_stage(
+                    collector,
+                    stage_steps=stage_steps,
+                    batch_size=batch_size,
+                    video_recorder=video_recorder,
+                    dqn_metrics=dqn_metrics,
+                    pbar=pbar,
+                    record_evaluation=record_evaluation,
+                )
+            else:
+                episode_rewards, last_rollout_data = _train_ppo_stage(
+                    collector,
+                    learner,
+                    stage_steps=stage_steps,
+                    pbar=pbar,
+                    continual_metrics=continual_metrics,
+                    game_name=game_name,
+                    record_evaluation=record_evaluation,
+                )
+
         if episode_rewards:
             continual_metrics.setdefault(game_name + "_episode_reward", []).extend(episode_rewards)
 
-        stage_rewards = {}
-        for eval_game in games[: game_idx + 1]:
-            agent.set_task(eval_game)
-
-            if (
-                eval_game == game_name
-                and learning_evaluations
-                and learning_evaluations[-1]["step"] == stage_steps
-            ):
-                # Same weights, task, seed, episode count, and step limit as the final periodic evaluation.
-                episode_eval_rewards = list(learning_evaluations[-1]["rewards"])
-            else:
-                eval_env = AtariEnv(
-                    eval_game, training=False, seed=game_seeds[eval_game], backend=env_backend
-                )
-                try:
-                    episode_eval_rewards = run_evaluation_episodes(
-                        agent, eval_env, eval_episodes, eval_max_steps
-                    )
-                finally:
-                    eval_env.close()
-            stage_rewards[eval_game] = episode_eval_rewards
-            avg_eval_reward = sum(episode_eval_rewards) / len(episode_eval_rewards)
-
-            eval_history[eval_game].append((game_idx + 1, avg_eval_reward))
-            print(
-                f"[Eval] After task {game_name}, on {eval_game}: avg reward {avg_eval_reward:.2f}"
-            )
+        final_evaluation = (
+            learning_evaluations[-1]
+            if learning_evaluations and learning_evaluations[-1]["step"] == stage_steps
+            else None
+        )
+        stage_rewards = _evaluate_seen_tasks(
+            agent,
+            games[: game_idx + 1],
+            game_seeds=game_seeds,
+            env_backend=env_backend,
+            eval_episodes=eval_episodes,
+            eval_max_steps=eval_max_steps,
+            final_evaluation=final_evaluation,
+            eval_history=eval_history,
+        )
 
         stage_episode_rewards.append(
             {
@@ -615,22 +736,7 @@ def train_continual(
             json.dumps(checkpoint["training_stage"], indent=2), encoding="utf-8"
         )
 
-    metrics_plotter = MetricsPlotter()
-    for name, values in continual_metrics.items():
-        for v in values:
-            metrics_plotter.add_metric(name, v)
-
-    exp_root.mkdir(parents=True, exist_ok=True)
-
-    metrics_output_path = exp_root / "figures" / "training_metrics.png"
-    metrics_plotter.plot(str(metrics_output_path))
-    print(f"Continual metrics plot saved: {metrics_output_path}")
-
-    eval_metrics_path = exp_root / "figures" / "forgetting_eval.png"
-    plot_forgetting_curves(eval_history, eval_metrics_path)
-
     evaluation_report = {
-        "checkpoint_sha256": file_digest(checkpoint_dir / "final.pt"),
         "algorithm": algorithm,
         "method": method,
         "initialization": "random",
@@ -665,10 +771,7 @@ def train_continual(
         "gpm_diagnostics": gpm_diagnostics if method == "gpm" else None,
         **build_evaluation_report(eval_history, games),
     }
-    evaluation_path = exp_root / "training_summary.json"
-    with evaluation_path.open("w", encoding="utf-8") as output_file:
-        json.dump(evaluation_report, output_file, indent=2)
-    print(f"Continual evaluation data saved: {evaluation_path}")
+    _save_results(exp_root, continual_metrics, eval_history, evaluation_report)
 
 
 if __name__ == "__main__":

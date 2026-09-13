@@ -38,6 +38,82 @@ from biai.atari.training.results import (
 from biai.paths import RESULTS_DIR
 
 
+def _save_results(exp_dir, agent, metrics_plotter, episode_rewards, *, games, summary, started_at):
+    """Save the trained model, learning curves, and final run measurements."""
+    # Print training summary
+    print(f"\n{'=' * 60}")
+    print("Multi-task Training Summary")
+    print(f"{'=' * 60}")
+    for game_name in games:
+        if episode_rewards[game_name]:
+            avg_reward = sum(episode_rewards[game_name]) / len(episode_rewards[game_name])
+            last_n = min(20, len(episode_rewards[game_name]))
+            avg_last_n = sum(episode_rewards[game_name][-last_n:]) / last_n if last_n > 0 else 0.0
+            print(f"\n{game_name}:")
+            print(f"  Total episodes: {len(episode_rewards[game_name])}")
+            print(f"  Average episode reward: {avg_reward:.2f}")
+            print(f"  Average reward over last {last_n} episodes: {avg_last_n:.2f}")
+
+    # Save metrics plot
+    metrics_output_path = exp_dir / "figures" / "training_metrics.png"
+    metrics_plotter.plot(str(metrics_output_path))
+    print(f"\nMetrics plot saved: {metrics_output_path}")
+
+    checkpoint_path = exp_dir / "checkpoints" / "final.pt"
+    agent.save(str(checkpoint_path))
+    print(f"Agent saved: {checkpoint_path}")
+
+    summary = {
+        "checkpoint_sha256": file_digest(checkpoint_path),
+        **summary,
+        "elapsed_seconds": time.perf_counter() - started_at,
+    }
+    (exp_dir / "training_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
+def _create_agent(algorithm):
+    """Initialize the algorithm with the teaching profile hyperparameters."""
+    if algorithm == "dqn":
+        return MultiHeadDQNAgent(
+            state_dim=4,
+            lr=1e-4,
+            gamma=0.99,
+        )
+    return MultiHeadPPOAgent(
+        state_dim=4,
+        lr=2.5e-4,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_coef=0.1,
+        ent_coef=0.01,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+    )
+
+
+def _create_environments(games, algorithm, *, seed, num_envs, env_backend, env_threads, resources):
+    """Open each game and register cleanup before constructing the next one."""
+    # Initialize environments and get action dimensions
+    envs = {}
+    action_dims = {}
+    for game_index, game_name in enumerate(games):
+        env = (
+            make_vector_atari_env(
+                game_name,
+                num_envs,
+                backend=env_backend,
+                seed=seed + game_index,
+                num_threads=env_threads,
+            )
+            if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
+            else AtariEnv(game_name, seed=seed + game_index)
+        )
+        resources.callback(env.close)
+        envs[game_name] = env
+        action_dims[game_name] = env.action_space
+    return envs, action_dims
+
+
 def train_multitask(
     games: list = None,
     algorithm: str = "dqn",
@@ -100,32 +176,19 @@ def train_multitask(
     print(f"Total steps: {total_steps}")
 
     with ExitStack() as resources:
-        # Initialize environments and get action dimensions
-        envs = {}
-        action_dims = {}
-        for game_index, game_name in enumerate(games):
-            env = (
-                make_vector_atari_env(
-                    game_name,
-                    num_envs,
-                    backend=env_backend,
-                    seed=seed + game_index,
-                    num_threads=env_threads,
-                )
-                if algorithm == "ppo" or num_envs > 1 or env_backend != "sync"
-                else AtariEnv(game_name, seed=seed + game_index)
-            )
-            resources.callback(env.close)
-            envs[game_name] = env
-            action_dims[game_name] = env.action_space
+        envs, action_dims = _create_environments(
+            games,
+            algorithm,
+            seed=seed,
+            num_envs=num_envs,
+            env_backend=env_backend,
+            env_threads=env_threads,
+            resources=resources,
+        )
 
         # Initialize agent with multi-head architecture
+        agent = _create_agent(algorithm)
         if algorithm == "dqn":
-            agent = MultiHeadDQNAgent(
-                state_dim=4,
-                lr=1e-4,
-                gamma=0.99,
-            )
             learning_starts = DEFAULT_DQN_LEARNING_STARTS
             train_frequency = 4
             buffers = {
@@ -133,16 +196,6 @@ def train_multitask(
                 for index, game in enumerate(games)
             }
         else:  # ppo
-            agent = MultiHeadPPOAgent(
-                state_dim=4,
-                lr=2.5e-4,
-                gamma=0.99,
-                gae_lambda=0.95,
-                clip_coef=0.1,
-                ent_coef=0.01,
-                vf_coef=0.5,
-                max_grad_norm=0.5,
-            )
             learning_starts = 0
             train_frequency = 1
             rollout_length = 128
@@ -270,64 +323,39 @@ def train_multitask(
                 refresh=False,
             )
 
-    # Print training summary
-    print(f"\n{'=' * 60}")
-    print("Multi-task Training Summary")
-    print(f"{'=' * 60}")
-    for game_name in games:
-        if episode_rewards[game_name]:
-            avg_reward = sum(episode_rewards[game_name]) / len(episode_rewards[game_name])
-            last_n = min(20, len(episode_rewards[game_name]))
-            avg_last_n = sum(episode_rewards[game_name][-last_n:]) / last_n if last_n > 0 else 0.0
-            print(f"\n{game_name}:")
-            print(f"  Total episodes: {len(episode_rewards[game_name])}")
-            print(f"  Average episode reward: {avg_reward:.2f}")
-            print(f"  Average reward over last {last_n} episodes: {avg_last_n:.2f}")
-
-    # Save metrics plot
-    metrics_output_path = exp_dir / "figures" / "training_metrics.png"
-    metrics_plotter.plot(str(metrics_output_path))
-    print(f"\nMetrics plot saved: {metrics_output_path}")
-
-    checkpoint_path = exp_dir / "checkpoints" / "final.pt"
-    agent.save(str(checkpoint_path))
-    print(f"Agent saved: {checkpoint_path}")
-
-    (exp_dir / "training_summary.json").write_text(
-        json.dumps(
-            {
-                "checkpoint_sha256": file_digest(checkpoint_path),
-                "algorithm": algorithm,
-                "seed": seed,
-                "deterministic": deterministic,
-                "total_steps": step,
-                "elapsed_seconds": time.perf_counter() - started_at,
-                "task_steps": task_steps,
-                "steps_per_game": steps_per_game,
-                "task_selection": "uniform_remaining_quota"
-                if steps_per_game is not None
-                else "uniform",
-                "num_envs": num_envs,
-                "env_backend": env_backend,
-                "env_threads": env_threads,
-                "environment_protocol": agent.environment_protocol,
-                "task_sampling": "one_task_per_rollout"
-                if algorithm == "ppo"
-                else "one_task_per_environment_batch",
-                "replay_sampler": "independent_pcg64_without_replacement"
-                if algorithm == "dqn"
-                else None,
-                "replay_seeds": {game: [seed, index, 1] for index, game in enumerate(games)}
-                if algorithm == "dqn"
-                else None,
-                "optimizer_steps": agent.update_count if algorithm == "dqn" else None,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    _save_results(
+        exp_dir,
+        agent,
+        metrics_plotter,
+        episode_rewards,
+        games=games,
+        started_at=started_at,
+        summary={
+            "algorithm": algorithm,
+            "seed": seed,
+            "deterministic": deterministic,
+            "total_steps": step,
+            "task_steps": task_steps,
+            "steps_per_game": steps_per_game,
+            "task_selection": "uniform_remaining_quota"
+            if steps_per_game is not None
+            else "uniform",
+            "num_envs": num_envs,
+            "env_backend": env_backend,
+            "env_threads": env_threads,
+            "environment_protocol": agent.environment_protocol,
+            "task_sampling": "one_task_per_rollout"
+            if algorithm == "ppo"
+            else "one_task_per_environment_batch",
+            "replay_sampler": "independent_pcg64_without_replacement"
+            if algorithm == "dqn"
+            else None,
+            "replay_seeds": {game: [seed, index, 1] for index, game in enumerate(games)}
+            if algorithm == "dqn"
+            else None,
+            "optimizer_steps": agent.update_count if algorithm == "dqn" else None,
+        },
     )
-
-    # Save model checkpoint
 
 
 if __name__ == "__main__":

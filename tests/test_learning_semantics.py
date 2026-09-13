@@ -221,7 +221,7 @@ def test_meta_methods_share_initialization_and_training_episodes(monkeypatch):
             2,
             1,
             1,
-            n_meta_epochs=2,
+            n_meta_updates=2,
             n_tasks_per_batch=1,
             validation_every=1,
             validation_steps=1,

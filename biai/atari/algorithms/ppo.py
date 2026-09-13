@@ -24,7 +24,13 @@ def generalized_advantage_estimate(
     gamma: float,
     gae_lambda: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute GAE when ``dones[t]`` describes the transition at index ``t``."""
+    """Compute advantages and value targets along the time axis.
+
+    Rewards, values, and dones have shape [T, N], or [T] for one environment.
+    next_value has one value per environment; both outputs match rewards.shape.
+    dones[t] marks the end of transition t, so the recurrence never crosses a
+    reset. The collector adds time-limit bootstrap values to rewards beforehand.
+    """
     advantages = torch.zeros_like(rewards)
     last_advantage = torch.zeros_like(next_value)
 
@@ -58,7 +64,12 @@ def ppo_minibatch_loss(
     torch.Tensor,
     torch.Tensor,
 ]:
-    """Compute one PPO minibatch objective and its diagnostics."""
+    """Compute one PPO minibatch objective and its diagnostics.
+
+    States have shape [B, C, H, W]; actions and the stored scalar quantities
+    have shape [B]. Return six scalar tensors: total loss, policy loss, value
+    loss, mean entropy, approximate KL divergence, and clip fraction.
+    """
     _, new_log_probs, entropy, new_values = policy_evaluator(states, actions)
     new_log_probs = new_log_probs.flatten()
     new_values = new_values.flatten()

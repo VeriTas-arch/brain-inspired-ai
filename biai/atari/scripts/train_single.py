@@ -40,6 +40,84 @@ from biai.atari.training.results import (
 from biai.paths import RESULTS_DIR
 
 
+def _save_results(exp_dir, agent, metrics_plotter, episode_rewards, *, summary, started_at):
+    """Save the trained model, learning curves, and final run measurements."""
+    if episode_rewards:
+        avg_reward = sum(episode_rewards) / len(episode_rewards)
+        last_n = min(20, len(episode_rewards))
+        avg_last_n = sum(episode_rewards[-last_n:]) / last_n
+        print(f"\n{'=' * 60}")
+        print("Training Summary")
+        print(f"{'=' * 60}")
+        print(f"Total episodes: {len(episode_rewards)}")
+        print(f"Average episode reward: {avg_reward:.2f}")
+        print(f"Average reward over last {last_n} episodes: {avg_last_n:.2f}")
+
+        if len(episode_rewards) >= 20:
+            first_10 = sum(episode_rewards[:10]) / 10
+            last_10 = sum(episode_rewards[-10:]) / 10
+            print("\nReward Progression:")
+            print(f"  First 10 episodes: {first_10:.2f}")
+            print(f"  Last 10 episodes: {last_10:.2f}")
+            improvement = last_10 - first_10
+            print(f"  Improvement: {improvement:+.2f}")
+            if improvement > 0:
+                print("  ✓ Agent is learning!")
+            elif improvement < -1:
+                print("  ⚠ Agent performance decreased")
+            else:
+                print("  → Agent performance stable")
+
+        best_ep = max(episode_rewards)
+        worst_ep = min(episode_rewards)
+        print(f"\nBest episode reward: {best_ep:.2f}")
+        print(f"Worst episode reward: {worst_ep:.2f}")
+        print(f"{'=' * 60}")
+
+    metrics_output_path = exp_dir / "figures" / "metrics.png"
+    metrics_plotter.plot(str(metrics_output_path))
+    print(f"Metrics plot saved to {metrics_output_path}")
+
+    checkpoint_path = exp_dir / "checkpoints" / "final.pt"
+    agent.save(str(checkpoint_path))
+    print(f"Agent saved to {checkpoint_path}")
+
+    summary = {
+        "checkpoint_sha256": file_digest(checkpoint_path),
+        **summary,
+        "elapsed_seconds": time.perf_counter() - started_at,
+    }
+    (exp_dir / "training_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+
+def _create_agent(algorithm, action_dim, num_steps):
+    """Initialize the algorithm with the teaching profile hyperparameters."""
+    if algorithm == "dqn":
+        return DQNAgent(
+            state_dim=4,
+            action_dim=action_dim,
+            lr=1e-4,
+            gamma=0.99,
+            epsilon_start=1.0,
+            epsilon_end=0.01,
+            epsilon_fraction=0.10,
+            total_timesteps=num_steps,
+            target_update_freq=1000,
+            tau=1.0,
+        )
+    return PPOAgent(
+        state_dim=4,
+        action_dim=action_dim,
+        lr=2.5e-4,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_coef=0.1,
+        ent_coef=0.01,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+    )
+
+
 def train_single_game(
     game_name: str = "Pong-v5",
     algorithm: str = "dqn",
@@ -123,35 +201,13 @@ def train_single_game(
         )
         resources.callback(env.close)
 
+        agent = _create_agent(algorithm, env.action_space, num_steps)
         if algorithm == "dqn":
-            agent = DQNAgent(
-                state_dim=4,
-                action_dim=env.action_space,
-                lr=1e-4,
-                gamma=0.99,
-                epsilon_start=1.0,
-                epsilon_end=0.01,
-                epsilon_fraction=0.10,
-                total_timesteps=num_steps,
-                target_update_freq=1000,
-                tau=1.0,
-            )
             agent.configure_runtime(compile_enabled=compile_dqn)
             learning_starts = DEFAULT_DQN_LEARNING_STARTS
             train_frequency = 4
             buffer = ReplayBuffer(capacity=100000, seed=(seed, 0, 1))
         else:
-            agent = PPOAgent(
-                state_dim=4,
-                action_dim=env.action_space,
-                lr=2.5e-4,
-                gamma=0.99,
-                gae_lambda=0.95,
-                clip_coef=0.1,
-                ent_coef=0.01,
-                vf_coef=0.5,
-                max_grad_norm=0.5,
-            )
             learning_starts = 0
             train_frequency = 1
             rollout_length = 128
@@ -282,72 +338,31 @@ def train_single_game(
                 print(f"[Eval] step={step}, mean raw reward={evaluations[-1]['mean_raw_reward']}")
                 next_evaluation = next(evaluation_targets, None)
 
-    if episode_rewards:
-        avg_reward = sum(episode_rewards) / len(episode_rewards)
-        last_n = min(20, len(episode_rewards))
-        avg_last_n = sum(episode_rewards[-last_n:]) / last_n
-        print(f"\n{'=' * 60}")
-        print("Training Summary")
-        print(f"{'=' * 60}")
-        print(f"Total episodes: {len(episode_rewards)}")
-        print(f"Average episode reward: {avg_reward:.2f}")
-        print(f"Average reward over last {last_n} episodes: {avg_last_n:.2f}")
-
-        if len(episode_rewards) >= 20:
-            first_10 = sum(episode_rewards[:10]) / 10
-            last_10 = sum(episode_rewards[-10:]) / 10
-            print("\nReward Progression:")
-            print(f"  First 10 episodes: {first_10:.2f}")
-            print(f"  Last 10 episodes: {last_10:.2f}")
-            improvement = last_10 - first_10
-            print(f"  Improvement: {improvement:+.2f}")
-            if improvement > 0:
-                print("  ✓ Agent is learning!")
-            elif improvement < -1:
-                print("  ⚠ Agent performance decreased")
-            else:
-                print("  → Agent performance stable")
-
-        best_ep = max(episode_rewards)
-        worst_ep = min(episode_rewards)
-        print(f"\nBest episode reward: {best_ep:.2f}")
-        print(f"Worst episode reward: {worst_ep:.2f}")
-        print(f"{'=' * 60}")
-
-    metrics_output_path = exp_dir / "figures" / "metrics.png"
-    metrics_plotter.plot(str(metrics_output_path))
-    print(f"Metrics plot saved to {metrics_output_path}")
-
-    checkpoint_path = exp_dir / "checkpoints" / "final.pt"
-    agent.save(str(checkpoint_path))
-    print(f"Agent saved to {checkpoint_path}")
-
-    (exp_dir / "training_summary.json").write_text(
-        json.dumps(
-            {
-                "checkpoint_sha256": file_digest(checkpoint_path),
-                "algorithm": algorithm,
-                "seed": seed,
-                "deterministic": deterministic,
-                "total_steps": step,
-                "eval_points": eval_points,
-                "evaluation_steps": evaluation_steps,
-                "num_envs": num_envs,
-                "env_backend": env_backend,
-                "env_threads": env_threads,
-                "environment_protocol": agent.environment_protocol,
-                "compile_ppo": compile_ppo,
-                "compile_dqn": compile_dqn,
-                "replay_sampler": "independent_pcg64_without_replacement"
-                if algorithm == "dqn"
-                else None,
-                "replay_seed": [seed, 0, 1] if algorithm == "dqn" else None,
-                "optimizer_steps": agent.update_count if algorithm == "dqn" else None,
-                "elapsed_seconds": time.perf_counter() - started_at,
-            },
-            indent=2,
-        )
-        + "\n"
+    _save_results(
+        exp_dir,
+        agent,
+        metrics_plotter,
+        episode_rewards,
+        started_at=started_at,
+        summary={
+            "algorithm": algorithm,
+            "seed": seed,
+            "deterministic": deterministic,
+            "total_steps": step,
+            "eval_points": eval_points,
+            "evaluation_steps": evaluation_steps,
+            "num_envs": num_envs,
+            "env_backend": env_backend,
+            "env_threads": env_threads,
+            "environment_protocol": agent.environment_protocol,
+            "compile_ppo": compile_ppo,
+            "compile_dqn": compile_dqn,
+            "replay_sampler": "independent_pcg64_without_replacement"
+            if algorithm == "dqn"
+            else None,
+            "replay_seed": [seed, 0, 1] if algorithm == "dqn" else None,
+            "optimizer_steps": agent.update_count if algorithm == "dqn" else None,
+        },
     )
 
 

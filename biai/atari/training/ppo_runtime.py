@@ -61,7 +61,19 @@ class PPOPolicy(Protocol):
 
 @dataclass(frozen=True)
 class CollectedRollout:
-    """A rollout batch and the events observed while collecting it."""
+    """A time-ordered rollout and the completed episodes observed during collection.
+
+    For T steps and N > 1 environments, data contains states [T, N, C, H, W]
+    and actions, log_probs, values, rewards, dones [T, N]. With one environment,
+    the N axis is omitted. next_value has shape [N]; transition_count is T * N.
+    Keep the time/environment axes until GAE is computed, then flatten for SGD.
+
+    States retain pixel values in [0, 255] on the policy device. Log probabilities
+    and values also stay there; actions, rewards, and dones are on CPU. Rewards
+    include time-limit bootstrap corrections, while episode_returns are raw
+    environment returns. dones marks either termination or truncation.
+    The data tensors are buffer views; the next collect call reuses their storage.
+    """
 
     data: dict[str, torch.Tensor]
     next_value: torch.Tensor
@@ -72,7 +84,12 @@ class CollectedRollout:
 def flatten_rollout_data(
     rollout_data: dict[str, torch.Tensor], *, clone: bool = False
 ) -> dict[str, torch.Tensor]:
-    """Flatten time and environment axes after GAE-compatible collection."""
+    """Merge [T, N, ...] into [T * N, ...], preserving time-major order.
+
+    Single-environment data already has a single leading axis. Use clone=True
+    to retain a batch after the collector reuses its buffer. This flattened
+    representation is for boundary sampling; PPO computes GAE before flattening.
+    """
     states = rollout_data["states"]
     has_environment_axis = states.ndim == 5
     flattened = {

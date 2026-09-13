@@ -84,7 +84,12 @@ class ReplayBuffer:
         *,
         rng: np.random.Generator | np.random.RandomState | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Sample a batch of experiences."""
+        """Return an owned CPU batch sampled uniformly without replacement.
+
+        states and next_states have shape [B, C, H, W]; actions, rewards, and
+        dones have shape [B]. B is at most batch_size. dones marks true
+        termination only, so DQN can bootstrap through time limits.
+        """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if not self._length:
