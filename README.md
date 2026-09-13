@@ -21,7 +21,7 @@
 使用 Python 3.12 或更新版本，在仓库根目录安装依赖：
 
 ```bash
-python -m pip install -e .
+python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 用 VS Code 打开仓库目录，并安装 Python 和 Jupyter 扩展。打开课程目录中的 Notebook，选择刚才安装依赖的 Python 环境作为内核，然后从顶部按顺序执行单元格。代码会自动找到仓库中的数据和素材，无需手动切换工作目录。
