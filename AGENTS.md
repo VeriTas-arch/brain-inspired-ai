@@ -93,7 +93,11 @@ The distribution is `biai-course`; Python modules and lesson notebooks live unde
   constraints belong in `pyproject.toml`. Add new topics under `biai/` with their own README and notebook.
 - Export with `direnv exec . python scripts/export_course.py intro --version 0.1.0`;
   replace the topic to export another lesson. Add `--number 0` to assign a number at release time.
-  Keep lesson titles and READMEs independent of numbering. ZIPs go to ignored `dist/`; existing files are rejected.
+  Keep lesson titles and READMEs independent of numbering. Each export goes to ignored `dist/<topic>/`,
+  containing `<release>.zip` and the matching expanded `<release>/` directory for inspection.
+  `--output-dir` changes the parent of these topic directories. An existing ZIP or expanded directory
+  is rejected; use a new release version to retain previous exports. Publish the ZIP only after the
+  expanded directory is ready, and remove the new expanded directory if publication fails.
 - The exporter uses the current working tree, including uncommitted edits. ZIP comments record the
   release label, source commit and dirty status. Review the working tree before a formal release.
 - Student ZIPs put the lesson README and notebook at the root, alongside the selected `biai/` modules.

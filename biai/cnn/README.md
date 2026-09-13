@@ -16,7 +16,7 @@ conda activate brain_ai
 
 <!-- course-dependencies -->
 ```bash
-python -m pip install notebook ipykernel ipython numpy matplotlib torch torchvision
+python -m pip install ipykernel ipython numpy matplotlib torch torchvision
 ```
 <!-- /course-dependencies -->
 
@@ -29,3 +29,9 @@ MNIST 和 CIFAR-10 会在首次加载时下载到课程根目录的 `data/`。�
 ## 查看结果
 
 学习曲线显示训练与验证指标的变化，测试准确率用于比较训练后的模型。特征图展示卷积层对同一幅图像的不同响应，可以结合图像中的边缘和局部纹理阅读。
+
+## 源码与反馈
+
+本课程的源码与构建工具见 [brain-inspired-ai](https://github.com/VeriTas-arch/brain-inspired-ai)。
+
+如果想了解课程材料的组织方式，以及如何从源码生成每节课的压缩包，可以查看[构建说明](https://github.com/VeriTas-arch/brain-inspired-ai/blob/main/BUILDING.md)。欢迎提出问题和改进建议。

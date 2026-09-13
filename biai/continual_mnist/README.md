@@ -16,7 +16,7 @@ conda activate brain_ai
 
 <!-- course-dependencies -->
 ```bash
-python -m pip install notebook ipykernel ipython numpy matplotlib torch torchvision
+python -m pip install ipykernel ipython numpy matplotlib torch torchvision
 ```
 <!-- /course-dependencies -->
 
@@ -31,3 +31,9 @@ python -m pip install notebook ipykernel ipython numpy matplotlib torch torchvis
 ## 查看结果
 
 每学完一个任务，程序都会评估此前学过的任务，并在 Notebook 中显示学习曲线和准确率矩阵。阅读矩阵时，先看新任务刚学完的准确率，再沿同一任务查看后续阶段的变化，这样可以区分“没有学好”和“学会后遗忘”。
+
+## 源码与反馈
+
+本课程的源码与构建工具见 [brain-inspired-ai](https://github.com/VeriTas-arch/brain-inspired-ai)。
+
+如果想了解课程材料的组织方式，以及如何从源码生成每节课的压缩包，可以查看[构建说明](https://github.com/VeriTas-arch/brain-inspired-ai/blob/main/BUILDING.md)。欢迎提出问题和改进建议。

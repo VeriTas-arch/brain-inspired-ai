@@ -16,17 +16,17 @@ conda create -n brain_ai python=3.12
 conda activate brain_ai
 ```
 
-## 2. 安装 Jupyter 与 PyTorch
+## 2. 安装运行依赖
 
 在已激活的环境中执行：
 
 <!-- course-dependencies -->
 ```bash
-python -m pip install notebook ipykernel ipython numpy matplotlib torch
+python -m pip install ipykernel ipython numpy matplotlib torch
 ```
 <!-- /course-dependencies -->
 
-`notebook` 提供 Jupyter Notebook，`ipykernel` 负责在所选 Python 环境中执行单元格。后续使用服务器 GPU 时，可按 [PyTorch 安装页](https://pytorch.org/get-started/locally/)选择适合服务器的安装命令。
+课程使用 VS Code 的 Jupyter 扩展打开 Notebook，`ipykernel` 负责在所选 Python 环境中执行单元格，详见 [VS Code 内核说明](https://code.visualstudio.com/docs/datascience/jupyter-kernel-management#python-environments)。后续使用服务器 GPU 时，可按 [PyTorch 安装页](https://pytorch.org/get-started/locally/)选择适合服务器的安装命令。
 
 检查导入是否成功：
 
@@ -56,7 +56,7 @@ print(torch.tensor([1.0, 2.0, 3.0]) * 2)
 
 运行过的变量会留在内核中，修改代码不会自动更新已有输出。练习结束后，重启内核并从头运行所有单元格，确认程序能按顺序执行。
 
-操作说明见 [VS Code 官方文档](https://code.visualstudio.com/docs/datascience/jupyter-notebooks)和[菜鸟教程的图文步骤](https://www.runoob.com/jupyter-notebook/jupyter-notebook-vscode.html)。也可以在本机课程目录运行 `python -m notebook`，通过终端给出的地址打开浏览器界面，详见 [Jupyter 使用说明](https://jupyter.org/install)。
+操作说明见 [VS Code 官方文档](https://code.visualstudio.com/docs/datascience/jupyter-notebooks)和[菜鸟教程的图文步骤](https://www.runoob.com/jupyter-notebook/jupyter-notebook-vscode.html)。
 
 ## 4. 在服务器上克隆一个远程仓库
 
@@ -93,7 +93,7 @@ git remote -v
 
 ## 参考资料
 
-- 安装 jupyter，创建并运行一个 notebook：
+- 在 VS Code 中创建并运行 Notebook：
   - <https://www.runoob.com/jupyter-notebook/jupyter-notebook-vscode.html>
 - 在服务器中 git clone 一个远程仓库：
   - <https://github.com/git-guides>
@@ -102,3 +102,9 @@ git remote -v
   - <https://docs.pytorch.org/tutorials/beginner/introyt/introyt1_tutorial.html>
 - pytorch 创建一个神经网络模型
   - <https://docs.pytorch.org/tutorials/recipes/recipes/defining_a_neural_network.html>
+
+## 源码与反馈
+
+本课程的源码与构建工具见 [brain-inspired-ai](https://github.com/VeriTas-arch/brain-inspired-ai)。
+
+如果想了解课程材料的组织方式，以及如何从源码生成每节课的压缩包，可以查看[构建说明](https://github.com/VeriTas-arch/brain-inspired-ai/blob/main/BUILDING.md)。欢迎提出问题和改进建议。

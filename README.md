@@ -55,15 +55,17 @@ Omniglot 通过 [torchvision](https://docs.pytorch.org/vision/stable/generated/t
 
 ## 阅读代码
 
+从课程目录中的 README 和 Notebook 开始阅读，具体的代码入口见各课说明。仓库的主要代码与测试位置如下：
+
 | 位置 | 内容 |
 | --- | --- |
 | [biai/](biai/) | 按课程主题组织的 Notebook 与 Python 代码 |
 | [biai/paths.py](biai/paths.py) | 仓库、数据、结果和参考素材的位置 |
 | [biai/reproducibility.py](biai/reproducibility.py) | 共用的随机种子与确定性设置 |
-| [Atari 算法](biai/atari/algorithms/) | DQN、PPO、EWC 和 GPM |
-| [Atari 环境](biai/atari/environments/) | 游戏环境与图像预处理 |
-| [Atari 训练组件](biai/atari/training/) | 经验回放、采样、网络更新和回合评估 |
-| [Atari 运行入口](biai/atari/scripts/) | 训练、评估、绘图和性能测试 |
-| [tests/](tests/) | 课程 Notebook 检查与 Atari 回归测试 |
+| [tests/](tests/) | Notebook 检查与代码测试 |
 
-想了解 Atari 各案例使用了哪些参数，可以查看 [run_experiments.py](biai/atari/scripts/run_experiments.py) 中的 `build_teaching_jobs`；Notebook 附录中的数值示例实现在 [tutorial_examples.py](biai/atari/scripts/tutorial_examples.py) 中。
+## 源码与反馈
+
+本课程的源码与构建工具见 [brain-inspired-ai](https://github.com/VeriTas-arch/brain-inspired-ai)。
+
+如果想了解课程材料的组织方式，以及如何从源码生成每节课的压缩包，可以查看[构建说明](BUILDING.md)。欢迎提出问题和改进建议。

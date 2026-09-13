@@ -1,4 +1,4 @@
-"""Export one self-contained lesson ZIP from the current source tree."""
+"""Export a lesson ZIP and its expanded contents into a per-lesson directory."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -39,7 +40,7 @@ def rewrite_links(text: str, source: Path, destination: Path, mapping: dict[Path
 def export_course(
     topic: str, output_dir: Path, *, version: str | None = None, number: int | None = None
 ) -> Path:
-    """Build and check the selected lesson without overwriting an existing ZIP."""
+    """Build matching ZIP and directory outputs without overwriting either one."""
     catalog = tomllib.loads((ROOT / "courses.toml").read_text())
     lesson = catalog["lessons"][topic]
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
@@ -50,9 +51,11 @@ def export_course(
         raise ValueError("Lesson number must be nonnegative")
     prefix = "biai" if number is None else f"biai-{number:02d}"
     name = f"{prefix}-{topic}-{version}"
-    output = Path(output_dir) / f"{name}.zip"
-    if output.exists():
-        raise FileExistsError(output)
+    output = Path(output_dir) / topic / f"{name}.zip"
+    expanded = output.with_suffix("")
+    for destination in (output, expanded):
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(destination)
 
     mapping = {}
     for pattern in catalog["common"]["files"] + lesson["files"]:
@@ -159,8 +162,15 @@ def export_course(
         with ZipFile(staged) as archive:
             if archive.testzip() is not None:
                 raise ValueError("ZIP integrity check failed")
-        # Linking publishes the completed file atomically and rejects a concurrent overwrite.
-        os.link(staged, output)
+            archive.extractall(temporary)
+        # Reserve the directory exclusively; publish the ZIP after its contents are ready.
+        expanded.mkdir()
+        try:
+            shutil.copytree(Path(temporary) / name, expanded, dirs_exist_ok=True)
+            os.link(staged, output)
+        except BaseException:
+            shutil.rmtree(expanded)
+            raise
     return output
 
 
@@ -168,7 +178,9 @@ def main():
     catalog = tomllib.loads((ROOT / "courses.toml").read_text())
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lesson", choices=catalog["lessons"])
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument(
+        "--output-dir", type=Path, default=ROOT / "dist", help="Parent of the lesson directories"
+    )
     parser.add_argument("--version", help="Release label; defaults to the project version")
     parser.add_argument("--number", type=int, help="Optional lesson number for this release")
     args = parser.parse_args()

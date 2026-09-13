@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -21,10 +22,18 @@ CATALOG = tomllib.loads((ROOT / "courses.toml").read_text())
 @pytest.mark.parametrize("topic", CATALOG["lessons"])
 def test_exported_lesson_runs_independently(topic, tmp_path):
     archive_path = exporter.export_course(topic, tmp_path)
+    assert archive_path.parent == tmp_path / topic
+    lesson_root = archive_path.with_suffix("")
     with ZipFile(archive_path) as archive:
         assert json.loads(archive.comment)["lesson"] == topic
-        archive.extractall(tmp_path / "unpacked")
-    lesson_root = tmp_path / "unpacked" / archive_path.stem
+        expanded_files = {
+            path.relative_to(archive_path.parent).as_posix(): path.read_bytes()
+            for path in lesson_root.rglob("*")
+            if path.is_file()
+        }
+        assert set(expanded_files) == set(archive.namelist())
+        for name, content in expanded_files.items():
+            assert content == archive.read(name)
     notebook = lesson_root / f"{topic}.ipynb"
     nbformat.validate(nbformat.read(notebook, as_version=4))
     assert sorted(p.name for p in lesson_root.glob("*.ipynb")) == [notebook.name]
@@ -119,15 +128,57 @@ print("EXPORTED_LESSON_OK", topic)
     assert f"EXPORTED_LESSON_OK {topic}" in result.stdout
 
 
-def test_export_rejects_existing_archive_and_keeps_source(tmp_path):
+@pytest.mark.parametrize("existing", ("zip", "directory", "both"))
+def test_export_rejects_existing_outputs_and_keeps_source(tmp_path, existing):
     source = ROOT / "biai/intro/intro.ipynb"
     original = source.read_bytes()
     archive = exporter.export_course("intro", tmp_path)
     content = archive.read_bytes()
+    expanded = archive.with_suffix("")
+    if existing == "zip":
+        shutil.rmtree(expanded)
+    elif existing == "directory":
+        archive.unlink()
+    if expanded.exists():
+        (expanded / "notes.txt").write_text("Review notes")
     with pytest.raises(FileExistsError):
         exporter.export_course("intro", tmp_path)
-    assert archive.read_bytes() == content
+    if existing != "directory":
+        assert archive.read_bytes() == content
+    else:
+        assert not archive.exists()
+    if existing != "zip":
+        assert (expanded / "notes.txt").read_text() == "Review notes"
+    else:
+        assert not expanded.exists()
     assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("failure", ("copy", "publish"))
+def test_failed_export_removes_partial_outputs(tmp_path, monkeypatch, failure):
+    def fail(*args, **kwargs):
+        if failure == "copy":
+            (Path(args[1]) / "partial.txt").write_text("Partial copy")
+        raise OSError("Export failed")
+
+    if failure == "copy":
+        monkeypatch.setattr(exporter.shutil, "copytree", fail)
+    else:
+        monkeypatch.setattr(exporter.os, "link", fail)
+    with pytest.raises(OSError, match="Export failed"):
+        exporter.export_course("intro", tmp_path)
+    assert list((tmp_path / "intro").iterdir()) == []
+
+
+def test_export_keeps_versions_together_without_changing_previous_output(tmp_path):
+    first = exporter.export_course("intro", tmp_path, version="0.1.0", number=0)
+    original = first.read_bytes()
+    second = exporter.export_course("intro", tmp_path, version="0.1.1", number=1)
+    assert first.parent == second.parent == tmp_path / "intro"
+    assert first.name == "biai-00-intro-0.1.0.zip"
+    assert second.name == "biai-01-intro-0.1.1.zip"
+    assert first.read_bytes() == original
+    assert first.with_suffix("").is_dir() and second.with_suffix("").is_dir()
 
 
 def test_export_rejects_unpublished_link_before_writing(tmp_path, monkeypatch):
@@ -142,4 +193,4 @@ def test_export_rejects_unpublished_link_before_writing(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", read_text)
     with pytest.raises(ValueError, match="Unpublished link"):
         exporter.export_course("mlp", tmp_path)
-    assert not list(tmp_path.glob("*.zip"))
+    assert not (tmp_path / "mlp").exists()

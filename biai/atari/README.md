@@ -16,7 +16,7 @@ conda activate brain_ai
 
 <!-- course-dependencies -->
 ```bash
-python -m pip install notebook ipykernel ipython numpy matplotlib torch ale-py gymnasium imageio-ffmpeg opencv-python pillow tqdm
+python -m pip install ipykernel ipython numpy matplotlib torch ale-py gymnasium imageio-ffmpeg opencv-python pillow tqdm
 ```
 <!-- /course-dependencies -->
 
@@ -55,3 +55,22 @@ python -m biai.atari.scripts.run_experiments train teaching --matched-budget --d
 这条命令也只预览。将 `--dry-run` 换成 `--smoke` 可运行短训练，移除它则运行完整对照。已有结果默认保留；需要重跑时加上 `--force`，所选案例的训练与评估成功后才会替换对应结果。
 
 比较结果时，分别查看每个游戏的得分。顺序训练还需要对照各阶段的表现，判断方法是否在保留旧游戏能力的同时学会了新游戏。
+
+## 阅读代码
+
+Notebook 对应的 Python 代码位于 `biai/atari/`，按以下目录组织：
+
+| 目录 | 内容 |
+| --- | --- |
+| `algorithms/` | DQN、PPO、EWC 和 GPM |
+| `environments/` | 游戏环境与图像预处理 |
+| `training/` | 经验回放、采样、网络更新和回合评估 |
+| `scripts/` | 训练、评估、绘图和性能测试入口 |
+
+各案例的参数在 [run_experiments.py](scripts/run_experiments.py) 的 `build_teaching_jobs` 中定义。Notebook 附录中的数值示例见 [tutorial_examples.py](scripts/tutorial_examples.py)。
+
+## 源码与反馈
+
+本课程的源码与构建工具见 [brain-inspired-ai](https://github.com/VeriTas-arch/brain-inspired-ai)。
+
+如果想了解课程材料的组织方式，以及如何从源码生成每节课的压缩包，可以查看[构建说明](https://github.com/VeriTas-arch/brain-inspired-ai/blob/main/BUILDING.md)。欢迎提出问题和改进建议。

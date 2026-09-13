@@ -1,6 +1,6 @@
 [common]
 files = ["LICENSE", "biai/__init__.py", "biai/paths.py", "biai/reproducibility.py"]
-dependencies = ["notebook", "ipykernel", "ipython", "numpy", "matplotlib", "torch"]
+dependencies = ["ipykernel", "ipython", "numpy", "matplotlib", "torch"]
 
 [lessons.intro]
 title = "环境配置与 PyTorch 入门"
