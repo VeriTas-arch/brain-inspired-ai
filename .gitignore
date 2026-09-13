@@ -1,19 +1,19 @@
-# Python 缓存
+# Python cache
 __pycache__/
 *.py[cod]
 
-# 打包产物
+# Python build artifacts
 /build/
 /dist/
 *.egg-info/
 
-# 工具缓存
+# cache and temporary files
 .cache/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
 
-# 本地环境与编辑器配置
+# local environment files
 .env
 .envrc
 .venv/
@@ -22,13 +22,13 @@ env/
 .pypirc
 .vscode/
 
-# 数据、参考材料与训练结果
+# data and results
 /data/
 /ref/
 /results/
 /.pending-assets-*/
 
-# 散落在结果目录外的训练产物
+# other files
 *.pt
 *.mp4
 *.log
