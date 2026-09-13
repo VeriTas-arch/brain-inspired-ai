@@ -15,7 +15,6 @@ __pycache__/
 
 # local environment files
 .env
-.envrc
 .venv/
 venv/
 env/
