@@ -2,6 +2,7 @@
 
 import sys
 
+import cv2
 import imageio_ffmpeg
 import numpy as np
 import pytest
@@ -42,6 +43,7 @@ def test_encoder_is_reaped_when_stream_close_or_wait_fails(tmp_path, phase, erro
     assert recorder.writer is recorder.errors is None
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("shape", ((84, 84), (210, 160, 3)))
 def test_streamed_video_decodes_every_frame_without_retaining_arrays(tmp_path, shape):
     path = tmp_path / "episode.mp4"
@@ -53,15 +55,23 @@ def test_streamed_video_decodes_every_frame_without_retaining_arrays(tmp_path, s
         assert recorder.frame_count == 6
         assert not any(isinstance(value, (list, np.ndarray)) for value in vars(recorder).values())
     recorder.close()
-    reader = imageio_ffmpeg.read_frames(str(path))
-    metadata = next(reader)
-    frames = list(reader)
-    assert metadata["size"] == (shape[1], shape[0])
-    assert len(frames) == 6
-    means = [np.frombuffer(frame, dtype=np.uint8).mean() for frame in frames]
+    reader = cv2.VideoCapture(str(path))
+    means = []
+    try:
+        assert reader.isOpened()
+        while True:
+            decoded, frame = reader.read()
+            if not decoded:
+                break
+            assert frame.shape == (*shape[:2], 3)
+            means.append(frame.mean())
+    finally:
+        reader.release()
+    assert len(means) == 6
     np.testing.assert_allclose(means, (0, 50, 100, 150, 200, 250), atol=3)
 
 
+@pytest.mark.integration
 def test_late_encoder_failure_reaches_caller_even_with_nonempty_output(monkeypatch, tmp_path):
     encoder = tmp_path / "failing_encoder"
     encoder.write_text(

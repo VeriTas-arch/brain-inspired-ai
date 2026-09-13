@@ -136,7 +136,8 @@ def test_seed_everything_rejects_numpy_incompatible_seed() -> None:
         seed_everything(2**32)
 
 
-@pytest.mark.parametrize("compile_ppo", (False, True))
+@pytest.mark.filterwarnings(r"default:^The CUDA Graph is empty\.:UserWarning:torch\.cuda\.graphs$")
+@pytest.mark.parametrize("compile_ppo", (False, pytest.param(True, marks=pytest.mark.cuda)))
 def test_joint_ppo_uses_shared_learner_and_preserves_budget(
     monkeypatch, tmp_path, compile_ppo, fresh_compiler_state
 ):
@@ -213,6 +214,7 @@ def test_seed_everything_can_reset_deterministic_kernels():
     assert not torch.are_deterministic_algorithms_enabled()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
 @pytest.mark.parametrize("num_envs", (1, 8))
 @pytest.mark.parametrize("matched", (False, True))
@@ -277,6 +279,7 @@ def test_joint_records_actual_environment_steps(
                 assert frames == (env.steps + 1) // 2
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("num_envs", (1, 8))
 @pytest.mark.parametrize("eval_points", (0, 3, 10))
 def test_single_periodic_evaluation_keeps_training_budget(

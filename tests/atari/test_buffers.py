@@ -144,7 +144,7 @@ def test_rollout_buffer_can_store_policy_output_before_environment_result() -> N
     torch.testing.assert_close(batch["rewards"][0], torch.tensor([1.0, 2.0]))
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 def test_rollout_buffer_owns_policy_outputs_before_sampler_storage_is_reused(device) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")

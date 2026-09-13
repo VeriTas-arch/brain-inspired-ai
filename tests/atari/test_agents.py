@@ -8,6 +8,8 @@ import torch.nn as nn
 from biai.atari.algorithms import DQNAgent, MultiHeadDQNAgent, MultiHeadPPOAgent, PPOAgent
 
 
+@pytest.mark.filterwarnings(r"default:^The CUDA Graph is empty\.:UserWarning:torch\.cuda\.graphs$")
+@pytest.mark.cuda
 @pytest.mark.parametrize("algorithm", ("dqn", "ppo"))
 def test_compiled_greedy_batches_match_scalar_actions_without_consuming_rng(
     algorithm, fresh_compiler_state
@@ -88,7 +90,7 @@ def test_ppo_deterministic_action_uses_highest_logit() -> None:
     assert agent.select_action(state, deterministic=True) == 2
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 def test_multihead_dqn_checkpoint_restores_heads_and_optimizer(tmp_path, device) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
@@ -129,7 +131,7 @@ def test_multihead_dqn_checkpoint_restores_heads_and_optimizer(tmp_path, device)
         torch.testing.assert_close(actual, expected)
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 def test_multihead_ppo_checkpoint_restores_task_heads(tmp_path, device) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")

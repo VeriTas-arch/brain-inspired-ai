@@ -60,7 +60,15 @@ class TinyEvaluationEnvironment(TinyEnvironment):
         return self.reset(), float(TASKS.index(self.game) + 1), True, False
 
 
-@pytest.mark.parametrize("device,compile_ppo", (("cpu", False), ("cuda", False), ("cuda", True)))
+@pytest.mark.filterwarnings(r"default:^The CUDA Graph is empty\.:UserWarning:torch\.cuda\.graphs$")
+@pytest.mark.parametrize(
+    "device,compile_ppo",
+    (
+        ("cpu", False),
+        pytest.param("cuda", False, marks=pytest.mark.cuda),
+        pytest.param("cuda", True, marks=pytest.mark.cuda),
+    ),
+)
 def test_three_task_gpm_starts_fresh_accumulates_and_saves_an_evaluable_checkpoint(
     monkeypatch, tmp_path, device, compile_ppo, fresh_compiler_state
 ):
@@ -342,7 +350,7 @@ def test_invalid_gpm_options_fail_before_environment_creation(options, message):
         training.train_continual(**options)
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 def test_dqn_gpm_projects_before_target_sync_and_preserves_old_heads(monkeypatch, tmp_path, device):
     from biai.atari.algorithms import MultiHeadDQNAgent
 

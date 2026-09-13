@@ -78,7 +78,7 @@ class _FakeVectorEnvironment:
         return result
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 def test_collector_preserves_vector_trajectories_and_time_limit_bootstrap(device) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
@@ -157,6 +157,8 @@ def test_flatten_rollout_data_keeps_time_before_environment_order() -> None:
     torch.testing.assert_close(flattened["actions"], torch.arange(4))
 
 
+@pytest.mark.filterwarnings(r"default:^The CUDA Graph is empty\.:UserWarning:torch\.cuda\.graphs$")
+@pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("multi_head", (False, True))
 def test_fullgraph_cuda_policy_loss_and_task_switching(
@@ -214,6 +216,8 @@ def test_fullgraph_cuda_policy_loss_and_task_switching(
             torch.testing.assert_close(left, right, atol=1e-5, rtol=1e-4)
 
 
+@pytest.mark.filterwarnings(r"default:^The CUDA Graph is empty\.:UserWarning:torch\.cuda\.graphs$")
+@pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("variant", ("single", "multi", "ewc", "gpm"))
 def test_compiled_ppo_optimizer_matches_eager_with_regularization_and_projection(
@@ -330,6 +334,7 @@ def test_capture_flags_are_restored_even_when_cuda_state_restoration_fails(monke
     assert optimizer.param_groups[0]["capturable"] is False
 
 
+@pytest.mark.integration
 def test_ppo_benchmark_honors_explicit_torch_thread_count():
     from biai.atari.scripts.benchmark_ppo_runtime import benchmark_configuration
 
@@ -350,6 +355,8 @@ def test_ppo_benchmark_honors_explicit_torch_thread_count():
     assert result.transitions == 2
 
 
+@pytest.mark.filterwarnings(r"default:^The CUDA Graph is empty\.:UserWarning:torch\.cuda\.graphs$")
+@pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("size", (8, 10))
 def test_ppo_update_graphs_follow_task_switch_and_loaded_optimizer(fresh_compiler_state, size):

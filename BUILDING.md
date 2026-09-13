@@ -16,6 +16,10 @@
 
 例如，入门课的源文件是 `biai/intro/README.md` 和 `biai/intro/intro.ipynb`。Atari 的代码较多，算法、环境和训练循环放在 `biai/atari/` 的 Python 文件中，Notebook 负责讲解与调用。
 
+修改前先阅读[仓库维护规则](AGENTS.md)。修改 Atari 实现时，同时遵循
+[Atari 实现约定](biai/atari/AGENTS.md)；测试的组织与运行约定见
+[测试维护规则](tests/AGENTS.md)。这些维护文档不随学生课程包分发。
+
 ## 导出一节课
 
 先按 [README 的完整仓库安装说明](README.md#使用完整仓库)准备环境，然后在仓库根目录执行：

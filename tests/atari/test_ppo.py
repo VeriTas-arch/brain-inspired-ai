@@ -65,7 +65,7 @@ def test_gae_matches_discounted_td_sum_on_batched_trajectories_with_boundaries(g
     torch.testing.assert_close(returns, expected + values, rtol=1e-10, atol=1e-10)
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 @pytest.mark.parametrize("multi_head", (False, True))
 def test_policy_sampling_and_gradients_match_validated_distribution(device, multi_head) -> None:
     if device == "cuda" and not torch.cuda.is_available():
@@ -120,6 +120,7 @@ def test_policy_sampling_and_gradients_match_validated_distribution(device, mult
         handle.remove()
 
 
+@pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_cpu_and_device_rollouts_produce_matching_ppo_updates() -> None:
     device = "cuda"

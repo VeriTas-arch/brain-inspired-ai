@@ -59,6 +59,8 @@ def test_eager_dqn_matches_explicit_td_update():
             )
 
 
+@pytest.mark.filterwarnings(r"default:^The CUDA Graph is empty\.:UserWarning:torch\.cuda\.graphs$")
+@pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("variant", ("single", "multi", "ewc", "gpm"))
 def test_compiled_dqn_updates_task_switches_and_checkpoints(

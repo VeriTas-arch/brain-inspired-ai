@@ -1,7 +1,5 @@
-"""Regression checks for the mathematical contracts taught in the notebooks."""
+"""Regression checks for the meta_learning lesson."""
 
-import ast
-import json
 import pickle
 import random
 from collections import OrderedDict
@@ -10,102 +8,9 @@ import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
 
-from biai.paths import PROJECT_ROOT
 from biai.reproducibility import parameter_digest
-
-
-def definitions(topic):
-    path = PROJECT_ROOT / "biai" / topic / f"{topic}.ipynb"
-    namespace = {"SEED": 0, "device": torch.device("cpu"), "CONFIG": {"device": "cpu"}}
-    for cell in json.loads(path.read_text())["cells"]:
-        if cell["cell_type"] != "code":
-            continue
-        tree = ast.parse("".join(cell["source"]))
-        tree.body = [
-            node
-            for node in tree.body
-            if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef))
-        ]
-        exec(compile(tree, str(path), "exec"), namespace)
-    return namespace
-
-
-def test_manual_update_matches_cross_entropy_autograd():
-    ns = definitions("mlp")
-    generator = torch.Generator().manual_seed(4)
-    w1 = torch.randn(7, 9, generator=generator, dtype=torch.float64)
-    w2 = torch.randn(3, 7, generator=generator, dtype=torch.float64)
-    x = torch.randn(5, 9, generator=generator, dtype=torch.float64)
-    target = torch.tensor([0, 1, 2, 1, 0])
-    a, b = w1.clone().requires_grad_(), w2.clone().requires_grad_()
-    h = F.relu(x @ a.T)
-    logits = h @ b.T
-    grad1, grad2 = torch.autograd.grad(F.cross_entropy(logits, target), (a, b))
-    ns.update(W1=w1.clone(), W2=w2.clone(), eta=0.1, output_dim=3)
-    ns["manual_backprop_update"](x, h.detach(), logits.detach(), target)
-    torch.testing.assert_close(ns["W1"], w1 - 0.1 * grad1)
-    torch.testing.assert_close(ns["W2"], w2 - 0.1 * grad2)
-
-
-def test_manual_initialization_avoids_saturated_random_predictions():
-    ns = definitions("mlp")
-    ns.update(input_dim=784, hidden_dim=128, output_dim=10)
-    path = PROJECT_ROOT / "biai/mlp/mlp.ipynb"
-    cell = json.loads(path.read_text())["cells"][14]
-    exec("".join(cell["source"]), ns)
-    x = torch.rand(64, 784, generator=torch.Generator().manual_seed(1))
-    _, logits = ns["forward"](x)
-    assert F.cross_entropy(logits, torch.arange(64) % 10) < 5
-    assert logits.softmax(1).max(1).values.mean() < 0.5
-
-
-@pytest.mark.parametrize("scenario", ["task", "class"])
-def test_fisher_uses_training_label_map_and_per_sample_gradients(scenario):
-    ns = definitions("continual_mnist")
-    torch.manual_seed(0)
-    model = ns["EWCModel"](input_size=3, hidden_units=4)
-    x = torch.tensor([[0.2, 0.5, 0.1], [1.0, 0.3, 0.7]])
-    raw_labels = torch.tensor([2, 8])
-    loader = DataLoader(TensorDataset(x, raw_labels), batch_size=1)
-    actual = model.compute_fisher(loader, task_id=1, classes=[2, 8], scenario=scenario)
-    expected = {name: torch.zeros_like(p) for name, p in model.named_parameters()}
-    for image, output_slot in zip(x, (2, 3)):
-        logits = model(image[None])
-        if scenario == "task":
-            loss = F.cross_entropy(logits[:, 2:4], torch.tensor([output_slot - 2]))
-        else:
-            loss = F.cross_entropy(logits[:, :4], torch.tensor([output_slot]))
-        grads = torch.autograd.grad(loss, model.parameters())
-        for (name, _), grad in zip(model.named_parameters(), grads):
-            expected[name] += grad.square() / 2
-    for name in expected:
-        torch.testing.assert_close(actual[name], expected[name])
-    with pytest.raises(ValueError, match="batch_size=1"):
-        model.compute_fisher(DataLoader(loader.dataset, batch_size=2), 1, [2, 8])
-    assert not list(model.named_buffers())
-
-
-def test_ewc_retains_each_old_task_anchor():
-    ns = definitions("continual_mnist")
-    model = ns["EWCModel"](input_size=3, hidden_units=4)
-    fisher = {name: torch.ones_like(p) for name, p in model.named_parameters()}
-    model.consolidate(fisher)
-    first_anchor = {name: p.detach().clone() for name, p in model.named_parameters()}
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.add_(0.25)
-    model.consolidate(fisher)
-    expected = (
-        sum((p - first_anchor[name]).square().sum() for name, p in model.named_parameters()) / 2
-    )
-    torch.testing.assert_close(model.ewc_loss(), expected)
-    assert model.ewc_loss() > 0
-    assert len(model.fisher_matrices) == 2
-    for value in fisher.values():
-        value.zero_()
-    torch.testing.assert_close(model.ewc_loss(), expected)
+from tests.notebook_helpers import definitions
 
 
 @pytest.mark.parametrize("first_order", [False, True])
@@ -234,49 +139,6 @@ def test_meta_methods_share_initialization_and_training_episodes(monkeypatch):
     assert runs[0][2][:2] == runs[0][2][2:]
 
 
-def test_oja_update_uses_local_activity_rule():
-    ns = definitions("mlp")
-    layer = torch.nn.Linear(3, 2, bias=False).double()
-    x = torch.tensor([[0.2, 0.4, 0.7], [0.8, 0.1, 0.5]], dtype=torch.float64)
-    weights = layer.weight.detach().clone()
-    updates = []
-    for image in x:
-        response = weights @ image
-        updates.append(response[:, None] * image - response[:, None].square() * weights)
-    ns["oja_update"](layer, x, 0.01)
-    torch.testing.assert_close(layer.weight, weights + 0.01 * torch.stack(updates).mean(0))
-    assert layer.weight.grad is None
-
-
-def test_generalized_hebbian_update_removes_preceding_activity_directions():
-    ns = definitions("mlp")
-    layer = torch.nn.Linear(3, 2, bias=False).double()
-    x = torch.tensor([[0.2, 0.4, 0.7], [0.8, 0.1, 0.5]], dtype=torch.float64)
-    weights = layer.weight.detach().clone()
-    expected = weights.clone()
-    for image in x:
-        response = weights @ image
-        for unit in range(len(weights)):
-            reconstruction = sum(response[k] * weights[k] for k in range(unit + 1))
-            expected[unit] += 0.01 * response[unit] * (image - reconstruction) / len(x)
-    ns["generalized_hebbian_update"](layer, x, 0.01)
-    torch.testing.assert_close(layer.weight, expected)
-    assert layer.weight.grad is None
-
-
-def test_continual_protocols_exclude_future_classes_from_loss_and_prediction():
-    ns = definitions("continual_mnist")
-    logits = torch.tensor([[5.0, 4.0, 3.0, 2.0, 100.0, 100.0]], requires_grad=True)
-    local = torch.tensor([0])
-    assert ns["evaluate_scenario"](None, logits, local, 1, 1, "task") == 1
-    assert ns["evaluate_scenario"](None, logits, local, 1, 1, "class") == 0
-    for scenario, zero_columns in (("task", [0, 1, 4, 5]), ("class", [4, 5])):
-        loss = ns["scenario_loss"](logits, local, 1, scenario)
-        (gradient,) = torch.autograd.grad(loss, logits)
-        assert gradient[:, zero_columns].count_nonzero() == 0
-        assert gradient[:, 2:4].count_nonzero() > 0
-
-
 @pytest.mark.parametrize("first_order", [False, True])
 def test_rgb_meta_model_can_adapt_and_backpropagate(first_order):
     ns = definitions("meta_learning")
@@ -361,60 +223,3 @@ def test_task_size_matrix_runs_both_methods_with_matching_initialization(monkeyp
         assert first["initial_digest"] == second["initial_digest"]
         assert first["selected_update"] == second["selected_update"] == 1
         assert set(first["scores"]) == set(second["scores"]) == {0, 1, 5}
-
-
-def test_replay_reservoir_is_bounded_repeatable_and_preserves_label_mapping():
-    ns = definitions("continual_mnist")
-    images = torch.arange(200, dtype=torch.float32).reshape(200, 1)
-    labels = torch.tensor([8, 2] * 50 + [9, 4] * 50)
-    first = TensorDataset(images[:100], labels[:100])
-    second = TensorDataset(images[100:], labels[100:])
-    rng_state = torch.get_rng_state().clone()
-    buffers = [ns["ReplayBuffer"](40, seed=12) for _ in range(2)]
-    for buffer in buffers:
-        buffer.add_task(first, [8, 2], 0)
-        assert buffer.size == 40
-        assert buffer.images.device.type == buffer.labels.device.type == "cpu"
-        assert buffer.labels.max() < 2
-        buffer.add_task(second, [9, 4], 1)
-        assert buffer.size == 40 and buffer.seen == 200
-        sample_x, sample_y = buffer.sample(40)
-        ids = sample_x[:, 0].long()
-        assert ids.unique().numel() == 40
-        torch.testing.assert_close(sample_y, ids % 2 + 2 * (ids >= 100))
-        assert set(sample_y.tolist()) == {0, 1, 2, 3}
-        assert buffer.storage_bytes() == 40 * (4 + 8)
-    torch.testing.assert_close(buffers[0].images, buffers[1].images)
-    torch.testing.assert_close(buffers[0].labels, buffers[1].labels)
-    assert torch.equal(torch.get_rng_state(), rng_state)
-
-
-def test_replay_mixed_loss_uses_old_global_labels_and_fixed_batch(monkeypatch):
-    ns = definitions("continual_mnist")
-    ns["CONFIG"].update(learning_rate=0.001, epochs_per_task=1)
-    ns["evaluate_all_tasks"] = lambda *args: ([0.5, 0.5], 0.5)
-    model = ns["EWCModel"](input_size=3, hidden_units=4)
-    buffer = ns["ReplayBuffer"](4, seed=10)
-    old_x = torch.arange(12, dtype=torch.float32).reshape(4, 3)
-    buffer.add_task(TensorDataset(old_x, torch.tensor([8, 2, 8, 2])), [8, 2], 0)
-    current_x = torch.arange(12, 30, dtype=torch.float32).reshape(6, 3)
-    loader = DataLoader(TensorDataset(current_x, torch.tensor([9, 4, 9, 4, 9, 4])), batch_size=4)
-    observed = []
-    inputs = []
-    model.register_forward_pre_hook(lambda module, args: inputs.append(args[0].detach().clone()))
-    real_ce = F.cross_entropy
-
-    def capture(logits, targets):
-        observed.append((logits.shape, targets.detach().clone()))
-        return real_ce(logits, targets)
-
-    monkeypatch.setattr(F, "cross_entropy", capture)
-    history = ns["train_task"](model, loader, [], 1, [9, 4], 0, "class", buffer)
-    assert [shape for shape, _ in observed] == [torch.Size([4, 4]), torch.Size([2, 4])]
-    for batch, (_, targets) in zip(inputs, observed):
-        ids = (batch[:, 0] / 3).long()
-        torch.testing.assert_close(targets, ids % 2 + 2 * (ids >= 4))
-    assert history[0]["updates"] == 2
-    assert history[0]["current_examples"] == history[0]["replay_examples"] == 3
-    assert model.fc3.weight.grad[4:].count_nonzero() == 0
-    assert buffer.seen == 4

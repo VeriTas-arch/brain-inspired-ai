@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG = tomllib.loads((ROOT / "courses.toml").read_text())
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("topic", CATALOG["lessons"])
 def test_exported_lesson_runs_independently(topic, tmp_path):
     archive_path = exporter.export_course(topic, tmp_path)
@@ -71,7 +72,6 @@ def test_exported_lesson_runs_independently(topic, tmp_path):
     # A new interpreter must resolve biai from the ZIP even when a developer install exists.
     script = r"""
 import json
-import runpy
 import sys
 from pathlib import Path
 
@@ -109,15 +109,15 @@ with pytest.MonkeyPatch.context() as patch:
             assert "torch" in metadata["versions"]
     else:
         # Reuse the owning lesson's offline datasets, budgets and semantic assertions.
-        helpers = runpy.run_path(sys.argv[2])
-        test = helpers["test_course_cells_train_evaluate_and_plot_offline"]
-        test.__globals__["notebook_path"] = lambda _: root / f"{topic}.ipynb"
-        data_dir = helpers["offline_data"].__wrapped__(patch, root)
-        test(topic, "cpu", data_dir, patch)
+        sys.path.append(sys.argv[2])
+        from notebook_helpers import prepare_offline_data, run_notebook_smoke, assert_lesson_smoke
+        data_dir = prepare_offline_data(patch, root / "data")
+        namespace = run_notebook_smoke(root / f"{topic}.ipynb", "cpu")
+        assert_lesson_smoke(topic, namespace, data_dir)
 print("EXPORTED_LESSON_OK", topic)
 """
     result = subprocess.run(
-        [sys.executable, "-c", script, topic, str(ROOT / "tests/test_course_notebooks.py")],
+        [sys.executable, "-c", script, topic, str(ROOT / "tests")],
         cwd=lesson_root,
         env=environment,
         capture_output=True,

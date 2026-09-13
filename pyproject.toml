@@ -38,6 +38,10 @@ addopts = ["-ra", "--strict-config", "--strict-markers"]
 cache_dir = ".cache/pytest"
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "cuda: requires a working CUDA device, including eager and compiled execution",
+    "integration: executes complete notebooks, real Atari environments, subprocesses, or video encoders",
+]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"

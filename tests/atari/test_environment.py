@@ -9,6 +9,7 @@ from biai.atari.environments import AsyncVectorAtariEnv, AtariEnv, SyncVectorAta
 from biai.atari.environments.atari_wrappers import GrayscaleObservation
 
 
+@pytest.mark.integration
 def test_async_workers_match_sync_with_threads_and_close_cleanly(monkeypatch):
     import os
     from contextlib import ExitStack
@@ -52,6 +53,7 @@ def test_fast_grayscale_is_pixel_exact_with_gymnasium() -> None:
     np.testing.assert_array_equal(image, before)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("game", ("Pong-v5", "Breakout-v5", "SpaceInvaders-v5"))
 def test_native_backend_preserves_final_frames_and_repeats_seeds(monkeypatch, game) -> None:
     from biai.atari.environments import NativeVectorAtariEnv
@@ -96,6 +98,7 @@ def test_native_backend_preserves_final_frames_and_repeats_seeds(monkeypatch, ga
         torch.testing.assert_close(first, second, rtol=0, atol=0)
 
 
+@pytest.mark.integration
 def test_native_evaluation_keeps_raw_rewards_full_episodes_and_cached_autoreset(monkeypatch):
     options = []
     make_vec = gym.make_vec
@@ -132,6 +135,7 @@ def wrapper_names(env: AtariEnv) -> list[str]:
     return names
 
 
+@pytest.mark.integration
 def test_train_and_eval_use_one_frame_skip_and_different_episode_semantics() -> None:
     train_env = AtariEnv("Pong-v5", seed=7, training=True)
     eval_env = AtariEnv("Pong-v5", seed=7, training=False)
@@ -158,6 +162,7 @@ def test_train_and_eval_use_one_frame_skip_and_different_episode_semantics() -> 
         eval_env.close()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("backend", ("sync", "ale"))
 def test_invalid_action_is_not_silently_clipped(backend) -> None:
     env = AtariEnv("Pong-v5", seed=7, backend=backend)

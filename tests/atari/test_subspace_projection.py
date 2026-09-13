@@ -16,7 +16,7 @@ from biai.atari.algorithms.subspace_projection import (
 from biai.atari.training.ppo_runtime import CollectedRollout, PPOLearner
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 @pytest.mark.parametrize(
     "kernel,stride,padding,dilation", ((8, 4, 0, 1), (4, 2, 0, 1), (3, 1, 2, 2))
 )
@@ -124,7 +124,7 @@ def test_projecting_raw_gradient_before_adam_does_not_preserve_orthogonality():
     assert abs(float(p.detach() @ basis)) > 0.001
 
 
-@pytest.mark.parametrize("device", ("cpu", "cuda"))
+@pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 def test_projection_runs_once_per_ppo_minibatch_and_leaves_old_heads_unchanged(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
