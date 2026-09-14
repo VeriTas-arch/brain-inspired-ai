@@ -37,20 +37,15 @@ def rewrite_links(text: str, source: Path, destination: Path, mapping: dict[Path
     return LINK.sub(replace, text)
 
 
-def export_course(
-    topic: str, output_dir: Path, *, version: str | None = None, number: int | None = None
-) -> Path:
+def export_course(topic: str, output_dir: Path) -> Path:
     """Build matching ZIP and directory outputs without overwriting either one."""
     catalog = tomllib.loads((ROOT / "courses.toml").read_text())
     lesson = catalog["lessons"][topic]
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    version = version or project["version"]
+    version = project["version"]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", version):
         raise ValueError("Version must contain only letters, digits, dots, underscores or hyphens")
-    if number is not None and number < 0:
-        raise ValueError("Lesson number must be nonnegative")
-    prefix = "biai" if number is None else f"biai-{number:02d}"
-    name = f"{prefix}-{topic}-{version}"
+    name = f"biai-{topic}-{version}"
     output = Path(output_dir) / topic / f"{name}.zip"
     expanded = output.with_suffix("")
     for destination in (output, expanded):
@@ -117,7 +112,7 @@ def export_course(
     # Keep the exact dependency constraints available without installing the course itself.
     metadata = {
         "name": project["name"],
-        "version": project["version"],
+        "version": version,
         "description": lesson["title"],
         "requires-python": project["requires-python"],
         "dependencies": requirements,
@@ -131,7 +126,6 @@ def export_course(
     ).encode()
     provenance = {
         "lesson": topic,
-        "number": number,
         "version": version,
         "commit": None,
         "dirty": None,
@@ -181,10 +175,8 @@ def main():
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "dist", help="Parent of the lesson directories"
     )
-    parser.add_argument("--version", help="Release label; defaults to the project version")
-    parser.add_argument("--number", type=int, help="Optional lesson number for this release")
     args = parser.parse_args()
-    print(export_course(args.lesson, args.output_dir, version=args.version, number=args.number))
+    print(export_course(args.lesson, args.output_dir))
 
 
 if __name__ == "__main__":

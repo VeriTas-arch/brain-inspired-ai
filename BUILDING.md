@@ -10,7 +10,7 @@
 | [biai/paths.py](biai/paths.py) | 定义数据、结果和参考素材的位置 |
 | [biai/reproducibility.py](biai/reproducibility.py) | 提供随机种子等共用设置 |
 | [courses.toml](courses.toml) | 列出各课的标题、需要导出的文件和依赖名称 |
-| [pyproject.toml](pyproject.toml) | 维护依赖的版本要求 |
+| [pyproject.toml](pyproject.toml) | 维护整个课程仓库的发布版本和依赖的版本要求 |
 | [scripts/export_course.py](scripts/export_course.py) | 生成课程 ZIP 和对应的展开目录 |
 | [tests/](tests/) | 检查课程代码、文档链接和导出后的运行情况 |
 
@@ -28,7 +28,7 @@
 python scripts/export_course.py intro
 ```
 
-默认版本来自 `pyproject.toml`。版本为 `0.1.0` 时，输出结构如下：
+所有课程统一使用根目录 `pyproject.toml` 的 `[project].version`。以 `0.1.0` 为例，输出结构如下：
 
 ```bash
 dist/intro/
@@ -45,15 +45,9 @@ dist/intro/
 
 把命令中的 `intro` 换成 `mlp`、`cnn`、`continual_mnist`、`meta_learning` 或 `atari`，即可导出对应主题。Atari 包还会包含参考图表与动图；数据集、本地训练结果和模型不随课程包分发。
 
-发布时可以另行指定课次和版本：
+发布新版本前，更新根目录 `pyproject.toml` 的 `[project].version`，再导出所需课程。ZIP 文件名、内部根目录、展开目录、包内项目版本和 ZIP 注释中的版本保持一致。已有同名 ZIP 或目录时，脚本会停止，避免覆盖之前的内容。使用 `--output-dir` 可以更换输出根目录。
 
-```bash
-python scripts/export_course.py intro --number 0 --version 0.1.1
-```
-
-这会在 `dist/intro/` 中生成 `biai-00-intro-0.1.1.zip` 和同名展开目录。已有同名 ZIP 或目录时，脚本会停止，避免覆盖之前的内容。使用 `--output-dir` 可以更换输出根目录。
-
-导出读取当前目录中的文件，包括尚未提交的修改。ZIP 注释中记录来源提交和修改状态，便于之后核对。
+导出读取当前目录中的文件，包括尚未提交的修改。ZIP 注释中记录发布版本、来源提交和修改状态，便于之后核对。正式发布整套课程时，从同一个已检查的源码状态生成各课包。
 
 ## 添加新课程
 

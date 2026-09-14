@@ -52,9 +52,11 @@ For Atari implementation, regression or reference-result changes, follow
 - Maintain lesson topics, titles, file selection and dependency names in `courses.toml`, and version
   constraints in `pyproject.toml`. Each topic has a README and notebook under `biai/`.
   Follow [BUILDING.md](BUILDING.md) for commands and layout; keep titles and READMEs independent of numbering.
+- Use `pyproject.toml`'s `[project].version` as the sole release version for the repository and all
+  lessons. Keep export names, packaged project metadata and ZIP comments consistent with it.
 - Reject existing release ZIPs or expanded directories; use a new version. Publish the ZIP only
   after the expanded directory is ready, and remove that new directory if publication fails.
-- Export the current working tree, including uncommitted edits. Record release label, source commit
+- Export the current working tree, including uncommitted edits. Record project version, source commit
   and dirty status in the ZIP comment; review the working tree before a formal release.
 - Relocate the lesson README and notebook to the ZIP root beside selected `biai/` modules, rewriting
   and checking local links. Populate README dependencies from `pyproject.toml`; extracted lessons

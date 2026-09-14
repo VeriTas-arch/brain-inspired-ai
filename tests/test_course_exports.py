@@ -22,11 +22,14 @@ CATALOG = tomllib.loads((ROOT / "courses.toml").read_text())
 @pytest.mark.integration
 @pytest.mark.parametrize("topic", CATALOG["lessons"])
 def test_exported_lesson_runs_independently(topic, tmp_path):
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     archive_path = exporter.export_course(topic, tmp_path)
     assert archive_path.parent == tmp_path / topic
+    assert archive_path.name == f"biai-{topic}-{version}.zip"
     lesson_root = archive_path.with_suffix("")
     with ZipFile(archive_path) as archive:
         assert json.loads(archive.comment)["lesson"] == topic
+        assert json.loads(archive.comment)["version"] == version
         expanded_files = {
             path.relative_to(archive_path.parent).as_posix(): path.read_bytes()
             for path in lesson_root.rglob("*")
@@ -62,6 +65,7 @@ def test_exported_lesson_runs_independently(topic, tmp_path):
             if not target.startswith(("https://", "http://", "#")):
                 assert (path.parent / target.split("#")[0]).is_file(), (path, target)
     metadata = tomllib.loads((lesson_root / "pyproject.toml").read_text())["project"]
+    assert metadata["version"] == version
     for requirement in metadata["dependencies"]:
         assert f'"{requirement}"' in (lesson_root / "README.md").read_text()
     assert not any(item.startswith(("pytest", "ruff")) for item in metadata["dependencies"])
@@ -170,15 +174,44 @@ def test_failed_export_removes_partial_outputs(tmp_path, monkeypatch, failure):
     assert list((tmp_path / "intro").iterdir()) == []
 
 
-def test_export_keeps_versions_together_without_changing_previous_output(tmp_path):
-    first = exporter.export_course("intro", tmp_path, version="0.1.0", number=0)
+def test_export_keeps_versions_together_without_changing_previous_output(tmp_path, monkeypatch):
+    real_read = Path.read_text
+    project_version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    version = "0.1.0"
+
+    def read_text(path, *args, **kwargs):
+        text = real_read(path, *args, **kwargs)
+        if path == ROOT / "pyproject.toml":
+            text = text.replace(f'version = "{project_version}"', f'version = "{version}"', 1)
+        return text
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    first = exporter.export_course("intro", tmp_path)
     original = first.read_bytes()
-    second = exporter.export_course("intro", tmp_path, version="0.1.1", number=1)
+    version = "0.1.1"
+    second = exporter.export_course("intro", tmp_path)
     assert first.parent == second.parent == tmp_path / "intro"
-    assert first.name == "biai-00-intro-0.1.0.zip"
-    assert second.name == "biai-01-intro-0.1.1.zip"
+    assert first.name == "biai-intro-0.1.0.zip"
+    assert second.name == "biai-intro-0.1.1.zip"
     assert first.read_bytes() == original
     assert first.with_suffix("").is_dir() and second.with_suffix("").is_dir()
+    for path, expected in ((first, "0.1.0"), (second, "0.1.1")):
+        with ZipFile(path) as archive:
+            assert json.loads(archive.comment)["version"] == expected
+            metadata = tomllib.loads(archive.read(f"{path.stem}/pyproject.toml").decode())
+            assert metadata["project"]["version"] == expected
+
+
+@pytest.mark.parametrize("option,value", (("--version", "0.1.1"), ("--number", "0")))
+def test_export_cli_rejects_release_overrides(tmp_path, monkeypatch, capsys, option, value):
+    monkeypatch.setattr(
+        sys, "argv", ["export_course.py", "intro", "--output-dir", str(tmp_path), option, value]
+    )
+    with pytest.raises(SystemExit) as error:
+        exporter.main()
+    assert error.value.code == 2
+    assert f"unrecognized arguments: {option} {value}" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_export_rejects_unpublished_link_before_writing(tmp_path, monkeypatch):
