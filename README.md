@@ -68,4 +68,4 @@ Omniglot 通过 [torchvision](https://docs.pytorch.org/vision/stable/generated/t
 
 本课程的源码与构建工具见 [brain-inspired-ai](https://github.com/VeriTas-arch/brain-inspired-ai)。
 
-如果想了解课程材料的组织方式，以及如何从源码生成每节课的压缩包，可以查看[构建说明](BUILDING.md)。欢迎提出问题和改进建议。
+如果想了解课程材料的组织方式，以及如何从源码生成每节课发布的压缩包，可以查看[构建说明](BUILDING.md)。欢迎提出问题和改进建议。
