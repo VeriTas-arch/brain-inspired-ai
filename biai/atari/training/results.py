@@ -7,7 +7,7 @@ import shutil
 import sys
 import tempfile
 from contextlib import ExitStack, contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
@@ -77,7 +77,7 @@ def case_name(
 def run_metadata() -> dict:
     """Record runtime versions without inspecting Git or the source tree."""
     return {
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "versions": {
             "python": platform.python_version(),
             **{name: version(name) for name in ("torch", "gymnasium", "ale-py")},

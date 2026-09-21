@@ -12,11 +12,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
 
 from biai.atari.training import DEFAULT_MAX_EPISODE_STEPS
 from biai.atari.training.results import (
@@ -660,7 +660,7 @@ def run_jobs(
         finally:
             status["jobs"][index].update(
                 exit_code=process.returncode,
-                finished_at=datetime.now(timezone.utc).isoformat(),
+                finished_at=datetime.now(UTC).isoformat(),
             )
 
     pending, running, completed = list(enumerate(jobs)), {}, set()
@@ -678,7 +678,7 @@ def run_jobs(
                 status["jobs"][index].update(
                     state="completed" if code == 0 else "failed",
                     exit_code=code,
-                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    finished_at=datetime.now(UTC).isoformat(),
                 )
                 write_status()
                 if code:
@@ -724,7 +724,7 @@ def run_jobs(
                     state="running",
                     pid=process.pid,
                     cpus=cpus,
-                    started_at=datetime.now(timezone.utc).isoformat(),
+                    started_at=datetime.now(UTC).isoformat(),
                 )
                 _print_job(
                     job,
