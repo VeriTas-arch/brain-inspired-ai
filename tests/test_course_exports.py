@@ -1,14 +1,18 @@
 """Exercise standalone lessons without installing the exported biai package."""
 
+import gzip
+import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tomllib
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import ZIP_STORED, ZipFile
 
 import nbformat
 import pytest
@@ -19,9 +23,24 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG = tomllib.loads((ROOT / "courses.toml").read_text())
 
 
+@pytest.fixture
+def fake_dataset_packaging(monkeypatch):
+    """Keep export contract tests small while preserving per-lesson dataset selection."""
+
+    def package(dataset_names, catalog, data_root):
+        if not dataset_names:
+            return {}
+        manifest = {"datasets": [{"id": name} for name in dataset_names]}
+        files = {Path("data") / f"{name}.fixture": f"{name}\n".encode() for name in dataset_names}
+        files[Path("data/DATASETS.json")] = json.dumps(manifest).encode()
+        return files
+
+    monkeypatch.setattr(exporter, "package_datasets", package)
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("topic", CATALOG["lessons"])
-def test_exported_lesson_runs_independently(topic, tmp_path):
+def test_exported_lesson_runs_independently(topic, tmp_path, fake_dataset_packaging):
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     archive_path = exporter.export_course(topic, tmp_path)
     assert archive_path.parent == tmp_path / topic
@@ -42,8 +61,14 @@ def test_exported_lesson_runs_independently(topic, tmp_path):
     nbformat.validate(nbformat.read(notebook, as_version=4))
     assert sorted(p.name for p in lesson_root.glob("*.ipynb")) == [notebook.name]
     assert sorted(p.name for p in (lesson_root / "biai").iterdir() if p.is_dir()) == [topic]
-    for excluded in ("data", "results", ".git", "tests", ".envrc", "courses.toml"):
+    for excluded in ("results", ".git", "tests", ".envrc", "courses.toml"):
         assert not (lesson_root / excluded).exists()
+    expected_datasets = CATALOG["lessons"][topic]["datasets"]
+    assert (lesson_root / "data").exists() == bool(expected_datasets)
+    if expected_datasets:
+        manifest = json.loads((lesson_root / "data/DATASETS.json").read_text())
+        assert [entry["id"] for entry in manifest["datasets"]] == expected_datasets
+        assert not list((lesson_root / "data").rglob("*mini-imagenet*"))
     assert not list(lesson_root.rglob("*.pt"))
     assert not list(lesson_root.rglob("*.pyc"))
     assert not list(lesson_root.rglob("*.mp4"))
@@ -214,7 +239,9 @@ def test_export_cli_rejects_release_overrides(tmp_path, monkeypatch, capsys, opt
     assert list(tmp_path.iterdir()) == []
 
 
-def test_export_rejects_unpublished_link_before_writing(tmp_path, monkeypatch):
+def test_export_rejects_unpublished_link_before_writing(
+    tmp_path, monkeypatch, fake_dataset_packaging
+):
     real_read = Path.read_text
 
     def read_text(path, *args, **kwargs):
@@ -227,3 +254,136 @@ def test_export_rejects_unpublished_link_before_writing(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Unpublished link"):
         exporter.export_course("mlp", tmp_path)
     assert not (tmp_path / "mlp").exists()
+
+
+def _md5_bytes(content):
+    return hashlib.md5(content, usedforsecurity=False).hexdigest()
+
+
+def test_package_datasets_verifies_and_extracts_supported_archives(tmp_path):
+    data_root = tmp_path / "sources"
+    data_root.mkdir()
+    gzip_path = data_root / "digits.gz"
+    with gzip.open(gzip_path, "wb") as stream:
+        stream.write(b"digits")
+
+    tar_path = data_root / "images.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as archive:
+        content = b"images"
+        member = tarfile.TarInfo("cifar/images.bin")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
+
+    zip_path = data_root / "characters.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr("characters/a.png", b"character")
+
+    def source(path, archive_format):
+        content = path.read_bytes()
+        return {
+            "path": path.name,
+            "md5": _md5_bytes(content),
+            "format": archive_format,
+        }
+
+    catalog = {
+        "datasets": {
+            "fixture": {
+                "title": "Fixture",
+                "source_url": "https://example.test/data",
+                "citation_url": "https://example.test/citation",
+                "sources": [
+                    source(gzip_path, "gzip"),
+                    source(tar_path, "tar-xz"),
+                    source(zip_path, "zip"),
+                ],
+            }
+        }
+    }
+    files = exporter.package_datasets(["fixture"], catalog, data_root)
+    assert files[Path("data/digits")] == b"digits"
+    tar_xz = files[Path("data/images.tar.xz")]
+    with tarfile.open(fileobj=io.BytesIO(tar_xz), mode="r:xz") as archive:
+        extracted = archive.extractfile("cifar/images.bin")
+        assert extracted is not None and extracted.read() == b"images"
+    assert files[Path("data/characters.zip")] == zip_path.read_bytes()
+    assert files[Path("data/characters/a.png")] == b"character"
+    manifest = json.loads(files[Path("data/DATASETS.json")])
+    assert manifest["datasets"][0]["id"] == "fixture"
+    assert manifest["datasets"][0]["packaged_files"] == 4
+
+
+def test_export_stores_nested_xz_without_recompression(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        exporter,
+        "package_datasets",
+        lambda dataset_names, catalog, data_root: {Path("data/fixture.tar.xz"): b"fixture"},
+    )
+    archive_path = exporter.export_course("intro", tmp_path)
+    with ZipFile(archive_path) as archive:
+        info = archive.getinfo(f"{archive_path.stem}/data/fixture.tar.xz")
+        assert info.compress_type == ZIP_STORED
+
+
+def test_package_datasets_rejects_checksum_mismatch_before_staging(tmp_path):
+    source = tmp_path / "bad.gz"
+    source.write_bytes(b"not-a-valid-source")
+    catalog = {
+        "datasets": {
+            "bad": {
+                "title": "Bad",
+                "source_url": "https://example.test/data",
+                "citation_url": "https://example.test/citation",
+                "sources": [{"path": source.name, "md5": "0" * 32, "format": "gzip"}],
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        exporter.package_datasets(["bad"], catalog, tmp_path)
+
+
+def test_package_datasets_rejects_unsafe_archive_members(tmp_path):
+    source = tmp_path / "unsafe.zip"
+    with ZipFile(source, "w") as archive:
+        archive.writestr("../escape.txt", b"escape")
+    catalog = {
+        "datasets": {
+            "unsafe": {
+                "title": "Unsafe",
+                "source_url": "https://example.test/data",
+                "citation_url": "https://example.test/citation",
+                "sources": [
+                    {"path": source.name, "md5": _md5_bytes(source.read_bytes()), "format": "zip"}
+                ],
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="Unsafe dataset archive path"):
+        exporter.package_datasets(["unsafe"], catalog, tmp_path)
+
+
+def test_package_datasets_rejects_unsafe_tar_members(tmp_path):
+    source = tmp_path / "unsafe.tar.gz"
+    with tarfile.open(source, "w:gz") as archive:
+        content = b"escape"
+        member = tarfile.TarInfo("../escape.txt")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
+    catalog = {
+        "datasets": {
+            "unsafe": {
+                "title": "Unsafe",
+                "source_url": "https://example.test/data",
+                "citation_url": "https://example.test/citation",
+                "sources": [
+                    {
+                        "path": source.name,
+                        "md5": _md5_bytes(source.read_bytes()),
+                        "format": "tar-xz",
+                    }
+                ],
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="Unsafe dataset archive path"):
+        exporter.package_datasets(["unsafe"], catalog, tmp_path)

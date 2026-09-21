@@ -39,19 +39,19 @@ python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ## 数据与运行结果
 
-MNIST、CIFAR-10 和 Omniglot 在首次执行数据加载单元格时下载，之后直接读取 `data/` 下的缓存。数据集不随仓库分发。
+各课压缩包包含完成默认演示所需的数据集：MLP 和持续学习包包含 MNIST，CNN 包包含 MNIST 与 CIFAR-10，元学习包包含 Omniglot。Notebook 中的 `USE_NETWORK_DATA` 默认为 `False`，直接读取包内 `data/`；改为 `True` 后，程序会把网络副本下载到 `data/network/` 并优先使用该副本。完整源码仓库不在 Git 中保存数据集，首次从源码运行时可将该变量改为 `True`。
 
-Omniglot 通过 [torchvision](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.Omniglot.html) 下载。代码将 `background` 中约 80% 的字符类别用于训练，其余用于验证；`evaluation` 中的类别用于最终测试。数据背景见 [Omniglot 原始项目](https://github.com/brendenlake/omniglot)。
+联网覆盖时，Omniglot 通过 [torchvision](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.Omniglot.html) 下载。代码将 `background` 中约 80% 的字符类别用于训练，其余用于验证；`evaluation` 中的类别用于最终测试。数据背景见 [Omniglot 原始项目](https://github.com/brendenlake/omniglot)。
 
-元学习默认使用 Omniglot。将 `DATASET_NAME` 改为 `"mini-imagenet"` 后，会从 [learn2learn 提供的数据](https://zenodo.org/records/7978538) 下载约 1.8 GB 的 Mini-ImageNet 图像缓存。图像为 84 × 84 的 RGB 彩色图，训练、验证和测试分别包含 64、16、20 个类别。不同 N-way/K-shot 设置的运行方式见该 Notebook 的比较实验一节。
+元学习默认使用随包提供的 Omniglot。Mini-ImageNet 是可选对照，不随课程包分发；同时将 `DATASET_NAME` 改为 `"mini-imagenet"`、将 `USE_NETWORK_DATA` 改为 `True` 后，程序会从 [learn2learn 提供的数据](https://zenodo.org/records/7978538) 下载约 1.8 GB 的图像缓存。图像为 84 × 84 的 RGB 彩色图，训练、验证和测试分别包含 64、16、20 个类别。不同 N-way/K-shot 设置的运行方式见该 Notebook 的比较实验一节。
 
 运行时主要会用到以下目录：
 
-- `data/`：下载的数据集缓存。
+- `data/`：课程包内的默认数据集，以及 `network/` 下另行下载的网络副本。
 - `results/`：本地保存的训练记录、模型和录像；Atari 为每个案例建立一个子目录。
 - `assets/`：随仓库提供的 Atari 参考结果、图表和动图。
 
-`data/` 和 `results/` 已被 Git 忽略，自己的训练结果不会覆盖 `assets/` 中的参考素材。
+`data/` 和 `results/` 已被 Git 忽略；导出器只会根据 `courses.toml` 将经过校验的必需数据加入课程包，自己的其他缓存和训练结果不会随包发布，也不会覆盖 `assets/` 中的参考素材。
 
 ## 阅读代码
 

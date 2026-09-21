@@ -30,9 +30,11 @@ For Atari implementation, regression or reference-result changes, follow
 - RL algorithms and training loops use PyTorch directly. Adding a framework or acceleration
   backend requires a project decision.
 - Use `biai.paths` so data, results and assets do not depend on the notebook working directory.
-  Keep downloaded datasets in ignored `data/` and local results in ignored `results/`; exclude
-  datasets and `ref/` archives from Git. Do not add dated result subdirectories, source copies,
-  `outputs/`, `archive/`, source manifests or compatibility links to old paths.
+  Keep source and downloaded datasets in ignored `data/` and local results in ignored `results/`;
+  exclude datasets and `ref/` archives from Git. Lesson exports include only the default datasets
+  declared for that lesson in `courses.toml`, after source-archive checksum verification. Do not add
+  dated result subdirectories, source copies, `outputs/`, `archive/` or compatibility links to old
+  paths.
 - Track `assets/reference_results.json`, selected figures and GIFs. Reference displays must work
   without local runs; training and `--force` must never modify these assets.
 
@@ -61,9 +63,10 @@ For Atari implementation, regression or reference-result changes, follow
 - Relocate the lesson README and notebook to the ZIP root beside selected `biai/` modules, rewriting
   and checking local links. Populate README dependencies from `pyproject.toml`; extracted lessons
   must run without installing `biai-course`. Do not modify source notebooks or assets on export.
-- Include only selected reference assets; exclude datasets, local results, checkpoints, caches,
-  Git history and maintenance documents. Verify package-local imports and the affected lesson's
-  short execution checks in fresh Python processes.
+- Include only declared default datasets and selected reference assets; exclude optional datasets,
+  local results, checkpoints, unrelated caches, Git history and maintenance documents. Verify
+  package-local imports, packaged dataset integrity and the affected lesson's short execution checks
+  in fresh Python processes.
 
 ## Validation
 

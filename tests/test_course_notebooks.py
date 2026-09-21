@@ -57,6 +57,15 @@ def test_course_cells_train_evaluate_and_plot_offline(topic, device, offline_dat
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("topic", TOPICS[1:-1])
+def test_course_network_switch_uses_separate_cache(topic, offline_data, monkeypatch):
+    path = notebook_path(topic)
+    monkeypatch.chdir(path.parent)
+    namespace = run_notebook_smoke(path, "cpu", use_network_data=True)
+    assert_lesson_smoke(topic, namespace, offline_data, use_network_data=True)
+
+
+@pytest.mark.integration
 def test_installed_package_and_atari_cli_work_outside_the_repository(tmp_path):
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)

@@ -3,21 +3,140 @@
 from __future__ import annotations
 
 import argparse
+import gzip
+import hashlib
+import io
 import json
+import lzma
 import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"(?<=\]\()([^\s)]+)(?=\))")
 DEPENDENCIES = re.compile(
     r"<!-- course-dependencies -->.*?<!-- /course-dependencies -->", re.DOTALL
 )
+
+
+def _archive_path(name: str) -> Path:
+    """Return a safe relative path from an archive member name."""
+    path = Path(name)
+    if "\\" in name or path.is_absolute() or ".." in path.parts or not path.parts:
+        raise ValueError(f"Unsafe dataset archive path: {name}")
+    return path
+
+
+def _add_file(files: dict[Path, bytes], destination: Path, content: bytes) -> None:
+    """Add one packaged file while rejecting conflicting archive members."""
+    if destination in files and files[destination] != content:
+        raise ValueError(f"Conflicting dataset file: {destination}")
+    files[destination] = content
+
+
+def _md5(path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def package_datasets(
+    dataset_names: list[str], catalog: dict, data_root: Path = ROOT / "data"
+) -> dict[Path, bytes]:
+    """Verify and stage only the datasets declared by one lesson."""
+    if not dataset_names:
+        return {}
+    data_root = Path(data_root).resolve()
+    files: dict[Path, bytes] = {}
+    manifest = {"datasets": []}
+    for name in dataset_names:
+        dataset = catalog["datasets"][name]
+        packaged_before = set(files)
+        source_records = []
+        for source in dataset["sources"]:
+            relative = _archive_path(source["path"])
+            candidate = data_root / relative
+            path = candidate.resolve()
+            if (
+                not path.is_relative_to(data_root)
+                or not candidate.is_file()
+                or candidate.is_symlink()
+            ):
+                raise FileNotFoundError(f"Missing regular dataset source: {path}")
+            actual_md5 = _md5(path)
+            if actual_md5 != source["md5"]:
+                raise ValueError(
+                    f"Dataset checksum mismatch for {path}: {actual_md5} != {source['md5']}"
+                )
+            source_records.append(
+                {
+                    "path": relative.as_posix(),
+                    "md5": actual_md5,
+                    "bytes": path.stat().st_size,
+                    "format": source["format"],
+                }
+            )
+            archive_format = source["format"]
+            if archive_format == "gzip":
+                with gzip.open(path, "rb") as stream:
+                    _add_file(files, Path("data") / relative.with_suffix(""), stream.read())
+            elif archive_format == "tar-xz":
+                with tarfile.open(path, "r:gz") as archive:
+                    for member in archive.getmembers():
+                        _archive_path(member.name)
+                        if not (member.isdir() or member.isfile()):
+                            raise ValueError(f"Unsupported dataset archive member: {member.name}")
+                compressed = io.BytesIO()
+                with (
+                    gzip.open(path, "rb") as source_stream,
+                    lzma.LZMAFile(
+                        compressed, "wb", preset=9 | lzma.PRESET_EXTREME
+                    ) as destination_stream,
+                ):
+                    shutil.copyfileobj(source_stream, destination_stream)
+                destination = Path(
+                    "data/" + relative.as_posix().removesuffix(".tar.gz") + ".tar.xz"
+                )
+                _add_file(files, destination, compressed.getvalue())
+            elif archive_format == "zip":
+                _add_file(files, Path("data") / relative, path.read_bytes())
+                try:
+                    with ZipFile(path) as archive:
+                        for member in archive.infolist():
+                            if member.is_dir():
+                                continue
+                            destination = (
+                                Path("data") / relative.parent / _archive_path(member.filename)
+                            )
+                            _add_file(files, destination, archive.read(member))
+                except BadZipFile as error:
+                    raise ValueError(f"Invalid dataset ZIP: {path}") from error
+            else:
+                raise ValueError(f"Unknown dataset archive format: {archive_format}")
+        packaged = set(files) - packaged_before
+        manifest["datasets"].append(
+            {
+                "id": name,
+                "title": dataset["title"],
+                "source_url": dataset["source_url"],
+                "citation_url": dataset["citation_url"],
+                "sources": source_records,
+                "packaged_files": len(packaged),
+                "packaged_bytes": sum(len(files[path]) for path in packaged),
+            }
+        )
+    files[Path("data/DATASETS.json")] = (
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode()
+    return files
 
 
 def rewrite_links(text: str, source: Path, destination: Path, mapping: dict[Path, Path]) -> str:
@@ -37,7 +156,7 @@ def rewrite_links(text: str, source: Path, destination: Path, mapping: dict[Path
     return LINK.sub(replace, text)
 
 
-def export_course(topic: str, output_dir: Path) -> Path:
+def export_course(topic: str, output_dir: Path, data_root: Path = ROOT / "data") -> Path:
     """Build matching ZIP and directory outputs without overwriting either one."""
     catalog = tomllib.loads((ROOT / "courses.toml").read_text())
     lesson = catalog["lessons"][topic]
@@ -82,7 +201,7 @@ def export_course(topic: str, output_dir: Path) -> Path:
         f"<!-- course-dependencies -->\n```bash\n{command}\n```\n<!-- /course-dependencies -->"
     )
 
-    files = {}
+    files = package_datasets(lesson["datasets"], catalog, data_root)
     for source, destination in mapping.items():
         if source.suffix == ".md":
             text = rewrite_links(source.read_text(encoding="utf-8"), source, destination, links)
@@ -151,7 +270,8 @@ def export_course(topic: str, output_dir: Path) -> Path:
         staged = Path(temporary) / output.name
         with ZipFile(staged, "w", compression=ZIP_DEFLATED) as archive:
             for path, content in sorted(files.items()):
-                archive.writestr(f"{name}/{path.as_posix()}", content)
+                compression = ZIP_STORED if path.suffix == ".xz" else ZIP_DEFLATED
+                archive.writestr(f"{name}/{path.as_posix()}", content, compress_type=compression)
             archive.comment = json.dumps(provenance).encode()
         with ZipFile(staged) as archive:
             if archive.testzip() is not None:

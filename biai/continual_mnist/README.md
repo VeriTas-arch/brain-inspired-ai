@@ -24,7 +24,7 @@ python -m pip install ipykernel ipython numpy matplotlib torch torchvision
 
 用 VS Code 打开解压后的课程目录，并安装 Microsoft 提供的 Python 和 Jupyter 扩展。打开 [continual_mnist.ipynb](continual_mnist.ipynb)，选择 `brain_ai` 内核，从顶部按顺序运行。
 
-首次运行会下载 MNIST，缓存保存在课程根目录的 `data/`。各方法使用相同的初始化、任务顺序和训练预算。
+课程包已经包含 MNIST，默认直接从课程根目录的 `data/` 读取，不需要联网。若要与网络来源重新获取的数据对照，将 Notebook 顶部的 `USE_NETWORK_DATA` 改为 `True`；数据会下载到 `data/network/`，不会覆盖包内副本。各方法使用相同的初始化、任务顺序和训练预算。
 
 实验包含两种评估方式：任务增量学习（Task-IL）在预测时提供任务编号，只需区分该任务的两个数字；类别增量学习（Class-IL）不提供任务编号，需要从已经学过的所有数字中判断。
 

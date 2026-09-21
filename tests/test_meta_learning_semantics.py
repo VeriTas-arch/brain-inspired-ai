@@ -164,8 +164,12 @@ def test_mini_imagenet_split_and_episode_loader(tmp_path, monkeypatch):
         classes = {f"{split}-{i}": list(range(i * 20, (i + 1) * 20)) for i in range(count)}
         path.write_bytes(pickle.dumps(dict(image_data=images, class_dict=classes), protocol=4))
     monkeypatch.setitem(ns, "check_integrity", lambda path, checksum: path.is_file())
-    monkeypatch.setitem(ns, "MiniImageNetFewShot", lambda split: loader(tmp_path, split))
-    train, validation, test = ns["load_few_shot_data"]("mini-imagenet")
+    monkeypatch.setitem(ns, "MiniImageNetFewShot", lambda root, split: loader(tmp_path, split))
+    with pytest.raises(ValueError, match="不随课程包分发"):
+        ns["load_few_shot_data"]("mini-imagenet")
+    train, validation, test = ns["load_few_shot_data"](
+        "mini-imagenet", use_network_data=True, data_dir=tmp_path
+    )
     assert [len(ds.classes) for ds in (train, validation, test)] == [64, 16, 20]
     sx, sy, qx, qy = train.sample_episode(5, 5, 15, random.Random(0))
     assert sx.shape == (25, 3, 84, 84) and qx.shape == (75, 3, 84, 84)
@@ -207,7 +211,7 @@ def test_task_size_matrix_runs_both_methods_with_matching_initialization(monkeyp
             )
 
     monkeypatch.setitem(
-        ns, "load_few_shot_data", lambda name: tuple(Episodes(name) for _ in range(3))
+        ns, "load_few_shot_data", lambda name, **kwargs: tuple(Episodes(name) for _ in range(3))
     )
     rows = ns["compare_task_sizes"](
         [("omniglot", 20, 5), ("mini-imagenet", 5, 5)],

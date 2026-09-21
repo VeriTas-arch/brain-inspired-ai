@@ -1,7 +1,9 @@
 """Shared notebook loading, offline execution, and lesson assertions for tests."""
 
 import ast
+import io
 import json
+import tarfile
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -39,6 +41,10 @@ def definitions(topic):
 class SmallBudgets(ast.NodeTransformer):
     """Change only demonstration budgets in the in-memory smoke copy."""
 
+    def __init__(self, use_network_data=None):
+        self.use_network_data = use_network_data
+        super().__init__()
+
     values = {
         "epochs": 1,
         "N_WAY": 2,
@@ -58,6 +64,8 @@ class SmallBudgets(ast.NodeTransformer):
             name = node.targets[0].id
             if name == "device":
                 node.value = ast.Name(id="__smoke_device", ctx=ast.Load())
+            elif name == "USE_NETWORK_DATA" and self.use_network_data is not None:
+                node.value = ast.Constant(self.use_network_data)
             elif name in self.values:
                 node.value = ast.Constant(self.values[name])
             elif name == "CONFIG":
@@ -83,11 +91,21 @@ def prepare_offline_data(monkeypatch, data_dir):
     """Install deterministic local datasets for a notebook smoke run."""
     monkeypatch.setattr(paths, "DATA_DIR", data_dir)
     monkeypatch.setattr(plt, "show", lambda: plt.close("all"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(data_dir / "cifar-10-python.tar.xz", "w:xz") as archive:
+        directory = tarfile.TarInfo("cifar-10-batches-py")
+        directory.type = tarfile.DIRTYPE
+        archive.addfile(directory)
+        content = b"fixture"
+        member = tarfile.TarInfo("cifar-10-batches-py/fixture")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
 
     class TinyImages(torch.utils.data.Dataset):
         def __init__(self, root, train=True, download=False, transform=None, *, rgb=False):
-            assert Path(root) == data_dir
-            assert download
+            root = Path(root)
+            assert root in (data_dir, data_dir / "network")
+            assert download == (root == data_dir / "network")
             self.transform = transform
             self.targets = torch.arange(10).repeat_interleave(4)
             shape = (40, 32, 32, 3) if rgb else (40, 28, 28)
@@ -103,12 +121,13 @@ def prepare_offline_data(monkeypatch, data_dir):
             return self.transform(image), int(self.targets[index])
 
     def prepare_omniglot(root, *, background, download):
-        assert Path(root) == data_dir
-        assert download
+        root = Path(root)
+        assert root in (data_dir, data_dir / "network")
+        assert download == (root == data_dir / "network")
         split = "images_background" if background else "images_evaluation"
         for alphabet in (f"{split}_one", f"{split}_two"):
             for character in range(3):
-                directory = data_dir / "omniglot-py" / split / alphabet / f"character{character}"
+                directory = root / "omniglot-py" / split / alphabet / f"character{character}"
                 directory.mkdir(parents=True)
                 for sample in range(20):
                     image = np.random.default_rng(character * 20 + sample).integers(
@@ -122,21 +141,26 @@ def prepare_offline_data(monkeypatch, data_dir):
     return data_dir
 
 
-def run_notebook_smoke(path, device):
+def run_notebook_smoke(path, device, use_network_data=None):
     """Execute real notebook cells with reduced demonstration budgets."""
     namespace = {"__name__": "__main__", "__smoke_device": torch.device(device)}
     notebook = nbformat.read(path, as_version=4)
     for index, cell in enumerate(notebook.cells):
         if cell.cell_type != "code":
             continue
-        tree = ast.fix_missing_locations(SmallBudgets().visit(ast.parse(cell.source)))
+        tree = ast.fix_missing_locations(
+            SmallBudgets(use_network_data=use_network_data).visit(ast.parse(cell.source))
+        )
         exec(compile(tree, f"{path}:cell-{index}", "exec"), namespace)
     return namespace
 
 
-def assert_lesson_smoke(topic, namespace, data_dir):
+def assert_lesson_smoke(topic, namespace, data_dir, use_network_data=False):
     """Check finite models and the lesson-specific comparison contracts."""
     assert namespace["DATA_DIR"] == data_dir
+    assert namespace["USE_NETWORK_DATA"] is use_network_data
+    expected_dir = data_dir / "network" if use_network_data else data_dir
+    assert namespace["DATASET_DIR"] == expected_dir
     models = [value for value in namespace.values() if isinstance(value, torch.nn.Module)]
     assert models
     for model in models:
