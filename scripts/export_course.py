@@ -156,8 +156,14 @@ def rewrite_links(text: str, source: Path, destination: Path, mapping: dict[Path
     return LINK.sub(replace, text)
 
 
-def export_course(topic: str, output_dir: Path, data_root: Path = ROOT / "data") -> Path:
-    """Build matching ZIP and directory outputs without overwriting either one."""
+def export_course(
+    topic: str,
+    output_dir: Path,
+    data_root: Path = ROOT / "data",
+    *,
+    force: bool = False,
+) -> Path:
+    """Build matching ZIP and directory outputs, optionally replacing both."""
     catalog = tomllib.loads((ROOT / "courses.toml").read_text())
     lesson = catalog["lessons"][topic]
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
@@ -167,9 +173,10 @@ def export_course(topic: str, output_dir: Path, data_root: Path = ROOT / "data")
     name = f"biai-{topic}-{version}"
     output = Path(output_dir) / topic / f"{name}.zip"
     expanded = output.with_suffix("")
-    for destination in (output, expanded):
-        if destination.exists() or destination.is_symlink():
-            raise FileExistsError(destination)
+    if not force:
+        for destination in (output, expanded):
+            if destination.exists() or destination.is_symlink():
+                raise FileExistsError(destination)
 
     mapping = {}
     for pattern in catalog["common"]["files"] + lesson["files"]:
@@ -277,13 +284,36 @@ def export_course(topic: str, output_dir: Path, data_root: Path = ROOT / "data")
             if archive.testzip() is not None:
                 raise ValueError("ZIP integrity check failed")
             archive.extractall(temporary)
+
+        backups = {}
+        if force:
+            try:
+                for label, destination in (("archive", output), ("directory", expanded)):
+                    if destination.exists() or destination.is_symlink():
+                        backup = Path(temporary) / f"previous-{label}"
+                        os.replace(destination, backup)
+                        backups[destination] = backup
+            except BaseException:
+                for destination, backup in backups.items():
+                    os.replace(backup, destination)
+                raise
+
         # Reserve the directory exclusively; publish the ZIP after its contents are ready.
-        expanded.mkdir()
+        created_expanded = False
+        created_output = False
         try:
+            expanded.mkdir()
+            created_expanded = True
             shutil.copytree(Path(temporary) / name, expanded, dirs_exist_ok=True)
             os.link(staged, output)
+            created_output = True
         except BaseException:
-            shutil.rmtree(expanded)
+            if created_output:
+                output.unlink()
+            if created_expanded:
+                shutil.rmtree(expanded)
+            for destination, backup in backups.items():
+                os.replace(backup, destination)
             raise
     return output
 
@@ -295,8 +325,14 @@ def main():
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "dist", help="Parent of the lesson directories"
     )
+    parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Replace this lesson version's existing ZIP and expanded directory",
+    )
     args = parser.parse_args()
-    print(export_course(args.lesson, args.output_dir))
+    print(export_course(args.lesson, args.output_dir, force=args.force))
 
 
 if __name__ == "__main__":

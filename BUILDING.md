@@ -43,11 +43,11 @@ dist/intro/
 
 展开目录与 ZIP 中的文件一致，可以直接打开检查。导出脚本会把本课的 README 和 Notebook 放到根目录，调整本地链接，再带上所需的公共代码和默认数据集。README 中的依赖安装命令会按 `pyproject.toml` 补齐版本要求。
 
-把命令中的 `intro` 换成 `mlp`、`cnn`、`continual_mnist`、`meta_learning` 或 `atari`，即可导出对应主题。`courses.toml` 的 `datasets` 字段声明每课默认需要的数据；导出器从忽略的 `data/` 读取上游归档，先核对 MD5，再只把声明的数据写入课程包。Mini-ImageNet 等可选对照、本地训练结果和模型不随包分发。Atari 包仍只包含参考图表与动图。
+把命令中的 `intro` 换成 `mlp`、`amari_hopfield_model`、`cnn`、`continual_mnist`、`meta_learning` 或 `atari`，即可导出对应主题。`courses.toml` 的 `datasets` 字段声明每课默认需要的数据；导出器从忽略的 `data/` 读取上游归档，先核对 MD5，再只把声明的数据写入课程包。课程源码内明确列出的少量演示素材也会随包导出。Mini-ImageNet 等可选对照、本地训练结果和模型不随包分发。Atari 包仍只包含参考图表与动图。
 
 当前数据源文件为：MNIST 的四个 `data/MNIST/raw/*.gz`，CIFAR-10 的 `data/cifar-10-python.tar.gz`，以及 Omniglot 的两个 `data/omniglot-py/*.zip`。缺少文件或校验值不符时，导出会在创建输出前停止。导出器将 CIFAR-10 的官方 `tar.gz` 确定性地转码为包内 `tar.xz`，Notebook 第一次使用时再安全解包；外层课程包仍是普通 ZIP。课程包中的 `data/DATASETS.json` 记录来源、校验值和实际打包规模。
 
-发布新版本前，更新根目录 `pyproject.toml` 的 `[project].version`，再导出所需课程。ZIP 文件名、内部根目录、展开目录、包内项目版本和 ZIP 注释中的版本保持一致。已有同名 ZIP 或目录时，脚本会停止，避免覆盖之前的内容。使用 `--output-dir` 可以更换输出根目录。
+发布新版本前，更新根目录 `pyproject.toml` 的 `[project].version`，再导出所需课程。ZIP 文件名、内部根目录、展开目录、包内项目版本和 ZIP 注释中的版本保持一致。默认情况下，已有同名 ZIP 或目录时脚本会停止。确认需要重新生成当前版本时，可以加入 `--force` 或 `-f`；它只替换该课程当前版本的 ZIP 和展开目录，不会清理输出目录中的其他文件。新包会先在临时目录中生成并校验，发布失败时恢复原有文件。使用 `--output-dir` 可以更换输出根目录。
 
 导出读取当前目录中的文件，包括尚未提交的修改。ZIP 注释中记录发布版本、来源提交和修改状态，便于之后核对。正式发布整套课程时，从同一个已检查的源码状态生成各课包。
 

@@ -18,7 +18,16 @@ from tests.notebook_helpers import (
     run_notebook_smoke,
 )
 
-TOPICS = ("intro", "mlp", "cnn", "continual_mnist", "meta_learning", "atari")
+TOPICS = (
+    "intro",
+    "mlp",
+    "amari_hopfield_model",
+    "cnn",
+    "continual_mnist",
+    "meta_learning",
+    "atari",
+)
+DATA_TOPICS = ("mlp", "cnn", "continual_mnist", "meta_learning")
 
 
 @pytest.mark.parametrize("topic", TOPICS)
@@ -44,7 +53,7 @@ def offline_data(monkeypatch, tmp_path):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("topic", TOPICS[1:-1])
+@pytest.mark.parametrize("topic", DATA_TOPICS)
 @pytest.mark.parametrize("device", ("cpu", pytest.param("cuda", marks=pytest.mark.cuda)))
 @pytest.mark.filterwarnings("error:__array__ implementation.*:DeprecationWarning")
 def test_course_cells_train_evaluate_and_plot_offline(topic, device, offline_data, monkeypatch):
@@ -57,12 +66,28 @@ def test_course_cells_train_evaluate_and_plot_offline(topic, device, offline_dat
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("topic", TOPICS[1:-1])
+@pytest.mark.parametrize("topic", DATA_TOPICS)
 def test_course_network_switch_uses_separate_cache(topic, offline_data, monkeypatch):
     path = notebook_path(topic)
     monkeypatch.chdir(path.parent)
     namespace = run_notebook_smoke(path, "cpu", use_network_data=True)
     assert_lesson_smoke(topic, namespace, offline_data, use_network_data=True)
+
+
+@pytest.mark.integration
+def test_hopfield_notebook_recovers_patterns_and_lowers_energy(monkeypatch):
+    topic = "amari_hopfield_model"
+    path = notebook_path(topic)
+    monkeypatch.chdir(path.parent)
+    namespace = run_notebook_smoke(path, "cpu")
+
+    assert (namespace["recovered_flip"] == namespace["image2"]).all()
+    assert (namespace["recovered_mask"] == namespace["image1"]).all()
+    assert namespace["closest_pattern_index"] != namespace["TARGET_PATTERN_INDEX"]
+    assert namespace["multi_pattern_is_stable"]
+    assert not namespace["multi_pattern_is_stored"]
+    for name in ("energy_flip", "energy_mask", "energy_ambiguous", "multi_pattern_energy"):
+        assert (namespace[name][1:] - namespace[name][:-1] <= 1e-5).all()
 
 
 @pytest.mark.integration

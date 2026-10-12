@@ -42,6 +42,12 @@ files = ["biai/mlp/*.py"]
 dependencies = ["torchvision"]
 datasets = ["mnist"]
 
+[lessons.amari_hopfield_model]
+title = "Amari–Hopfield 联想记忆模型"
+files = ["biai/amari_hopfield_model/*.py", "biai/amari_hopfield_model/*.npy"]
+dependencies = []
+datasets = []
+
 [lessons.cnn]
 title = "卷积神经网络与图像分类"
 files = ["biai/cnn/*.py"]

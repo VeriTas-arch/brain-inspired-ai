@@ -31,7 +31,7 @@ dependencies = [
 include = ["biai*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.ipynb", "README.md"]
+"*" = ["*.ipynb", "*.npy", "README.md"]
 
 [tool.pytest.ini_options]
 addopts = ["-ra", "--strict-config", "--strict-markers"]

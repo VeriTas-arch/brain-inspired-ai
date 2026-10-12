@@ -10,12 +10,13 @@
 | --- | --- | --- |
 | [环境配置](biai/intro/README.md) | [PyTorch 入门](biai/intro/intro.ipynb) | Conda、Jupyter、服务器 Git 克隆、张量、自动求导与小网络训练 |
 | [多层感知机](biai/mlp/README.md) | [MLP](biai/mlp/mlp.ipynb) | 单层与双层网络、激活函数对照、BP 与 Oja/GHA 特征学习 |
+| [联想记忆](biai/amari_hopfield_model/README.md) | [Amari–Hopfield 模型](biai/amari_hopfield_model/amari_hopfield_model.ipynb) | Hebb 学习规则、异步状态更新、能量函数与模式恢复 |
 | [卷积神经网络](biai/cnn/README.md) | [CNN](biai/cnn/cnn.ipynb) | MNIST/CIFAR-10 的 MLP、CNN、ResNet 对照与特征图 |
 | [持续学习](biai/continual_mnist/README.md) | [MNIST 持续学习](biai/continual_mnist/continual_mnist.ipynb) | 比较 Task-IL 与 Class-IL，观察 EWC 和样本回放对新旧任务的影响 |
 | [元学习](biai/meta_learning/README.md) | [MAML 与 FO-MAML](biai/meta_learning/meta_learning.ipynb) | Omniglot/Mini-ImageNet、MAML/FO-MAML、N-way K-shot 对照 |
 | [强化学习](biai/atari/README.md) | [Atari](biai/atari/atari.ipynb) | DQN、PPO、联合与顺序训练、EWC、GPM |
 
-PyTorch 入门、MLP、CNN、持续学习和元学习的 Notebook 直接展示模型和训练步骤。Atari 的训练代码较长，放在配套 Python 文件中，Notebook 负责讲解方法、调用训练和展示[参考结果](assets/README.md)。
+PyTorch 入门、MLP、Amari–Hopfield 模型、CNN、持续学习和元学习的 Notebook 直接展示模型和训练步骤。Atari 的训练代码较长，放在配套 Python 文件中，Notebook 负责讲解方法、调用训练和展示[参考结果](assets/README.md)。
 
 ## 安装与阅读
 
@@ -39,7 +40,7 @@ python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ## 数据与运行结果
 
-各课压缩包包含完成默认演示所需的数据集：MLP 和持续学习包包含 MNIST，CNN 包包含 MNIST 与 CIFAR-10，元学习包包含 Omniglot。Notebook 中的 `USE_NETWORK_DATA` 默认为 `False`，直接读取包内 `data/`；改为 `True` 后，程序会把网络副本下载到 `data/network/` 并优先使用该副本。完整源码仓库不在 Git 中保存数据集，首次从源码运行时可将该变量改为 `True`。
+各课压缩包包含完成默认演示所需的数据集：MLP 和持续学习包包含 MNIST，CNN 包包含 MNIST 与 CIFAR-10，元学习包包含 Omniglot。Amari–Hopfield 课程使用包内的两组小型二值图像，像素在计算时用 -1 和 1 编码，不需要联网。其他课程 Notebook 中的 `USE_NETWORK_DATA` 默认为 `False`，直接读取包内 `data/`；改为 `True` 后，程序会把网络副本下载到 `data/network/` 并优先使用该副本。完整源码仓库不在 Git 中保存数据集，首次从源码运行时可将该变量改为 `True`。
 
 联网覆盖时，Omniglot 通过 [torchvision](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.Omniglot.html) 下载。代码将 `background` 中约 80% 的字符类别用于训练，其余用于验证；`evaluation` 中的类别用于最终测试。数据背景见 [Omniglot 原始项目](https://github.com/brendenlake/omniglot)。
 

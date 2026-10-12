@@ -119,7 +119,7 @@ assert paths.PROJECT_ROOT == root
 torch.set_num_threads(1)
 with pytest.MonkeyPatch.context() as patch:
     patch.setattr(plt, "show", lambda: plt.close("all"))
-    if topic in ("intro", "atari"):
+    if topic in ("intro", "amari_hopfield_model", "atari"):
         namespace = {"__name__": "__main__"}
         for cell in nbformat.read(root / f"{topic}.ipynb", as_version=4).cells:
             if cell.cell_type == "code":
@@ -129,13 +129,17 @@ with pytest.MonkeyPatch.context() as patch:
             assert namespace["predictions_match"]
             assert namespace["model_path"].is_relative_to(root / "results")
             assert namespace["model_path"].is_file()
-        else:
+        elif topic == "atari":
             assert not (root / "results").exists()
             from biai.atari.training.results import run_metadata
             patch.setenv("PATH", "")
             metadata = run_metadata()
             assert "commit" not in metadata and "dirty" not in metadata
             assert "torch" in metadata["versions"]
+        else:
+            assert (namespace["recovered_flip"] == namespace["image2"]).all()
+            assert (namespace["recovered_mask"] == namespace["image1"]).all()
+            assert (namespace["energy_flip"][1:] <= namespace["energy_flip"][:-1] + 1e-5).all()
     else:
         # Reuse the owning lesson's offline datasets, budgets and semantic assertions.
         sys.path.append(sys.argv[2])
@@ -181,6 +185,47 @@ def test_export_rejects_existing_outputs_and_keeps_source(tmp_path, existing):
     else:
         assert not expanded.exists()
     assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("force_option", ("--force", "-f"))
+def test_export_force_replaces_only_matching_outputs(tmp_path, monkeypatch, capsys, force_option):
+    archive = exporter.export_course("intro", tmp_path)
+    expanded = archive.with_suffix("")
+    archive.write_bytes(b"obsolete archive")
+    (expanded / "notes.txt").write_text("Review notes")
+    neighbor = archive.parent / "keep.txt"
+    neighbor.write_text("Keep me")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["export_course.py", "intro", "--output-dir", str(tmp_path), force_option],
+    )
+    exporter.main()
+
+    assert capsys.readouterr().out.strip() == str(archive)
+    with ZipFile(archive) as rebuilt:
+        assert rebuilt.testzip() is None
+    assert not (expanded / "notes.txt").exists()
+    assert neighbor.read_text() == "Keep me"
+
+
+def test_export_force_restores_existing_outputs_after_publication_failure(tmp_path, monkeypatch):
+    archive = exporter.export_course("intro", tmp_path)
+    expanded = archive.with_suffix("")
+    original_archive = archive.read_bytes()
+    note = expanded / "notes.txt"
+    note.write_text("Review notes")
+
+    def fail(*args, **kwargs):
+        raise OSError("Export failed")
+
+    monkeypatch.setattr(exporter.os, "link", fail)
+    with pytest.raises(OSError, match="Export failed"):
+        exporter.export_course("intro", tmp_path, force=True)
+
+    assert archive.read_bytes() == original_archive
+    assert note.read_text() == "Review notes"
 
 
 @pytest.mark.parametrize("failure", ("copy", "publish"))
