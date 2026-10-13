@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 
+import matplotlib.pyplot as plt
 import nbformat
 import pytest
 import torch
@@ -22,6 +23,8 @@ TOPICS = (
     "intro",
     "mlp",
     "amari_hopfield_model",
+    "amari_hopfield_phase_plane",
+    "cann_sfa",
     "cnn",
     "continual_mnist",
     "meta_learning",
@@ -93,6 +96,56 @@ def test_hopfield_notebook_recovers_patterns_and_lowers_energy(monkeypatch):
     assert (
         namespace["comparison_async_energy"][1:] <= namespace["comparison_async_energy"][:-1]
     ).all()
+
+
+@pytest.mark.integration
+def test_phase_plane_notebook_runs_five_figures_without_files(monkeypatch, tmp_path):
+    topic = "amari_hopfield_phase_plane"
+    path = notebook_path(topic)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(plt, "show", lambda: plt.close("all"))
+    namespace = run_notebook_smoke(path, "cpu")
+
+    figures = [
+        namespace[name]
+        for name in (
+            "low_gain_figure",
+            "sigmoid_figure",
+            "tanh_figure",
+            "high_gain_figure",
+            "energy_figure",
+        )
+    ]
+    assert len({id(figure) for figure in figures}) == 5
+    for figure in figures[1:3]:
+        assert len(figure.axes) == 2
+        assert figure.axes[0].get_xlabel() == "x1"
+        assert figure.axes[1].get_xscale() == "symlog"
+    assert namespace["sigmoid_solution"].y[0, -1] == pytest.approx(2.0, abs=0.001)
+    assert namespace["critical_tanh_solution"].y[0, -1] == pytest.approx(0.0274227, rel=1e-5)
+    assert not list(tmp_path.rglob("*.png"))
+
+
+@pytest.mark.integration
+def test_cann_notebook_runs_without_writing_results(monkeypatch, tmp_path):
+    import numpy as np
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(plt, "show", lambda: plt.close("all"))
+    animations = []
+    monkeypatch.setattr("IPython.display.display", lambda html: animations.append(html.data))
+    namespace = run_notebook_smoke(notebook_path("cann_sfa"), "cpu")
+    results = namespace["results"]
+    late = results["smooth"]["ts"] > 700
+    assert np.ptp(results["smooth"]["relative"][late]) < 0.01
+    assert np.ptp(results["oscillatory"]["relative"][late]) > 0.5
+    assert np.ptp(namespace["no_feedback"]["relative"][late]) < 0.01
+    wave = results["travelling_wave"]
+    assert np.ptp(wave["center"][late]) > 2 * np.pi
+    assert wave["u"][-1].max() > 0.5
+    assert len(animations) == 3
+    assert all("data:image/png;base64" in html for html in animations)
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.integration

@@ -11,6 +11,8 @@
 | [环境配置](biai/intro/README.md) | [PyTorch 入门](biai/intro/intro.ipynb) | Conda、Jupyter、服务器 Git 克隆、张量、自动求导与小网络训练 |
 | [多层感知机](biai/mlp/README.md) | [MLP](biai/mlp/mlp.ipynb) | 单层与双层网络、激活函数对照、BP 与 Oja/GHA 特征学习 |
 | [联想记忆](biai/amari_hopfield_model/README.md) | [Amari–Hopfield 模型](biai/amari_hopfield_model/amari_hopfield_model.ipynb) | Hebb 学习规则、异步与同步更新、能量函数与模式恢复 |
+| [双神经元动力学](biai/amari_hopfield_phase_plane/README.md) | [Amari–Hopfield 相平面](biai/amari_hopfield_phase_plane/amari_hopfield_phase_plane.ipynb) | 零流线、平衡点、状态轨迹与能量景观 |
+| [连续吸引子与慢适应](biai/cann_sfa/README.md) | [CANN 与 SFA](biai/cann_sfa/cann_sfa.ipynb) | 圆环位置编码、平滑与振荡跟踪、撤去输入后的行波 |
 | [卷积神经网络](biai/cnn/README.md) | [CNN](biai/cnn/cnn.ipynb) | MNIST/CIFAR-10 的 MLP、CNN、ResNet 对照与特征图 |
 | [持续学习](biai/continual_mnist/README.md) | [MNIST 持续学习](biai/continual_mnist/continual_mnist.ipynb) | 比较 Task-IL 与 Class-IL，观察 EWC 和样本回放对新旧任务的影响 |
 | [元学习](biai/meta_learning/README.md) | [MAML 与 FO-MAML](biai/meta_learning/meta_learning.ipynb) | Omniglot/Mini-ImageNet、MAML/FO-MAML、N-way K-shot 对照 |

@@ -48,6 +48,18 @@ files = ["biai/amari_hopfield_model/*.py", "biai/amari_hopfield_model/*.npy"]
 dependencies = []
 datasets = []
 
+[lessons.amari_hopfield_phase_plane]
+title = "Amari–Hopfield 双神经元相平面"
+files = ["biai/amari_hopfield_phase_plane/*.py"]
+dependencies = ["scipy"]
+datasets = []
+
+[lessons.cann_sfa]
+title = "连续吸引子网络与慢适应"
+files = ["biai/cann_sfa/*.py"]
+dependencies = []
+datasets = []
+
 [lessons.cnn]
 title = "卷积神经网络与图像分类"
 files = ["biai/cnn/*.py"]

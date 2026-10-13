@@ -119,7 +119,7 @@ assert paths.PROJECT_ROOT == root
 torch.set_num_threads(1)
 with pytest.MonkeyPatch.context() as patch:
     patch.setattr(plt, "show", lambda: plt.close("all"))
-    if topic in ("intro", "amari_hopfield_model", "atari"):
+    if topic in ("intro", "amari_hopfield_model", "amari_hopfield_phase_plane", "cann_sfa", "atari"):
         namespace = {"__name__": "__main__"}
         for cell in nbformat.read(root / f"{topic}.ipynb", as_version=4).cells:
             if cell.cell_type == "code":
@@ -136,6 +136,30 @@ with pytest.MonkeyPatch.context() as patch:
             metadata = run_metadata()
             assert "commit" not in metadata and "dirty" not in metadata
             assert "torch" in metadata["versions"]
+        elif topic == "cann_sfa":
+            import numpy as np
+            from biai.cann_sfa.cann_sfa_triple_regimes import simulate_regime
+            assert Path(sys.modules[simulate_regime.__module__].__file__).resolve().is_relative_to(root)
+            results = namespace["results"]
+            assert set(results) == {"smooth", "oscillatory", "travelling_wave"}
+            assert all(np.isfinite(result["u"]).all() for result in results.values())
+            assert np.isnan(results["travelling_wave"]["relative"][-1])
+            assert all(
+                "data:image/png;base64" in namespace[f"{name}_animation"].to_jshtml()
+                for name in results
+            )
+            assert not (root / "results").exists()
+            assert not list(root.rglob("outputs"))
+        elif topic == "amari_hopfield_phase_plane":
+            assert all(
+                name in namespace
+                for name in ("low_gain_figure", "sigmoid_figure", "tanh_figure", "high_gain_figure", "energy_figure")
+            )
+            assert len(namespace["sigmoid_figure"].axes) == 2
+            assert len(namespace["tanh_figure"].axes) == 2
+            assert abs(namespace["sigmoid_solution"].y[0, -1] - 2.0) < 0.001
+            assert abs(namespace["critical_tanh_solution"].y[0, -1] - 0.0274227) < 1e-6
+            assert not (root / "results").exists()
         else:
             assert (namespace["recovered_flip"] == namespace["image2"]).all()
             assert (namespace["recovered_mask"] == namespace["image1"]).all()
