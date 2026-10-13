@@ -38,6 +38,25 @@ def test_asynchronous_recovery_lowers_energy_and_recovers_stored_pattern():
     assert np.all(np.diff(energy) <= 1e-5)
 
 
+def test_matched_updates_show_synchronous_two_cycle():
+    patterns = load_patterns()
+    network = AmariHopfieldNetwork(patterns.shape[1])
+    network.store_patterns(patterns)
+    initial_state = add_bit_flip_noise(patterns[0], probability=0.4, rng=np.random.default_rng(98))
+    async_rng = np.random.default_rng(98)
+    async_state = initial_state.copy()
+    sync_states = [initial_state.copy()]
+
+    for _ in range(10):
+        async_state = network.recover_async(async_state, n_updates=network.num_units, rng=async_rng)
+        sync_states.append(network.recover_sync(sync_states[-1], n_steps=1))
+
+    np.testing.assert_array_equal(async_state, patterns[0])
+    np.testing.assert_array_equal(sync_states[-1], sync_states[-3])
+    assert not np.array_equal(sync_states[-1], sync_states[-2])
+    assert network.energy(sync_states[-1]) == pytest.approx(network.energy(sync_states[-2]))
+
+
 def test_mask_noise_rejects_bounds_outside_the_image():
     image = np.ones((4, 4), dtype=np.float32)
     with pytest.raises(ValueError, match="row_bounds"):

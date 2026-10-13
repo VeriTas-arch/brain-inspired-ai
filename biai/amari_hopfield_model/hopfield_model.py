@@ -1,4 +1,4 @@
-"""Amari-Hopfield associative memory with asynchronous state updates."""
+"""Amari-Hopfield associative memory with asynchronous and synchronous updates."""
 
 from pathlib import Path
 
@@ -108,6 +108,25 @@ class AmariHopfieldNetwork:
 
         if energy_history is not None:
             return state, energy_history
+        return state
+
+    def recover_sync(
+        self,
+        initial_state: np.ndarray,
+        n_steps: int,
+    ) -> np.ndarray:
+        """Recover a pattern by updating every unit from the previous state."""
+        state = np.asarray(initial_state, dtype=np.float32).copy()
+        if state.shape != (self.num_units,):
+            raise ValueError(f"initial_state must have shape ({self.num_units},)")
+        if not np.all(np.isin(state, (-1, 1))):
+            raise ValueError("initial_state must contain only -1 and 1")
+        if n_steps < 0:
+            raise ValueError("n_steps must be non-negative")
+
+        for _ in range(n_steps):
+            local_field = self.weight @ state - self.threshold
+            state = np.where(local_field >= 0, 1, -1).astype(np.float32)
         return state
 
     def energy(self, state: np.ndarray) -> float:

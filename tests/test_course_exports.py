@@ -140,6 +140,7 @@ with pytest.MonkeyPatch.context() as patch:
             assert (namespace["recovered_flip"] == namespace["image2"]).all()
             assert (namespace["recovered_mask"] == namespace["image1"]).all()
             assert (namespace["energy_flip"][1:] <= namespace["energy_flip"][:-1] + 1e-5).all()
+            assert namespace["sync_two_cycle"]
     else:
         # Reuse the owning lesson's offline datasets, budgets and semantic assertions.
         sys.path.append(sys.argv[2])

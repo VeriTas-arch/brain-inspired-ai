@@ -86,8 +86,13 @@ def test_hopfield_notebook_recovers_patterns_and_lowers_energy(monkeypatch):
     assert namespace["closest_pattern_index"] != namespace["TARGET_PATTERN_INDEX"]
     assert namespace["multi_pattern_is_stable"]
     assert not namespace["multi_pattern_is_stored"]
+    assert (namespace["comparison_async_states"][-1] == namespace["comparison_target"]).all()
+    assert namespace["sync_two_cycle"]
     for name in ("energy_flip", "energy_mask", "energy_ambiguous", "multi_pattern_energy"):
         assert (namespace[name][1:] - namespace[name][:-1] <= 1e-5).all()
+    assert (
+        namespace["comparison_async_energy"][1:] <= namespace["comparison_async_energy"][:-1]
+    ).all()
 
 
 @pytest.mark.integration
