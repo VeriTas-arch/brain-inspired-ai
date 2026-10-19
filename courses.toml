@@ -57,7 +57,7 @@ datasets = []
 [lessons.cann_sfa]
 title = "连续吸引子网络与慢适应"
 files = ["biai/cann_sfa/*.py"]
-dependencies = []
+dependencies = ["imageio-ffmpeg"]
 datasets = []
 
 [lessons.cnn]

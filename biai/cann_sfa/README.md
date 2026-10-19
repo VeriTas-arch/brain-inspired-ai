@@ -15,7 +15,7 @@ conda activate brain_ai
 
 <!-- course-dependencies -->
 ```bash
-python -m pip install ipykernel ipython numpy matplotlib torch
+python -m pip install ipykernel ipython numpy matplotlib torch imageio-ffmpeg
 ```
 <!-- /course-dependencies -->
 
@@ -36,6 +36,6 @@ Notebook 中的三组实验都有静态图和可播放的动画。静态图显�
 - `RegimeConfig` 与 `REGIMES`：参数和三组示例。
 - `CANN1DSFA.update`：周期卷积、指数 Euler 更新和活动峰位置。
 - `simulate_regime`：从零状态运行，返回轨迹、输入和跟踪误差。
-- `plot_regime` 与 `animate_regime`：绘制静态图和动画，在 Notebook 中显示。
+- `plot_regime` 与 `animate_regime`：绘制静态图和动画。Notebook 将动画直接显示为 MP4 视频。
 
 数值更新方法和周期卷积的计算见 Notebook 附录，课末提供了几项可继续尝试的参数实验。

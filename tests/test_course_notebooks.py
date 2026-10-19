@@ -129,12 +129,21 @@ def test_phase_plane_notebook_runs_five_figures_without_files(monkeypatch, tmp_p
 @pytest.mark.integration
 def test_cann_notebook_runs_without_writing_results(monkeypatch, tmp_path):
     import numpy as np
+    from IPython.core.formatters import DisplayFormatter
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(plt, "show", lambda: plt.close("all"))
+    namespace = {}
     animations = []
-    monkeypatch.setattr("IPython.display.display", lambda html: animations.append(html.data))
-    namespace = run_notebook_smoke(notebook_path("cann_sfa"), "cpu")
+    with plt.rc_context():
+        formatter = DisplayFormatter()
+        for cell in nbformat.read(notebook_path("cann_sfa"), as_version=4).cells:
+            if cell.cell_type != "code":
+                continue
+            if cell.source.startswith("animate_regime("):
+                animations.append(formatter.format(eval(cell.source, namespace))[0]["text/html"])
+            else:
+                exec(cell.source, namespace)
     results = namespace["results"]
     late = results["smooth"]["ts"] > 700
     assert np.ptp(results["smooth"]["relative"][late]) < 0.01
@@ -144,7 +153,8 @@ def test_cann_notebook_runs_without_writing_results(monkeypatch, tmp_path):
     assert np.ptp(wave["center"][late]) > 2 * np.pi
     assert wave["u"][-1].max() > 0.5
     assert len(animations) == 3
-    assert all("data:image/png;base64" in html for html in animations)
+    assert all("data:video/mp4;base64" in html for html in animations)
+    assert all("<video " in html and "controls" in html for html in animations)
     assert not list(tmp_path.iterdir())
 
 

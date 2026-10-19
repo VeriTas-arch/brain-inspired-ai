@@ -1,10 +1,14 @@
 """Check CANN dynamics against a dense reference and ring-coordinate semantics."""
 
+import base64
+import re
 from dataclasses import replace
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from imageio_ffmpeg import get_ffmpeg_exe, read_frames
+from IPython.core.formatters import DisplayFormatter
 
 from biai.cann_sfa.cann_sfa_triple_regimes import (
     CANN1DSFA,
@@ -93,5 +97,20 @@ def test_plot_and_inline_animation_do_not_write_output(monkeypatch, tmp_path):
     figure = plot_regime(result)
     assert len(figure.axes) == 4
     animation = animate_regime(result, frame_stride=10)
-    assert "data:image/png;base64" in animation.to_jshtml()
+    monkeypatch.setitem(plt.rcParams, "animation.html", "html5")
+    monkeypatch.setitem(plt.rcParams, "animation.ffmpeg_path", get_ffmpeg_exe())
+    html = DisplayFormatter().format(animation)[0]["text/html"]
+    assert all(attribute in html for attribute in ("controls", "autoplay", "loop"))
+    assert "<script" not in html
     assert not list(tmp_path.iterdir())
+    # Decode the actual embedded payload; an HTML tag alone does not prove a playable video.
+    payload = re.search(r"data:video/mp4;base64,([^\"]+)", html).group(1)
+    video = tmp_path / "decoded.mp4"
+    video.write_bytes(base64.b64decode(payload))
+    frames = read_frames(str(video))
+    metadata = next(frames)
+    decoded = list(frames)
+    assert metadata["codec"] == "h264"
+    assert metadata["fps"] == pytest.approx(12)
+    assert len(decoded) == 3
+    assert decoded[0] != decoded[-1]

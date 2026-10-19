@@ -108,6 +108,7 @@ import matplotlib.pyplot as plt
 import nbformat
 import pytest
 import torch
+from IPython.core.formatters import DisplayFormatter
 
 import biai
 from biai import paths
@@ -121,9 +122,13 @@ with pytest.MonkeyPatch.context() as patch:
     patch.setattr(plt, "show", lambda: plt.close("all"))
     if topic in ("intro", "amari_hopfield_model", "amari_hopfield_phase_plane", "cann_sfa", "atari"):
         namespace = {"__name__": "__main__"}
+        animation_outputs = []
         for cell in nbformat.read(root / f"{topic}.ipynb", as_version=4).cells:
             if cell.cell_type == "code":
-                exec(compile(cell.source, f"{topic}.ipynb", "exec"), namespace)
+                if topic == "cann_sfa" and cell.source.startswith("animate_regime("):
+                    animation_outputs.append(DisplayFormatter().format(eval(cell.source, namespace))[0]["text/html"])
+                else:
+                    exec(compile(cell.source, f"{topic}.ipynb", "exec"), namespace)
         if topic == "intro":
             assert namespace["final_loss"] < namespace["initial_loss"] * 0.1
             assert namespace["predictions_match"]
@@ -144,10 +149,8 @@ with pytest.MonkeyPatch.context() as patch:
             assert set(results) == {"smooth", "oscillatory", "travelling_wave"}
             assert all(np.isfinite(result["u"]).all() for result in results.values())
             assert np.isnan(results["travelling_wave"]["relative"][-1])
-            assert all(
-                "data:image/png;base64" in namespace[f"{name}_animation"].to_jshtml()
-                for name in results
-            )
+            assert len(animation_outputs) == 3
+            assert all("data:video/mp4;base64" in html for html in animation_outputs)
             assert not (root / "results").exists()
             assert not list(root.rglob("outputs"))
         elif topic == "amari_hopfield_phase_plane":
