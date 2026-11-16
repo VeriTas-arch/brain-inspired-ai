@@ -8,9 +8,49 @@ import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
+from PIL import Image
 
 from biai.reproducibility import parameter_digest
 from tests.notebook_helpers import definitions
+
+
+def test_omniglot_cache_preserves_pixels_sampling_and_episode_independence(tmp_path, monkeypatch):
+    ns = definitions("meta_learning")
+    expected = {}
+    for character in range(4):
+        directory = tmp_path / "images_background" / "alphabet" / f"character{character}"
+        directory.mkdir(parents=True)
+        for sample in range(3):
+            pixels = np.random.default_rng(character * 3 + sample).integers(
+                0, 256, size=(105, 105), dtype=np.uint8
+            )
+            path = directory / f"{sample}.png"
+            image = Image.fromarray(pixels)
+            image.save(path)
+            resized = np.array(image.resize((28, 28), Image.Resampling.BILINEAR))
+            expected[str(path)] = 1.0 - torch.from_numpy(resized).float().unsqueeze(0) / 255
+
+    dataset = ns["OmniglotFewShot"](tmp_path)
+    for path, image in expected.items():
+        torch.testing.assert_close(dataset._load_image(path), image, rtol=0, atol=0)
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("Episode sampling must not reopen cached PNG files")
+
+    monkeypatch.setattr(Image, "open", unexpected_read)
+    subset = dataset.subset_classes(dataset.classes[:2])
+    reference = dataset.subset_classes(dataset.classes[:2])
+    reference._load_image = expected.__getitem__
+    first = subset.sample_episode(2, 1, 2, random.Random(7))
+    second = reference.sample_episode(2, 1, 2, random.Random(7))
+    for actual, wanted in zip(first, second, strict=True):
+        torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
+    # Episode tensors may be modified without changing the shared image cache.
+    first[0].zero_()
+    first[2].zero_()
+    repeated = subset.sample_episode(2, 1, 2, random.Random(7))
+    for actual, wanted in zip(repeated, second, strict=True):
+        torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("first_order", [False, True])
@@ -137,6 +177,90 @@ def test_meta_methods_share_initialization_and_training_episodes(monkeypatch):
     assert runs[0][1] == runs[1][1]
     assert runs[0][2] == runs[1][2]
     assert runs[0][2][:2] == runs[0][2][2:]
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("first_order", [False, True])
+@pytest.mark.parametrize("input_channels,img_size", [(1, 28), (3, 84)])
+def test_cuda_meta_graph_matches_serial_training(
+    first_order, input_channels, img_size, monkeypatch
+):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    ns = definitions("meta_learning")
+    ns["device"] = torch.device("cuda")
+    monkeypatch.setitem(ns, "plot_meta_history", lambda *args: None)
+    ns["seed_everything"](0, deterministic=True)
+    reference = ns["MAML_CNN"](2, input_channels, img_size).cuda()
+    initial = {name: value.clone() for name, value in reference.state_dict().items()}
+
+    class Episodes:
+        def __init__(self):
+            self.input_channels, self.img_size = input_channels, img_size
+            self.draws = []
+
+        def sample_episode(self, n_way, k_shot, q_query, rng):
+            draw = rng.randrange(10000)
+            self.draws.append(draw)
+            images = torch.rand(
+                6, input_channels, img_size, img_size, generator=torch.Generator().manual_seed(draw)
+            )
+            return images[:2], torch.tensor([0, 1]), images[2:], torch.tensor([0, 0, 1, 1])
+
+    reference_data, validation = Episodes(), Episodes()
+    rng = random.Random(1)
+    optimizer = torch.optim.Adam(reference.parameters(), lr=0.001)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=3, eta_min=1e-4)
+    history, validation_history = [], []
+    best_accuracy = -1.0
+    for update in range(3):
+        optimizer.zero_grad()
+        losses, accuracies = [], []
+        for _ in range(2):
+            sx, sy, qx, qy = [x.cuda() for x in reference_data.sample_episode(2, 1, 2, rng)]
+            fast = OrderedDict(reference.named_parameters())
+            for _ in range(5):
+                loss = F.cross_entropy(reference.functional_forward(sx, fast), sy)
+                grads = torch.autograd.grad(loss, fast.values(), create_graph=not first_order)
+                fast = OrderedDict((n, p - 0.1 * g) for (n, p), g in zip(fast.items(), grads))
+            logits = reference.functional_forward(qx, fast)
+            loss = F.cross_entropy(logits, qy)
+            (loss / 2).backward()
+            losses.append(loss.item())
+            accuracies.append((logits.argmax(1) == qy).float().mean().item())
+        optimizer.step()
+        scheduler.step()
+        history.append(dict(update=update + 1, loss=sum(losses) / 2, accuracy=sum(accuracies) / 2))
+        scores = ns["evaluate_adaptation"](
+            reference, validation, 2, 1, 2, 0.1, n_episodes=2, seed=2
+        )
+        validation_history.append(dict(update=update + 1, scores=scores))
+        if scores[5]["accuracy"] > best_accuracy:
+            best_accuracy = scores[5]["accuracy"]
+            selected_update = update + 1
+            selected_state = {name: value.clone() for name, value in reference.state_dict().items()}
+
+    train_data = Episodes()
+    actual = ns["train_maml"](
+        first_order,
+        train_data,
+        Episodes(),
+        initial,
+        2,
+        1,
+        2,
+        n_meta_updates=3,
+        n_tasks_per_batch=2,
+        validation_every=1,
+        validation_episodes=2,
+    )
+    assert train_data.draws == reference_data.draws
+    assert actual.training_history == history
+    assert actual.validation_history == validation_history
+    assert actual.selected_update == selected_update
+    for name, value in actual.state_dict().items():
+        torch.testing.assert_close(value, selected_state[name], rtol=0, atol=0)
+    assert all(parameter.grad is None for parameter in actual.parameters())
 
 
 @pytest.mark.parametrize("first_order", [False, True])
