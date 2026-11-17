@@ -24,7 +24,7 @@ python -m pip install ipykernel ipython numpy matplotlib torch torchvision pillo
 
 用 VS Code 打开解压后的课程目录，并安装 Microsoft 提供的 Python 和 Jupyter 扩展。打开 [meta_learning.ipynb](meta_learning.ipynb)，选择 `brain_ai` 内核，从顶部按顺序运行。
 
-课程包已经包含默认使用的 Omniglot，直接从 `data/omniglot-py/` 读取，不需要联网。若要与网络来源重新获取的数据对照，将 Notebook 顶部的 `USE_NETWORK_DATA` 改为 `True`；数据会下载到 `data/network/omniglot-py/`，不会覆盖包内副本。每个任务从若干类别中抽取图像，一部分用于调整参数，另一部分用于评估。训练、验证和测试任务来自不同类别。
+课程包已经包含默认使用的 Omniglot。Notebook 直接读取 `data/omniglot-py/` 下的 `images_background.zip` 和 `images_evaluation.zip`，无需解压图片，也不需要联网。图像在加载时完成预处理并缓存在内存中。若要与网络来源重新获取的数据对照，将 Notebook 顶部的 `USE_NETWORK_DATA` 改为 `True`；ZIP 会下载到 `data/network/omniglot-py/`，不会覆盖包内副本。每个任务从若干类别中抽取图像，一部分用于调整参数，另一部分用于评估。训练、验证和测试任务来自不同类别。
 
 先运行默认设置，再尝试改变每个任务的类别数或每类用于学习的图像数。MAML 和 FO-MAML 默认各进行 2000 次外循环更新，即反复采样一批任务来更新共享的初始参数。
 

@@ -1,10 +1,12 @@
 """Shared notebook loading, offline execution, and lesson assertions for tests."""
 
 import ast
+import hashlib
 import io
 import json
 import tarfile
 from pathlib import Path
+from zipfile import ZipFile
 
 import matplotlib.pyplot as plt
 import nbformat
@@ -13,6 +15,7 @@ import pytest
 import torch
 from PIL import Image
 from torchvision import datasets
+from torchvision.datasets import utils as dataset_utils
 
 from biai import paths
 from biai.paths import PROJECT_ROOT
@@ -120,24 +123,38 @@ def prepare_offline_data(monkeypatch, data_dir):
             image = Image.fromarray(self.images[index])
             return self.transform(image), int(self.targets[index])
 
-    def prepare_omniglot(root, *, background, download):
+    omniglot_root = data_dir / "omniglot-py"
+    omniglot_root.mkdir()
+    for split in ("images_background", "images_evaluation"):
+        path = omniglot_root / f"{split}.zip"
+        with ZipFile(path, "w") as archive:
+            for alphabet in (f"{split}_one", f"{split}_two"):
+                for character in range(3):
+                    for sample in range(20):
+                        image = np.random.default_rng(character * 20 + sample).integers(
+                            0, 256, size=(28, 28), dtype=np.uint8
+                        )
+                        content = io.BytesIO()
+                        Image.fromarray(image).save(content, format="PNG")
+                        archive.writestr(
+                            f"{split}/{alphabet}/character{character}/{sample}.png",
+                            content.getvalue(),
+                        )
+        checksum = hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
+        monkeypatch.setitem(datasets.Omniglot.zips_md5, split, checksum)
+
+    def download_omniglot(url, root, filename, md5):
         root = Path(root)
-        assert root in (data_dir, data_dir / "network")
-        assert download == (root == data_dir / "network")
-        split = "images_background" if background else "images_evaluation"
-        for alphabet in (f"{split}_one", f"{split}_two"):
-            for character in range(3):
-                directory = root / "omniglot-py" / split / alphabet / f"character{character}"
-                directory.mkdir(parents=True)
-                for sample in range(20):
-                    image = np.random.default_rng(character * 20 + sample).integers(
-                        0, 256, size=(28, 28), dtype=np.uint8
-                    )
-                    Image.fromarray(image).save(directory / f"{sample}.png")
+        assert root == data_dir / "network/omniglot-py"
+        assert url == f"{datasets.Omniglot.download_url_prefix}/{filename}"
+        content = (omniglot_root / filename).read_bytes()
+        assert hashlib.md5(content, usedforsecurity=False).hexdigest() == md5
+        root.mkdir(parents=True, exist_ok=True)
+        (root / filename).write_bytes(content)
 
     monkeypatch.setattr(datasets, "MNIST", TinyImages)
     monkeypatch.setattr(datasets, "CIFAR10", lambda *a, **kw: TinyImages(*a, **kw, rgb=True))
-    monkeypatch.setattr(datasets, "Omniglot", prepare_omniglot)
+    monkeypatch.setattr(dataset_utils, "download_url", download_omniglot)
     return data_dir
 
 
@@ -194,6 +211,10 @@ def assert_lesson_smoke(topic, namespace, data_dir, use_network_data=False):
             assert [len(row) for row in matrix] == [1, 2, 3, 4, 5]
             assert all(0 <= score <= 1 for row in matrix for score in row)
     if topic == "meta_learning":
+        assert sorted(p.name for p in (expected_dir / "omniglot-py").iterdir()) == [
+            "images_background.zip",
+            "images_evaluation.zip",
+        ]
         assert namespace["N_INNER_STEPS_TRAIN"] == namespace["N_INNER_STEPS_TEST"] == 5
         assert len(namespace["train_ds"].classes) == 4
         assert len(namespace["val_ds"].classes) == 2

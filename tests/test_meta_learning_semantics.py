@@ -1,8 +1,11 @@
 """Regression checks for the meta_learning lesson."""
 
+import hashlib
+import io
 import pickle
 import random
 from collections import OrderedDict
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
@@ -17,20 +20,31 @@ from tests.notebook_helpers import definitions
 def test_omniglot_cache_preserves_pixels_sampling_and_episode_independence(tmp_path, monkeypatch):
     ns = definitions("meta_learning")
     expected = {}
-    for character in range(4):
-        directory = tmp_path / "images_background" / "alphabet" / f"character{character}"
-        directory.mkdir(parents=True)
-        for sample in range(3):
-            pixels = np.random.default_rng(character * 3 + sample).integers(
-                0, 256, size=(105, 105), dtype=np.uint8
-            )
-            path = directory / f"{sample}.png"
-            image = Image.fromarray(pixels)
-            image.save(path)
-            resized = np.array(image.resize((28, 28), Image.Resampling.BILINEAR))
-            expected[str(path)] = 1.0 - torch.from_numpy(resized).float().unsqueeze(0) / 255
+    path = tmp_path / "images_background.zip"
+    # ZIP member order must not change the former sorted directory traversal.
+    with ZipFile(path, "w") as archive:
+        for character in reversed(range(4)):
+            for sample in reversed(range(3)):
+                pixels = np.random.default_rng(character * 3 + sample).integers(
+                    0, 256, size=(105, 105), dtype=np.uint8
+                )
+                name = f"images_background/alphabet/character{character}/{sample}.png"
+                image = Image.fromarray(pixels)
+                content = io.BytesIO()
+                image.save(content, format="PNG")
+                archive.writestr(name, content.getvalue())
+                resized = np.array(image.resize((28, 28), Image.Resampling.BILINEAR))
+                expected[name] = 1.0 - torch.from_numpy(resized).float().unsqueeze(0) / 255
+    monkeypatch.setitem(
+        ns["datasets"].Omniglot.zips_md5,
+        "images_background",
+        hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest(),
+    )
 
     dataset = ns["OmniglotFewShot"](tmp_path)
+    assert dataset.classes == [("alphabet", f"character{i}") for i in range(4)]
+    assert list(dataset.images) == sorted(expected)
+    assert list(tmp_path.iterdir()) == [path]
     for path, image in expected.items():
         torch.testing.assert_close(dataset._load_image(path), image, rtol=0, atol=0)
 
@@ -51,6 +65,20 @@ def test_omniglot_cache_preserves_pixels_sampling_and_episode_independence(tmp_p
     repeated = subset.sample_episode(2, 1, 2, random.Random(7))
     for actual, wanted in zip(repeated, second, strict=True):
         torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("content", [None, b"corrupted archive"])
+def test_omniglot_requires_verified_zip_without_implicit_download(tmp_path, monkeypatch, content):
+    ns = definitions("meta_learning")
+    if content is not None:
+        (tmp_path / "images_background.zip").write_bytes(content)
+
+    def unexpected_download(*args, **kwargs):
+        raise AssertionError("Offline loading must not download missing or corrupt data")
+
+    monkeypatch.setitem(ns, "download_url", unexpected_download)
+    with pytest.raises(RuntimeError, match="ZIP 缺失或校验失败"):
+        ns["OmniglotFewShot"](tmp_path)
 
 
 @pytest.mark.parametrize("first_order", [False, True])

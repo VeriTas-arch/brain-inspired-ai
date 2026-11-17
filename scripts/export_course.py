@@ -111,12 +111,9 @@ def package_datasets(
                 try:
                     with ZipFile(path) as archive:
                         for member in archive.infolist():
-                            if member.is_dir():
-                                continue
-                            destination = (
-                                Path("data") / relative.parent / _archive_path(member.filename)
-                            )
-                            _add_file(files, destination, archive.read(member))
+                            _archive_path(member.filename)
+                        if archive.testzip() is not None:
+                            raise ValueError(f"Dataset ZIP integrity check failed: {path}")
                 except BadZipFile as error:
                     raise ValueError(f"Invalid dataset ZIP: {path}") from error
             else:
@@ -277,7 +274,7 @@ def export_course(
         staged = Path(temporary) / output.name
         with ZipFile(staged, "w", compression=ZIP_DEFLATED) as archive:
             for path, content in sorted(files.items()):
-                compression = ZIP_STORED if path.suffix == ".xz" else ZIP_DEFLATED
+                compression = ZIP_STORED if path.suffix in (".xz", ".zip") else ZIP_DEFLATED
                 archive.writestr(f"{name}/{path.as_posix()}", content, compress_type=compression)
             archive.comment = json.dumps(provenance).encode()
         with ZipFile(staged) as archive:

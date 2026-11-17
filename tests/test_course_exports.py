@@ -333,7 +333,7 @@ def _md5_bytes(content):
     return hashlib.md5(content, usedforsecurity=False).hexdigest()
 
 
-def test_package_datasets_verifies_and_extracts_supported_archives(tmp_path):
+def test_package_datasets_verifies_and_stages_supported_archives(tmp_path):
     data_root = tmp_path / "sources"
     data_root.mkdir()
     gzip_path = data_root / "digits.gz"
@@ -380,21 +380,22 @@ def test_package_datasets_verifies_and_extracts_supported_archives(tmp_path):
         extracted = archive.extractfile("cifar/images.bin")
         assert extracted is not None and extracted.read() == b"images"
     assert files[Path("data/characters.zip")] == zip_path.read_bytes()
-    assert files[Path("data/characters/a.png")] == b"character"
+    assert Path("data/characters/a.png") not in files
     manifest = json.loads(files[Path("data/DATASETS.json")])
     assert manifest["datasets"][0]["id"] == "fixture"
-    assert manifest["datasets"][0]["packaged_files"] == 4
+    assert manifest["datasets"][0]["packaged_files"] == 3
 
 
-def test_export_stores_nested_xz_without_recompression(tmp_path, monkeypatch):
+@pytest.mark.parametrize("filename", ["fixture.tar.xz", "fixture.zip"])
+def test_export_stores_nested_archives_without_recompression(tmp_path, monkeypatch, filename):
     monkeypatch.setattr(
         exporter,
         "package_datasets",
-        lambda dataset_names, catalog, data_root: {Path("data/fixture.tar.xz"): b"fixture"},
+        lambda dataset_names, catalog, data_root: {Path("data") / filename: b"fixture"},
     )
     archive_path = exporter.export_course("intro", tmp_path)
     with ZipFile(archive_path) as archive:
-        info = archive.getinfo(f"{archive_path.stem}/data/fixture.tar.xz")
+        info = archive.getinfo(f"{archive_path.stem}/data/{filename}")
         assert info.compress_type == ZIP_STORED
 
 
