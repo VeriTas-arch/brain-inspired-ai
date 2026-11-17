@@ -5,9 +5,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
-import io
 import json
-import lzma
 import os
 import re
 import shutil
@@ -88,24 +86,13 @@ def package_datasets(
             if archive_format == "gzip":
                 with gzip.open(path, "rb") as stream:
                     _add_file(files, Path("data") / relative.with_suffix(""), stream.read())
-            elif archive_format == "tar-xz":
+            elif archive_format == "tar-gzip":
                 with tarfile.open(path, "r:gz") as archive:
                     for member in archive.getmembers():
                         _archive_path(member.name)
                         if not (member.isdir() or member.isfile()):
                             raise ValueError(f"Unsupported dataset archive member: {member.name}")
-                compressed = io.BytesIO()
-                with (
-                    gzip.open(path, "rb") as source_stream,
-                    lzma.LZMAFile(
-                        compressed, "wb", preset=9 | lzma.PRESET_EXTREME
-                    ) as destination_stream,
-                ):
-                    shutil.copyfileobj(source_stream, destination_stream)
-                destination = Path(
-                    "data/" + relative.as_posix().removesuffix(".tar.gz") + ".tar.xz"
-                )
-                _add_file(files, destination, compressed.getvalue())
+                _add_file(files, Path("data") / relative, path.read_bytes())
             elif archive_format == "zip":
                 _add_file(files, Path("data") / relative, path.read_bytes())
                 try:
@@ -274,7 +261,7 @@ def export_course(
         staged = Path(temporary) / output.name
         with ZipFile(staged, "w", compression=ZIP_DEFLATED) as archive:
             for path, content in sorted(files.items()):
-                compression = ZIP_STORED if path.suffix in (".xz", ".zip") else ZIP_DEFLATED
+                compression = ZIP_STORED if path.suffix in (".gz", ".zip") else ZIP_DEFLATED
                 archive.writestr(f"{name}/{path.as_posix()}", content, compress_type=compression)
             archive.comment = json.dumps(provenance).encode()
         with ZipFile(staged) as archive:

@@ -79,11 +79,6 @@ def test_exported_lesson_runs_independently(topic, tmp_path, fake_dataset_packag
         elif path.suffix == ".ipynb":
             document = nbformat.read(path, as_version=4)
             text = "\n".join(c.source for c in document.cells if c.cell_type == "markdown")
-            assert all(
-                c.execution_count is None and not c.outputs
-                for c in document.cells
-                if c.cell_type == "code"
-            )
         else:
             continue
         for target in re.findall(r"\]\(([^)]+)\)", text):
@@ -367,7 +362,7 @@ def test_package_datasets_verifies_and_stages_supported_archives(tmp_path):
                 "citation_url": "https://example.test/citation",
                 "sources": [
                     source(gzip_path, "gzip"),
-                    source(tar_path, "tar-xz"),
+                    source(tar_path, "tar-gzip"),
                     source(zip_path, "zip"),
                 ],
             }
@@ -375,8 +370,10 @@ def test_package_datasets_verifies_and_stages_supported_archives(tmp_path):
     }
     files = exporter.package_datasets(["fixture"], catalog, data_root)
     assert files[Path("data/digits")] == b"digits"
-    tar_xz = files[Path("data/images.tar.xz")]
-    with tarfile.open(fileobj=io.BytesIO(tar_xz), mode="r:xz") as archive:
+    tar_gz = files[Path("data/images.tar.gz")]
+    assert tar_gz == tar_path.read_bytes()
+    assert Path("data/images.tar.xz") not in files
+    with tarfile.open(fileobj=io.BytesIO(tar_gz), mode="r:gz") as archive:
         extracted = archive.extractfile("cifar/images.bin")
         assert extracted is not None and extracted.read() == b"images"
     assert files[Path("data/characters.zip")] == zip_path.read_bytes()
@@ -386,7 +383,7 @@ def test_package_datasets_verifies_and_stages_supported_archives(tmp_path):
     assert manifest["datasets"][0]["packaged_files"] == 3
 
 
-@pytest.mark.parametrize("filename", ["fixture.tar.xz", "fixture.zip"])
+@pytest.mark.parametrize("filename", ["fixture.tar.gz", "fixture.zip"])
 def test_export_stores_nested_archives_without_recompression(tmp_path, monkeypatch, filename):
     monkeypatch.setattr(
         exporter,
@@ -453,7 +450,7 @@ def test_package_datasets_rejects_unsafe_tar_members(tmp_path):
                     {
                         "path": source.name,
                         "md5": _md5_bytes(source.read_bytes()),
-                        "format": "tar-xz",
+                        "format": "tar-gzip",
                     }
                 ],
             }

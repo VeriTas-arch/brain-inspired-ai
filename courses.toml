@@ -18,7 +18,7 @@ title = "CIFAR-10"
 source_url = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
 citation_url = "https://www.cs.toronto.edu/~kriz/cifar.html"
 sources = [
-    { path = "cifar-10-python.tar.gz", md5 = "c58f30108f718f92721af3b95e74349a", format = "tar-xz" },
+    { path = "cifar-10-python.tar.gz", md5 = "c58f30108f718f92721af3b95e74349a", format = "tar-gzip" },
 ]
 
 [datasets.omniglot]
@@ -63,7 +63,7 @@ datasets = []
 [lessons.cnn]
 title = "卷积神经网络与图像分类"
 files = ["biai/cnn/*.py"]
-dependencies = ["torchvision"]
+dependencies = ["torchvision", "pillow"]
 datasets = ["mnist", "cifar10"]
 
 [lessons.continual_mnist]

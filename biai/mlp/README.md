@@ -26,6 +26,8 @@ python -m pip install ipykernel ipython numpy matplotlib torch torchvision
 
 课程包已经包含 MNIST，默认直接从课程根目录的 `data/` 读取，不需要联网。若要与网络来源重新获取的数据对照，将 Notebook 顶部的 `USE_NETWORK_DATA` 改为 `True`；数据会下载到 `data/network/`，不会覆盖包内副本。程序从训练数据中划出验证集，每轮训练后计算验证指标，训练结束后评估测试集。
 
+MNIST 在加载时一次性转换为 CPU 张量，后续训练和评估复用这些像素值，避免逐张重复转换。
+
 ## 查看结果
 
 先比较单层网络与 MLP 的学习曲线，再查看激活函数和学习规则的对照实验。修改参数时，一次改变一个因素，便于判断差异来自哪里。

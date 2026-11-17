@@ -326,7 +326,7 @@ def test_mini_imagenet_split_and_episode_loader(tmp_path, monkeypatch):
     sx, sy, qx, qy = train.sample_episode(5, 5, 15, random.Random(0))
     assert sx.shape == (25, 3, 84, 84) and qx.shape == (75, 3, 84, 84)
     assert sy.bincount().tolist() == [5] * 5 and qy.bincount().tolist() == [15] * 5
-    train._load_image = lambda index: torch.tensor([index])
+    train._load_images = lambda indices: torch.tensor(indices)[:, None]
     sx, _, qx, _ = train.sample_episode(5, 5, 15, random.Random(0))
     assert set(sx.flatten().tolist()).isdisjoint(qx.flatten().tolist())
     with pytest.raises(ValueError, match="无法提供"):
@@ -339,6 +339,34 @@ def test_mini_imagenet_cache_rejects_python_objects(tmp_path):
     path.write_bytes(pickle.dumps(eval))
     with path.open("rb") as stream, pytest.raises(pickle.UnpicklingError):
         ns["MiniImageNetUnpickler"](stream).load()
+
+
+def test_mini_imagenet_batches_match_original_transforms_without_mutating_raw_cache():
+    ns = definitions("meta_learning")
+    dataset = ns["MiniImageNetFewShot"].__new__(ns["MiniImageNetFewShot"])
+    dataset.images = np.random.default_rng(0).integers(0, 256, size=(40, 84, 84, 3), dtype=np.uint8)
+    original = dataset.images.copy()
+    dataset.classes = list(range(4))
+    dataset.class_to_images = {i: list(range(i * 10, (i + 1) * 10)) for i in dataset.classes}
+    rng = random.Random(7)
+    support, query = [], []
+    for key in rng.sample(dataset.classes, 3):
+        selected = rng.sample(dataset.class_to_images[key], 5)
+        support.extend(selected[:2])
+        query.extend(selected[2:])
+    transform = ns["transforms"].Compose(
+        [ns["transforms"].ToTensor(), ns["transforms"].Normalize((0.5,) * 3, (0.5,) * 3)]
+    )
+    sx, sy, qx, qy = dataset.sample_episode(3, 2, 3, random.Random(7))
+    for actual, indices in ((sx, support), (qx, query)):
+        expected = torch.stack([transform(original[i]) for i in indices])
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+        assert actual.is_contiguous()
+    assert sy.tolist() == [0, 0, 1, 1, 2, 2]
+    assert qy.tolist() == [0, 0, 0, 1, 1, 1, 2, 2, 2]
+    sx.zero_()
+    qx.zero_()
+    np.testing.assert_array_equal(dataset.images, original)
 
 
 def test_task_size_matrix_runs_both_methods_with_matching_initialization(monkeypatch):

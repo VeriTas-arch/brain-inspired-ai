@@ -16,7 +16,7 @@ conda activate brain_ai
 
 <!-- course-dependencies -->
 ```bash
-python -m pip install ipykernel ipython numpy matplotlib torch torchvision
+python -m pip install ipykernel ipython numpy matplotlib torch torchvision pillow
 ```
 <!-- /course-dependencies -->
 
@@ -24,7 +24,7 @@ python -m pip install ipykernel ipython numpy matplotlib torch torchvision
 
 用 VS Code 打开解压后的课程目录，并安装 Microsoft 提供的 Python 和 Jupyter 扩展。打开 [cnn.ipynb](cnn.ipynb)，选择 `brain_ai` 内核，从顶部按顺序运行。
 
-课程包已经包含 MNIST 和 CIFAR-10，默认从课程根目录的 `data/` 读取，不需要联网。CIFAR-10 以无损压缩的 `tar.xz` 保存，第一次运行到 CIFAR-10 单元格时自动解包，之后直接复用解包后的数据。若要与网络来源重新获取的数据对照，将 Notebook 顶部的 `USE_NETWORK_DATA` 改为 `True`；数据会下载到 `data/network/`，不会覆盖包内副本。先运行 MNIST 实验，了解卷积层如何处理图像，再运行 CIFAR-10 上的三种网络对照。
+课程包已经包含 MNIST 和 CIFAR-10，默认从课程根目录的 `data/` 读取，不需要联网。CIFAR-10 保留原始 `cifar-10-python.tar.gz`，加载时校验并直接读取到内存，无需解压。训练和验证共享原始图像，随机裁剪和翻转只用于训练；MNIST 的固定缩放和归一化在加载时一次完成。若要与网络来源重新获取的数据对照，将 Notebook 顶部的 `USE_NETWORK_DATA` 改为 `True`；数据会下载到 `data/network/`，不会覆盖包内副本。先运行 MNIST 实验，了解卷积层如何处理图像，再运行 CIFAR-10 上的三种网络对照。
 
 ## 查看结果
 

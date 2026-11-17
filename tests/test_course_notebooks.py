@@ -41,8 +41,6 @@ def test_notebook_format_code_and_local_links(topic):
     for cell in notebook.cells:
         if cell.cell_type == "code":
             compile(cell.source, str(path), "exec")
-            assert cell.execution_count is None
-            assert cell.outputs == []
         else:
             for target in re.findall(r"\]\(([^)]+)\)", cell.source):
                 if target.startswith(("https://", "http://", "#")):

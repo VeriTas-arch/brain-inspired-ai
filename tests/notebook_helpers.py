@@ -4,6 +4,7 @@ import ast
 import hashlib
 import io
 import json
+import pickle
 import tarfile
 from pathlib import Path
 from zipfile import ZipFile
@@ -95,26 +96,41 @@ def prepare_offline_data(monkeypatch, data_dir):
     monkeypatch.setattr(paths, "DATA_DIR", data_dir)
     monkeypatch.setattr(plt, "show", lambda: plt.close("all"))
     data_dir.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(data_dir / "cifar-10-python.tar.xz", "w:xz") as archive:
-        directory = tarfile.TarInfo("cifar-10-batches-py")
-        directory.type = tarfile.DIRTYPE
-        archive.addfile(directory)
-        content = b"fixture"
-        member = tarfile.TarInfo("cifar-10-batches-py/fixture")
-        member.size = len(content)
-        archive.addfile(member, io.BytesIO(content))
+    cifar_path = data_dir / datasets.CIFAR10.filename
+    with tarfile.open(cifar_path, "w:gz") as archive:
+        for train, batch_list in (
+            (True, datasets.CIFAR10.train_list),
+            (False, datasets.CIFAR10.test_list),
+        ):
+            images = np.random.default_rng(0 if train else 1).integers(
+                0, 256, size=(40, 3072), dtype=np.uint8
+            )
+            labels = np.arange(10).repeat(4)
+            for index, (name, _) in reversed(list(enumerate(batch_list))):
+                start, stop = index * 40 // len(batch_list), (index + 1) * 40 // len(batch_list)
+                content = pickle.dumps(
+                    {"data": images[start:stop], "labels": labels[start:stop].tolist()}
+                )
+                member = tarfile.TarInfo(f"{datasets.CIFAR10.base_folder}/{name}")
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+    monkeypatch.setattr(
+        datasets.CIFAR10,
+        "tgz_md5",
+        hashlib.md5(cifar_path.read_bytes(), usedforsecurity=False).hexdigest(),
+    )
 
     class TinyImages(torch.utils.data.Dataset):
-        def __init__(self, root, train=True, download=False, transform=None, *, rgb=False):
+        def __init__(self, root, train=True, download=False, transform=None):
             root = Path(root)
             assert root in (data_dir, data_dir / "network")
             assert download == (root == data_dir / "network")
             self.transform = transform
             self.targets = torch.arange(10).repeat_interleave(4)
-            shape = (40, 32, 32, 3) if rgb else (40, 28, 28)
             self.images = np.random.default_rng(0 if train else 1).integers(
-                0, 256, size=shape, dtype=np.uint8
+                0, 256, size=(40, 28, 28), dtype=np.uint8
             )
+            self.data = torch.from_numpy(self.images)
 
         def __len__(self):
             return len(self.targets)
@@ -143,18 +159,22 @@ def prepare_offline_data(monkeypatch, data_dir):
         checksum = hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
         monkeypatch.setitem(datasets.Omniglot.zips_md5, split, checksum)
 
-    def download_omniglot(url, root, filename, md5):
+    def download_archive(url, root, filename, md5):
         root = Path(root)
-        assert root == data_dir / "network/omniglot-py"
-        assert url == f"{datasets.Omniglot.download_url_prefix}/{filename}"
-        content = (omniglot_root / filename).read_bytes()
+        if filename == datasets.CIFAR10.filename:
+            assert root == data_dir / "network"
+            assert url == datasets.CIFAR10.url
+            content = cifar_path.read_bytes()
+        else:
+            assert root == data_dir / "network/omniglot-py"
+            assert url == f"{datasets.Omniglot.download_url_prefix}/{filename}"
+            content = (omniglot_root / filename).read_bytes()
         assert hashlib.md5(content, usedforsecurity=False).hexdigest() == md5
         root.mkdir(parents=True, exist_ok=True)
         (root / filename).write_bytes(content)
 
     monkeypatch.setattr(datasets, "MNIST", TinyImages)
-    monkeypatch.setattr(datasets, "CIFAR10", lambda *a, **kw: TinyImages(*a, **kw, rgb=True))
-    monkeypatch.setattr(dataset_utils, "download_url", download_omniglot)
+    monkeypatch.setattr(dataset_utils, "download_url", download_archive)
     return data_dir
 
 
@@ -182,6 +202,13 @@ def assert_lesson_smoke(topic, namespace, data_dir, use_network_data=False):
     assert models
     for model in models:
         assert all(torch.isfinite(p).all() for p in model.parameters())
+    if topic == "cnn":
+        assert not (expected_dir / "cifar-10-batches-py").exists()
+        assert not (expected_dir / "cifar-10-python.tar.xz").exists()
+        assert (
+            namespace["train_dataset_cifar"].dataset.images
+            is namespace["validation_source_cifar"].images
+        )
     if topic == "continual_mnist":
         assert (
             len(
